@@ -1,0 +1,138 @@
+name: Check and publish Linux image
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "README.md", "deploy/README.md"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["docs/**", "README.md", "deploy/README.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  checks:
+    name: Typecheck and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --no-fund --no-audit
+      - run: npm run typecheck -- --incremental false
+      - run: npm test
+
+  image:
+    name: Build, verify and publish
+    needs: checks
+    # PR 只运行只读检查；只有 main 上的可信代码能够发布镜像。
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SHIYI_IMAGE: shiyi-ci:${{ github.sha }}
+      APP_PORT: "3107"
+      BETTER_AUTH_URL: http://localhost:3107
+      # 只用于 CI 临时数据库，生产配置不会进入构建环境或镜像。
+      BETTER_AUTH_SECRET: ci-only-auth-secret-11111111111111111111111111111111
+      KEY_ENCRYPTION_SECRET: ci-only-encryption-secret-2222222222222222222222222222
+      POSTGRES_PASSWORD: ci-only-postgres-password
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --no-fund --no-audit
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build Linux image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.SHIYI_IMAGE }}
+          provenance: false
+          cache-from: type=gha,scope=linux-amd64
+          cache-to: type=gha,scope=linux-amd64,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=拾忆：面试题整理与间隔复习
+      - name: Start image with PostgreSQL
+        run: |
+          docker compose --project-name shiyi-ci pull db
+          docker compose --project-name shiyi-ci up -d --no-build --pull never --wait --wait-timeout 120
+          curl --fail --silent --show-error http://localhost:3107/api/health
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Test desktop and mobile against the image
+        env:
+          PLAYWRIGHT_EXTERNAL_SERVER: "1"
+        run: npm run test:e2e
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the tested image
+        # 发布刚刚测试过的同一个镜像，不在测试后重新构建。
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA}"
+          docker tag "$SHIYI_IMAGE" "$image:$tag"
+          docker push "$image:$tag"
+          docker tag "$SHIYI_IMAGE" "$image:main"
+          docker push "$image:main"
+          reference="$(docker image inspect "$image:$tag" --format '{{index .RepoDigests 0}}')"
+          [[ "$reference" == "$image@sha256:"* ]]
+          {
+            echo '## 已发布的 Linux 镜像'
+            echo
+            echo "提交版本：\`$image:$tag\`"
+            echo
+            echo "固定内容：\`$reference\`"
+            echo
+            echo '将下面这行填入服务器 .env，再执行 docker compose pull app 和 docker compose up -d --no-build --wait：'
+            echo
+            echo '```dotenv'
+            echo "SHIYI_IMAGE=$reference"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose --project-name shiyi-ci logs --no-color --tail 80
+      - name: Save browser failure details
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-failure-${{ github.run_id }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Remove the temporary CI database
+        if: always()
+        # 仅清理本次 runner 中固定命名的 CI 项目；服务器更新不执行此步骤。
+        run: docker compose --project-name shiyi-ci down --volumes --remove-orphans

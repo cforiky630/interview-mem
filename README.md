@@ -166,23 +166,28 @@ npm run build
 
 同一应用部署到服务器后，电脑和手机访问同一个 HTTPS 地址，使用相同账号即可同步。
 
-使用 `Dockerfile`、`compose.yaml` 和 [部署说明](deploy/README.md)。镜像使用 standalone 产物，容器启动前执行数据库迁移，并通过 `/api/health` 检查数据库状态。项目根目录创建忽略提交的 `.env`，填写：
+GitHub Actions 会在推送代码到 `main` 后运行检查、构建 Linux amd64 镜像，并用 PostgreSQL 和电脑 / 手机浏览器验证，成功后发布到 GHCR。服务器使用 `compose.yaml` 下载镜像，部署方式见 [部署说明](deploy/README.md)。镜像采用 standalone 产物，启动前执行数据库迁移，通过 `/api/health` 检查数据库状态。项目根目录创建忽略提交的 `.env`，填写：
 
 ```dotenv
 BETTER_AUTH_URL=https://your-domain.example
 BETTER_AUTH_SECRET=GENERATE_A_RANDOM_SECRET
 KEY_ENCRYPTION_SECRET=GENERATE_A_DIFFERENT_RANDOM_SECRET
 POSTGRES_PASSWORD=GENERATE_A_DATABASE_PASSWORD
+# 从 Actions 摘要复制固定 digest 引用；首次也可使用 main 标签。
+SHIYI_IMAGE=ghcr.io/cforiky630/interview-mem:main
 ```
 
 每次运行下面的命令生成一个独立随机值。不要将真实值提交到 Git：
 
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-docker compose up -d --build --wait
+docker compose pull
+docker compose up -d --no-build --wait
 ```
 
-提供 [Nginx 配置](deploy/nginx.conf)，反向代理连接 `127.0.0.1:3000`，关闭 API 缓存和流式缓冲。密钥校验失败或数据库迁移失败时容器不会启动。请备份 PostgreSQL 数据与加密主密钥；当前按单应用实例部署，Docker / 标准 PostgreSQL 需在目标服务器实测。
+首次 GHCR 包默认为私有，可以在包设置中公开镜像，或让服务器使用 `read:packages` 的 classic PAT 登录。CI 自身通过 `GITHUB_TOKEN` 发布，不需要配置个人密钥。构建流程不自动更新服务器；更新或回退时修改 `.env` 中的 `SHIYI_IMAGE`，拉取并启动即可，数据库迁移的兼容性另行确认。
+
+提供 [Nginx 配置](deploy/nginx.conf)，反向代理连接 `127.0.0.1:3000`，关闭 API 缓存和流式缓冲。密钥校验失败或数据库迁移失败时容器不会启动。请备份 PostgreSQL 数据与加密主密钥；目标服务器的 HTTPS、网络及本地数据迁移仍需部署时验收。需要在服务器构建源码时，使用 `docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait`。
 
 本地生产构建体验先停止开发服务器，设置 `ALLOW_LOCAL_DATABASE=true`，依次执行 `npm run db:migrate`、`npm run build`、`npm run start`。标准 PostgreSQL 的非 Docker 部署也要在启动前执行 `npm run db:migrate`；生产请求不自动修改表结构。
 

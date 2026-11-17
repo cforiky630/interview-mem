@@ -5,6 +5,7 @@ node_modules
 .data
 .cache
 .git
+.github
 .env
 .env.*
 test-results

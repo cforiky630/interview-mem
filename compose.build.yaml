@@ -1,0 +1,5 @@
+# 只有主动选择此文件时才在服务器编译源码。
+services:
+  app:
+    build: .
+    pull_policy: build
