@@ -1,0 +1,82 @@
+{
+  "sourceRoot": "F:/tools/repositorys/interview",
+  "snapshotAt": "2026-11-14T07:45:43.875Z",
+  "files": [
+    {
+      "path": "00 - Index (MOC) 核心导图.md",
+      "bytes": 889,
+      "sha256": "49e4a6e749381118e058f6d1c70038bddd3c3a2dcc37846db4830edfb0ca3a68",
+      "kind": "index"
+    },
+    {
+      "path": "笔记/2026-11-13.md",
+      "bytes": 5278,
+      "sha256": "8e59ca08c2c661341ac4c138c6214ab941cf6c867ce6708b5e36c1d314324cbe",
+      "kind": "note"
+    },
+    {
+      "path": "RAG/01-RAG的基本原理、流程以及它解决了什么问题.md",
+      "bytes": 3796,
+      "sha256": "2db8e77d8fb8c8625b484c49ae2c4afc9672ca9ca8e1baf3ba9b341a42790e78",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/02-RAG有几种召回方式、一般设置几路召回.md",
+      "bytes": 4026,
+      "sha256": "3daef41cbe9fda41ef9fae9fcbb2221b93311843d49b949fe3b1a0d9138f078e",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/03-如何提升RAG的召回率和准确率.md",
+      "bytes": 8376,
+      "sha256": "98024d84370a646241e1fb970d3484c13631d58e9182abb18251cde145099cf5",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/04-多源异构数据如何解析和处理.md",
+      "bytes": 3104,
+      "sha256": "4aa0eccf10a92c6b0b61dc0d8a685a055ddab20a03c95948c2d74fb68ca8fa41",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/05-文本如何分块、分块策略和优化方法.md",
+      "bytes": 3094,
+      "sha256": "f05d590a9a484c0a08d2e5a8e9b2e41444b854e174430153dd73b6111298164c",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/06-向量数据库的原理、使用和优化.md",
+      "bytes": 3552,
+      "sha256": "747e9aa1556baa2d61211081789fe97358a64004e62df55851343a8d1da379fd",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/07-如何解决检索无关和模型幻觉问题.md",
+      "bytes": 2716,
+      "sha256": "f41b3d7d760b378370f6430e39355b58fe0973d1e3315322826fb08c02663d6c",
+      "kind": "question"
+    },
+    {
+      "path": "RAG/08-如何评估一个RAG系统.md",
+      "bytes": 3953,
+      "sha256": "ff041df9f0b5e17f627ad41aa6612482c2ca70a19a93e230e3b2d0e3898d050c",
+      "kind": "question"
+    }
+  ],
+  "initialSnapshotAt": "2026-11-14T07:11:34.181Z",
+  "sourceRefreshes": [
+    {
+      "path": "RAG/03-如何提升RAG的召回率和准确率.md",
+      "oldSha256": "7a9c2f0a31353f301559b685132eaac94b4444fb8d7b1a1b6b1df33cfddf59ac",
+      "newSha256": "5d9f861a494b87031ba63cfc48972fa010d07efe2bd9fb3c7bab2258f3960e91",
+      "firstLine": 9
+    },
+    {
+      "path": "RAG/03-如何提升RAG的召回率和准确率.md",
+      "oldSha256": "5d9f861a494b87031ba63cfc48972fa010d07efe2bd9fb3c7bab2258f3960e91",
+      "newSha256": "98024d84370a646241e1fb970d3484c13631d58e9182abb18251cde145099cf5",
+      "firstLine": 11,
+      "reason": "同步已单独核验的外部段落编辑，保持原始字节"
+    }
+  ]
+}

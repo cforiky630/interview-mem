@@ -1,0 +1,117 @@
+import type { ContentValidationView } from "./content-validation";
+
+export type StoredCard = {
+  due: string;
+  stability: number;
+  difficulty: number;
+  elapsed_days: number;
+  scheduled_days: number;
+  reps: number;
+  lapses: number;
+  state: number;
+  last_review?: string;
+  engine: "FSRS-7";
+  raw: Record<string, unknown>;
+  [key: string]: unknown;
+};
+export type QuestionView = {
+  id: string;
+  deckId: string;
+  parentId: string | null;
+  title: string;
+  answer: string;
+  tags: string[];
+  revision: number;
+  majorRevision: number;
+  needsEditing: boolean;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  isOwner: boolean;
+  deckTitle: string;
+  note: string;
+  noteVersion: number;
+  favorite: boolean;
+  fsrs: StoredCard | null;
+  studyVersion: number;
+  reviewedRevision: number;
+  validation?: ContentValidationView | null;
+};
+export type DeckView = {
+  id: string;
+  title: string;
+  description: string;
+  color: string;
+  visibility: string;
+  isOwner: boolean;
+  ownerName: string;
+  publishedVersion: number;
+  seenVersion: number;
+  count: number;
+  due: number;
+  newCount: number;
+  updatedAt: string;
+  releaseSummary: string;
+};
+export type CatalogDeck = {
+  id: string;
+  title: string;
+  description: string;
+  color: string;
+  ownerName: string;
+  publishedVersion: number;
+  count: number;
+  subscribed: boolean;
+  isOwner: boolean;
+  updatedAt: string;
+};
+export type Workspace = {
+  user: { id: string; name: string; email: string };
+  decks: DeckView[];
+  questions: QuestionView[];
+  stats: {
+    due: number;
+    new: number;
+    reviewedToday: number;
+    totalReviews: number;
+    streak: number;
+    total: number;
+    retention: number | null;
+  };
+  activity: { date: string; count: number }[];
+  recentReviews: {
+    id: string;
+    questionId: string;
+    title: string;
+    rating: number;
+    answer: string | null;
+    createdAt: string;
+    due: string;
+  }[];
+  settings: {
+    hasKey: boolean;
+    keyHint: string;
+    provider: string;
+    baseUrl: string;
+    model: string;
+    dailyGoal: number;
+    theme: string;
+    timeZone: string;
+  };
+};
+export type ChatMessage = {
+  id: string;
+  role: string;
+  content: string;
+  createdAt: string;
+};
+export type Conversation = {
+  id: string;
+  questionId: string;
+  quote: string;
+  questionTitle: string;
+  answerSnapshot: string;
+  questionRevision: number;
+  createdAt: string;
+  messages: ChatMessage[];
+};

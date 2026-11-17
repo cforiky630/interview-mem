@@ -1,0 +1,2 @@
+# Preserve original study materials byte-for-byte across checkouts.
+content/interview-original/** -text

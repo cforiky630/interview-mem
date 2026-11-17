@@ -1,0 +1,345 @@
+"use client";
+import { useState } from "react";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  BookOpen,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
+  PenLine,
+  Sprout,
+} from "lucide-react";
+import type { QuestionView, Workspace } from "@/lib/types";
+import { dateKey } from "@/lib/utils";
+import { Button } from "./ui/button";
+import { NotebookSketch } from "./sketch";
+
+export function Activity({
+  data,
+  days = 91,
+}: {
+  data: Workspace;
+  days?: number;
+}) {
+  const counts = new Map(data.activity.map((row) => [row.date, row.count]));
+  const today = new Date(
+    `${dateKey(new Date(), data.settings.timeZone)}T12:00:00Z`,
+  );
+  const cells = Array.from({ length: days }, (_, index) => {
+    const day = new Date(today);
+    day.setUTCDate(today.getUTCDate() - (days - 1 - index));
+    const date = day.toISOString().slice(0, 10);
+    return { date, count: counts.get(date) ?? 0 };
+  });
+  return (
+    <div
+      className="activity-grid"
+      style={{ gridTemplateColumns: `repeat(${Math.ceil(days / 7)}, 1fr)` }}
+    >
+      {cells.map((cell) => (
+        <span
+          key={cell.date}
+          className={`activity-cell level-${cell.count === 0 ? 0 : cell.count < 3 ? 1 : cell.count < 8 ? 2 : cell.count < 15 ? 3 : 4}`}
+          title={`${cell.date} · ${cell.count} 次复习`}
+          aria-label={`${cell.date}，${cell.count} 次复习`}
+        />
+      ))}
+    </div>
+  );
+}
+
+export function Dashboard({
+  data,
+  onReview,
+  onPractice,
+  onDeck,
+  onImport,
+  onCatalog,
+  onSeed,
+  onLibrary,
+}: {
+  data: Workspace;
+  onReview: () => void;
+  onPractice: (question: QuestionView) => void;
+  onDeck: (id: string) => void;
+  onImport: () => void;
+  onCatalog: () => void;
+  onSeed: () => void;
+  onLibrary: () => void;
+}) {
+  const [index, setIndex] = useState(0);
+  const active = data.questions.filter(
+    (question) => !question.archived && question.answer.trim(),
+  );
+  const due = active
+    .filter(
+      (question) =>
+        question.fsrs && new Date(question.fsrs.due).getTime() <= Date.now(),
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.fsrs!.due).getTime() - new Date(b.fsrs!.due).getTime(),
+    );
+  const cards = [...due, ...active.filter((question) => !question.fsrs)].slice(
+    0,
+    12,
+  );
+  const selectedIndex = cards.length ? index % cards.length : 0;
+  const question = cards[selectedIndex];
+  const percent = Math.min(
+    100,
+    (data.stats.reviewedToday / data.settings.dailyGoal) * 100,
+  );
+  const decks = data.decks.filter((deck) => deck.count > 0).slice(0, 4);
+  const today = dateKey(new Date(), data.settings.timeZone);
+  const days = Array.from({ length: 7 }, (_, offset) => {
+    const date = new Date(`${today}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() - (6 - offset));
+    const key = date.toISOString().slice(0, 10);
+    return {
+      key,
+      label: ["日", "一", "二", "三", "四", "五", "六"][date.getUTCDay()],
+      count: data.activity.find((row) => row.date === key)?.count ?? 0,
+    };
+  });
+  return (
+    <div className="page dashboard-page notebook-dashboard">
+      <div className="page-heading">
+        <div>
+          <p className="notebook-date">
+            {new Intl.DateTimeFormat("zh-CN", {
+              timeZone: data.settings.timeZone,
+              month: "long",
+              day: "numeric",
+              weekday: "long",
+            }).format(new Date())}
+          </p>
+          <h1>
+            今天，<span className="sketch-underline">记住一点。</span>
+            <Sprout size={27} strokeWidth={1.4} />
+          </h1>
+        </div>
+        <Button variant="outline" onClick={onImport}>
+          <Plus size={16} /> 导入面试题
+        </Button>
+      </div>
+      <div className="notebook-home-grid">
+        <div className="notebook-home-main">
+          <section className="focus-section" aria-label="今日练习">
+            <div className="section-heading">
+              <h2>今日练习</h2>
+              {cards.length > 0 && (
+                <div className="carousel-controls">
+                  <button
+                    className="icon-button"
+                    aria-label="上一张题目卡片"
+                    disabled={cards.length < 2}
+                    onClick={() =>
+                      setIndex(
+                        (selectedIndex - 1 + cards.length) % cards.length,
+                      )
+                    }
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                  <span aria-live="polite">
+                    {selectedIndex + 1} / {cards.length}
+                  </span>
+                  <button
+                    className="icon-button"
+                    aria-label="下一张题目卡片"
+                    disabled={cards.length < 2}
+                    onClick={() => setIndex((selectedIndex + 1) % cards.length)}
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className={`focus-stack ${question ? "has-cards" : ""}`}>
+              {question ? (
+                <article
+                  className="focus-card"
+                  key={question.id}
+                  aria-roledescription="卡片"
+                >
+                  <div className="focus-card-top">
+                    <span className="card-number">
+                      Q{String(selectedIndex + 1).padStart(2, "0")}
+                    </span>
+                    <span>{question.deckTitle}</span>
+                    <span className="focus-card-state">
+                      {question.fsrs ? "待复习" : "新题"}
+                    </span>
+                  </div>
+                  <h3>{question.title}</h3>
+                  <div className="focus-card-bottom">
+                    <button
+                      className="text-button"
+                      onClick={() => onDeck(question.deckId)}
+                    >
+                      <BookOpen size={15} /> 查看题库
+                    </button>
+                    <Button onClick={() => onPractice(question)}>
+                      <PenLine size={16} /> 开始答题
+                      <ArrowRight size={16} />
+                    </Button>
+                  </div>
+                  <span className="card-corner" aria-hidden="true">
+                    ✳
+                  </span>
+                </article>
+              ) : (
+                <div className="focus-card empty-focus">
+                  <NotebookSketch />
+                  <div>
+                    <h3>
+                      {data.stats.total
+                        ? "今天的复习完成了"
+                        : "放进你的第一道题"}
+                    </h3>
+                    <div className="empty-focus-actions">
+                      <Button onClick={onImport}>
+                        <Plus size={15} /> 导入题目
+                      </Button>
+                      {!data.stats.total && (
+                        <button className="text-button" onClick={onSeed}>
+                          载入示例题库
+                          <ArrowUpRight size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+          <section className="section-block notebook-decks">
+            <div className="section-heading">
+              <h2>我的题库</h2>
+              <button className="text-button" onClick={onLibrary}>
+                查看全部
+                <ArrowUpRight size={15} />
+              </button>
+            </div>
+            {decks.length ? (
+              <div className="deck-grid">
+                {decks.map((deck) => (
+                  <button
+                    key={deck.id}
+                    className={`deck-card color-${deck.color}`}
+                    onClick={() => onDeck(deck.id)}
+                  >
+                    <div className="deck-card-top">
+                      <span className="deck-icon">
+                        <BookOpen size={22} strokeWidth={1.5} />
+                      </span>
+                      <ArrowUpRight size={16} />
+                    </div>
+                    <h3>{deck.title}</h3>
+                    <div className="deck-card-foot">
+                      <span>{deck.count} 道题</span>
+                      <span>
+                        {deck.due
+                          ? `${deck.due} 题待复习`
+                          : deck.newCount
+                            ? `${deck.newCount} 道新题`
+                            : "已学完"}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button className="empty-deck-link" onClick={onImport}>
+                <Plus size={18} /> 新建你的学习卡片
+              </button>
+            )}
+          </section>
+        </div>
+        <aside className="notebook-home-aside">
+          <section className="today-plan sketch-card">
+            <div className="section-heading">
+              <h2>今日安排</h2>
+              <span className="pencil-mark" aria-hidden="true">
+                ↗
+              </span>
+            </div>
+            <div className="plan-count">
+              <strong>{data.stats.reviewedToday}</strong>
+              <span>/ {data.settings.dailyGoal} 题</span>
+            </div>
+            <div
+              className="plan-progress"
+              role="progressbar"
+              aria-label="今日目标"
+              aria-valuenow={Math.round(percent)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <i style={{ width: `${percent}%` }} />
+            </div>
+            <div className="plan-item">
+              <span>待复习</span>
+              <strong>{data.stats.due}</strong>
+            </div>
+            <div className="plan-item">
+              <span>新题</span>
+              <strong>{data.stats.new}</strong>
+            </div>
+            <Button variant="secondary" onClick={onReview}>
+              开始今日复习
+              <ArrowRight size={15} />
+            </Button>
+          </section>
+          <section className="week-card sketch-card">
+            <div className="section-heading">
+              <h2>这一周</h2>
+              <span>{data.stats.streak} 天连续</span>
+            </div>
+            <div className="week-days">
+              {days.map((day) => (
+                <div
+                  key={day.key}
+                  className={day.key === today ? "is-today" : ""}
+                >
+                  <span>{day.label}</span>
+                  <i
+                    className={day.count ? "has-study" : ""}
+                    title={`${day.key} · ${day.count} 次`}
+                  >
+                    {day.count ? <Checkmark /> : "·"}
+                  </i>
+                </div>
+              ))}
+            </div>
+          </section>
+          <button className="discover-note" onClick={onCatalog}>
+            <span>去别人的题库逛逛</span>
+            <ArrowUpRight size={18} />
+          </button>
+        </aside>
+      </div>
+    </div>
+  );
+}
+function Checkmark() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="m3 9 4 4 8-10"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

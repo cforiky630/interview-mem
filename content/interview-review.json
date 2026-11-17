@@ -1,0 +1,312 @@
+{
+  "checkedAt": "2026-11-14",
+  "scope": "8 道 RAG 主问题及 28 道内嵌追问；1 份复习笔记；索引仅核对目录一致性。只记录内容问题，不修改原文、格式或段落。",
+  "documents": [
+    {
+      "path": "RAG/01-RAG的基本原理、流程以及它解决了什么问题.md",
+      "summary": "主要定义与边界合理；RAG 不是消除幻觉的保证，Self-RAG、CRAG、GraphRAG 的区分与原始论文一致。",
+      "findings": [],
+      "references": [
+        {
+          "title": "RAG 原始论文",
+          "url": "https://arxiv.org/abs/2005.11401"
+        },
+        {
+          "title": "Self-RAG",
+          "url": "https://arxiv.org/abs/2310.11511"
+        },
+        {
+          "title": "CRAG",
+          "url": "https://arxiv.org/abs/2401.15884"
+        },
+        {
+          "title": "GraphRAG",
+          "url": "https://arxiv.org/abs/2404.16130"
+        }
+      ]
+    },
+    {
+      "path": "RAG/02-RAG有几种召回方式、一般设置几路召回.md",
+      "summary": "混合召回、RRF 与评测原则基本合理；密集召回的跨语言和领域外能力需要补充模型与任务前提。",
+      "findings": [
+        {
+          "id": "RAG02-01",
+          "severity": "qualification",
+          "line": 23,
+          "title": "跨语言召回依赖具体模型，不能概括为都能召回",
+          "explanation": "密集向量表示本身不保证跨语言能力。单语模型与多语对齐模型的适用范围不同；例如 e5-base-v2 的官方模型卡明确限定英语文本。这里的“跨语言表达都能召回”缺少前提，也不能保证每次都召回。",
+          "suggestion": "可表达为：密集召回有助于语义匹配；使用经过相应训练的多语模型时，可以支持跨语言检索，效果仍需在目标语言和任务上验证。",
+          "sources": [
+            {
+              "title": "e5-base-v2 官方模型卡：语言限制",
+              "url": "https://huggingface.co/intfloat/e5-base-v2"
+            },
+            {
+              "title": "multilingual-e5-base 官方模型卡",
+              "url": "https://huggingface.co/intfloat/multilingual-e5-base"
+            }
+          ]
+        },
+        {
+          "id": "RAG02-02",
+          "severity": "qualification",
+          "line": 24,
+          "title": "领域外泛化不意味着必须微调",
+          "explanation": "领域迁移可能降低效果，但不能直接推出“需微调”。通用或无监督训练的检索模型也可能在目标任务上满足要求；是否微调应取决于基线评测、错误归因、标注条件和预算。",
+          "suggestion": "可表达为：领域外效果可能下降，先做目标数据评测；必要时选择更合适的模型、改进数据或检索链路，再考虑领域微调。",
+          "sources": [
+            {
+              "title": "HyDE 原始论文：无相关性标注的零样本检索",
+              "url": "https://arxiv.org/abs/2212.10496"
+            }
+          ]
+        }
+      ],
+      "references": [
+        {
+          "title": "Elastic RRF",
+          "url": "https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion"
+        },
+        {
+          "title": "Elastic BM25 参数",
+          "url": "https://www.elastic.co/docs/reference/elasticsearch/index-settings/similarity"
+        }
+      ]
+    },
+    {
+      "path": "RAG/03-如何提升RAG的召回率和准确率.md",
+      "summary": "按扩写及最新排查顺序说明核验。主要优化链路合理；两路失效场景会重叠，重编码取决于模型与实现，上游损失与指标可信度也应区分。",
+      "findings": [
+        {
+          "id": "RAG03-01",
+          "severity": "error",
+          "line": 48,
+          "title": "BM25 与向量召回的失效场景会重叠",
+          "explanation": "两路通常具有互补性，但不是失效集合互斥。反例推理：知识库没有答案、解析遗漏关键表格、证据被错误分块或被错误元数据条件过滤时，两路都可能失败。同义改写和精确 ID 也只是常见倾向，不是绝对的单路专属错误。",
+          "suggestion": "可表达为：BM25 与向量召回的优势和部分失效模式具有互补性，混合检索可能改善覆盖，但仍可能共同漏检，需要评测验证。",
+          "sources": [
+            {
+              "title": "Anthropic：混合检索与 Contextual Retrieval 的评测",
+              "url": "https://www.anthropic.com/research/contextual-retrieval"
+            }
+          ]
+        },
+        {
+          "id": "RAG03-02",
+          "severity": "qualification",
+          "line": 57,
+          "title": "是否重建索引取决于检索表示是否改变",
+          "explanation": "普通 Cross-Encoder 只对候选的查询/文档对打分，替换它一般不需要重建向量索引。更换不兼容的文档嵌入模型通常需要重新编码待检索语料，但查询侧单独优化或表示保持兼容时，不能直接推出必须全量重编码；预计算的重排表示或缓存也需另行处理。前文“通常需要”的限定更稳妥。",
+          "suggestion": "可表达为：替换纯候选打分的 Cross-Encoder 通常不改召回索引；当文档嵌入空间变化且与旧向量不兼容时，应重编码相应的待检索语料并更新索引与缓存。",
+          "sources": [
+            {
+              "title": "Sentence Transformers：Cross-Encoder 与 Bi-Encoder",
+              "url": "https://www.sbert.net/examples/cross_encoder/applications/README.html"
+            }
+          ]
+        },
+        {
+          "id": "RAG03-03",
+          "severity": "qualification",
+          "line": 11,
+          "title": "解析错误不等于 Recall 指标本身不可信",
+          "explanation": "依据召回率定义作出的判断：在参考答案、相关性标注和统计口径固定时，解析遗漏会使端到端 Recall 降低，这个低分可以真实反映证据损失，并不自动意味着指标是脏的。只有标注、ID 对应或评测实现本身受污染时，指标可信度才另受影响。诊断召回器自身能力时，需要控制解析与分块条件；不能把端到端损失全部归因于召回器。",
+          "suggestion": "可表达为：默认先排查上游以减少错误传播；端到端 Recall 能反映上游证据损失，定位召回器瓶颈时再控制解析、分块与标注口径。具体优化顺序仍按分层评测和成本调整。",
+          "sources": [
+            {
+              "title": "Ragas：Context Recall 与参考证据的定义",
+              "url": "https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_recall/"
+            }
+          ]
+        }
+      ],
+      "references": [
+        {
+          "title": "HyDE 原始论文",
+          "url": "https://arxiv.org/abs/2212.10496"
+        },
+        {
+          "title": "CRAG 原始论文",
+          "url": "https://arxiv.org/abs/2401.15884"
+        },
+        {
+          "title": "pgvector：ANN 过滤",
+          "url": "https://github.com/pgvector/pgvector#filtering"
+        },
+        {
+          "title": "Lost in the Middle",
+          "url": "https://arxiv.org/abs/2307.03172"
+        },
+        {
+          "title": "Ragas：Context Recall 与参考证据的定义",
+          "url": "https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_recall/"
+        }
+      ]
+    },
+    {
+      "path": "RAG/04-多源异构数据如何解析和处理.md",
+      "summary": "未发现明确概念错误。解析工具列为候选，没有宣称无损或通用最优；阅读顺序、OCR、表格关系、原文与来源保留的处理原则合理。没有在用户文档集上实测这些第三方解析工具。",
+      "findings": [],
+      "references": [
+        {
+          "title": "PyMuPDF：文本提取与阅读顺序",
+          "url": "https://pymupdf.readthedocs.io/en/latest/recipes-text.html"
+        }
+      ]
+    },
+    {
+      "path": "RAG/05-文本如何分块、分块策略和优化方法.md",
+      "summary": "未发现明确概念错误。Contextual Retrieval 前置块上下文、Late Chunking 在编码后按块池化的区别与原始资料一致；分块大小已注明为实验范围。",
+      "findings": [],
+      "references": [
+        {
+          "title": "Anthropic：Contextual Retrieval",
+          "url": "https://www.anthropic.com/research/contextual-retrieval"
+        },
+        {
+          "title": "Late Chunking 原始论文",
+          "url": "https://arxiv.org/abs/2409.04701"
+        }
+      ]
+    },
+    {
+      "path": "RAG/06-向量数据库的原理、使用和优化.md",
+      "summary": "未发现明确概念错误。HNSW、IVF 与量化的分类、单位向量距离关系、ANN 与业务召回的区别以及 pgvector 能力表述合理。单位向量的平方 L2 等于 2-2 倍内积也经公式复算。",
+      "findings": [],
+      "references": [
+        {
+          "title": "pgvector 官方文档：索引、距离和过滤",
+          "url": "https://github.com/pgvector/pgvector"
+        }
+      ]
+    },
+    {
+      "path": "RAG/07-如何解决检索无关和模型幻觉问题.md",
+      "summary": "未发现明确概念错误。相似度不等于可回答概率，引用存在不等于主张成立；CRAG 与 Self-RAG 的机制区别和不保证消除幻觉的边界合理。",
+      "findings": [],
+      "references": [
+        {
+          "title": "CRAG 原始论文",
+          "url": "https://arxiv.org/abs/2401.15884"
+        },
+        {
+          "title": "Self-RAG 原始论文",
+          "url": "https://arxiv.org/abs/2310.11511"
+        },
+        {
+          "title": "Ragas：Faithfulness",
+          "url": "https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness/"
+        }
+      ]
+    },
+    {
+      "path": "RAG/08-如何评估一个RAG系统.md",
+      "summary": "未发现明确概念错误。Hit、Recall、Precision 与 RR 的示例数值复算一致；上下文忠实度与事实正确性的区分，以及 Ragas 指标的版本和实现差异已说明。",
+      "findings": [],
+      "references": [
+        {
+          "title": "Ragas：Faithfulness",
+          "url": "https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness/"
+        },
+        {
+          "title": "Ragas：Context Precision",
+          "url": "https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_precision/"
+        },
+        {
+          "title": "Ragas：Context Recall",
+          "url": "https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_recall/"
+        }
+      ]
+    },
+    {
+      "path": "笔记/2026-11-13.md",
+      "summary": "主要流程和 BM25/RRF 基础方向合理；有 2 处概念表述问题、1 处融合策略前提待说明，以及 2 处影响技术含义的笔误。",
+      "findings": [
+        {
+          "id": "NOTE-01",
+          "severity": "error",
+          "line": 3,
+          "title": "RAG 不是不再依赖参数化知识",
+          "explanation": "原文“不在依赖 LLM 内部的参数化知识”若按“不再依赖”理解，会把 RAG 误解成完全替代模型内在知识。原始 RAG 将参数化与非参数化记忆结合；引入外部证据不等于模型不再使用参数知识。正式第 1 题的“不只依赖”已经更准确。",
+          "suggestion": "可表达为：不只依赖 LLM 的参数化知识，而是结合外部检索证据生成答案。",
+          "sources": [
+            {
+              "title": "RAG 原始论文：参数化与非参数化记忆的结合",
+              "url": "https://arxiv.org/abs/2005.11401"
+            }
+          ]
+        },
+        {
+          "id": "NOTE-02",
+          "severity": "error",
+          "line": 52,
+          "title": "拼写纠错与模糊匹配不能直接等同",
+          "explanation": "模糊匹配允许按编辑距离等条件返回近似 term；拼写纠错要生成、选择或替换更可能正确的查询表达，也可以结合上下文语言模型。二者可以配合，但不是同一个步骤。“不算归一化”也取决于采用的术语和处理边界，不宜写成统一定义。",
+          "suggestion": "可表达为：拼写纠错常属于查询处理或改写，可利用编辑距离候选和上下文模型；模糊匹配是一种近似词项匹配方式，应与纠错和文本规范化分别说明。",
+          "sources": [
+            {
+              "title": "Elastic：Fuzzy query",
+              "url": "https://www.elastic.co/docs/reference/query-languages/query-dsl/query-dsl-fuzzy-query"
+            },
+            {
+              "title": "Elastic：Phrase suggester 与语言模型",
+              "url": "https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-suggesters#phrase-suggester"
+            }
+          ]
+        },
+        {
+          "id": "NOTE-03",
+          "severity": "qualification",
+          "line": 61,
+          "title": "缺失补 0 的含义取决于归一化方法",
+          "explanation": "补 0 可以是一种明确选择的融合策略，不能一概判错；但 z-score 中 0 表示该路均值，不是最小相关性。某已召回文档该路 z=-1，而未召回文档补 0 时，后者的该路贡献反而更高。逐文档重归一化权重也会改变融合含义，需要评测，而非通用规则。",
+          "suggestion": "明确缺失分数策略：可对候选并集补算各路分数，再采用一致的归一化；也可按所选方法定义缺省值并评测。z-score 还应处理标准差为 0 的情况。",
+          "sources": [
+            {
+              "title": "Elastic：线性融合与归一化",
+              "url": "https://www.elastic.co/docs/reference/elasticsearch/rest-apis/retrievers/linear-retriever"
+            }
+          ]
+        },
+        {
+          "id": "NOTE-04",
+          "severity": "terminology",
+          "line": 3,
+          "title": "RAG 英文全称中的 Retrieval 拼写",
+          "explanation": "原文写为 Retrival-Augmented Generation；正确词为 Retrieval。这里只标记术语笔误，不涉及排版或格式调整。",
+          "suggestion": "术语应为 Retrieval-Augmented Generation。",
+          "sources": [
+            {
+              "title": "RAG 原始论文题名",
+              "url": "https://arxiv.org/abs/2005.11401"
+            }
+          ]
+        },
+        {
+          "id": "NOTE-05",
+          "severity": "terminology",
+          "line": 28,
+          "title": "向量空间中的“举例”应指“距离”",
+          "explanation": "原文“语义相近的文本在向量空间中的举例也更近”含有改变技术含义的笔误。按度量约定，应描述为距离更小或相似度更高，而不是“举例”。",
+          "suggestion": "可表达为：在适配模型和度量的前提下，语义相关文本通常距离更小或相似度更高。",
+          "sources": [
+            {
+              "title": "pgvector：距离与相似度",
+              "url": "https://github.com/pgvector/pgvector#querying"
+            }
+          ]
+        }
+      ],
+      "references": [
+        {
+          "title": "Elastic：BM25",
+          "url": "https://www.elastic.co/docs/reference/elasticsearch/index-settings/similarity"
+        },
+        {
+          "title": "SPLADE 原始论文",
+          "url": "https://arxiv.org/abs/2107.05720"
+        }
+      ]
+    }
+  ]
+}

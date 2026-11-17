@@ -1,0 +1,95 @@
+import { NextResponse } from "next/server";
+import { ZodError, type ZodType } from "zod";
+import { getAuth } from "./auth";
+import { AppError } from "./errors";
+
+export type Identity = { id: string; name: string; email: string };
+export async function identity(request: Request): Promise<Identity> {
+  const auth = await getAuth();
+  const session = await auth.api.getSession({ headers: request.headers });
+  if (!session) throw new AppError(401, "请先登录。", "UNAUTHENTICATED");
+  return {
+    id: session.user.id,
+    name: session.user.name,
+    email: session.user.email,
+  };
+}
+export function checkOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  const allowedOrigins = [
+    process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    ...(process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "").split(","),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => new URL(value).origin);
+  if (!origin || !allowedOrigins.includes(origin))
+    throw new AppError(
+      403,
+      "请求来源无效，请从应用页面操作。",
+      "INVALID_ORIGIN",
+    );
+}
+export async function body<T>(
+  request: Request,
+  schema: ZodType<T>,
+  limit = 400_000,
+): Promise<T> {
+  if (Number(request.headers.get("content-length") ?? 0) > limit)
+    throw new AppError(413, "内容过长，请分批导入。");
+  const reader = request.body?.getReader();
+  if (!reader) throw new AppError(400, "缺少请求内容。");
+  let length = 0;
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    length += value.length;
+    if (length > limit) {
+      await reader.cancel();
+      throw new AppError(413, "内容过长，请分批导入。");
+    }
+    chunks.push(value);
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new AppError(400, "请求格式不正确。");
+  }
+  return schema.parse(data);
+}
+export function failure(error: unknown) {
+  if (error instanceof AppError)
+    return NextResponse.json(
+      { error: error.message, code: error.code },
+      { status: error.status },
+    );
+  if (error instanceof ZodError)
+    return NextResponse.json(
+      { error: error.issues[0]?.message ?? "输入不正确。", code: "VALIDATION" },
+      { status: 400 },
+    );
+  // Do not log request payloads, provider responses or credentials.
+  console.error(
+    "Request failed:",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  return NextResponse.json(
+    { error: "操作未完成，请稍后再试。", code: "INTERNAL" },
+    { status: 500 },
+  );
+}
+export function route(
+  handler: (request: Request, user: Identity) => Promise<Response>,
+  mutate = false,
+) {
+  return async (request: Request) => {
+    try {
+      if (mutate) checkOrigin(request);
+      return await handler(request, await identity(request));
+    } catch (error) {
+      return failure(error);
+    }
+  };
+}
