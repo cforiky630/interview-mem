@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, gt, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { route } from "@/server/api";
 import { getDb } from "@/db";
@@ -22,6 +22,7 @@ export const GET = route(async (request, user) => {
     .where(
       and(
         gt(decks.publishedVersion, 0),
+        isNull(decks.deletedAt),
         shared
           ? and(
               eq(decks.id, shared),

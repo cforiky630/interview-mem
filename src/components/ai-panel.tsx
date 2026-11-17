@@ -57,7 +57,9 @@ export function AiPanel({
   useEffect(() => {
     let canceled = false;
     setLoading(true);
-    void api<Conversation[]>(`/api/chat?questionId=${question.id}`)
+    void api<Conversation[]>(`/api/chat?questionId=${question.id}`, undefined, {
+      userId: data.user.id,
+    })
       .then((rows) => {
         if (!canceled) setThreads(rows);
       })
@@ -71,7 +73,7 @@ export function AiPanel({
       canceled = true;
       abort.current?.abort();
     };
-  }, [question.id]);
+  }, [question.id, data.user.id]);
   useEffect(() => {
     scroll.current?.scrollTo({
       top: scroll.current.scrollHeight,
@@ -134,7 +136,10 @@ export function AiPanel({
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Workspace-User": data.user.id,
+        },
         body: JSON.stringify({
           questionId: question.id,
           ...(conversationId ? { conversationId } : {}),
@@ -181,6 +186,8 @@ export function AiPanel({
       }
       const rows = await api<Conversation[]>(
         `/api/chat?questionId=${question.id}`,
+        undefined,
+        { userId: data.user.id, signal: controller.signal },
       );
       setThreads(rows);
       const current = rows.find((t) => t.id === resolvedId);
@@ -347,7 +354,6 @@ export function AiPanel({
                       data.decks.find(
                         (d) => d.isOwner && d.id === question.deckId,
                       ) ?? data.decks.find((d) => d.isOwner);
-                    if (!target) return;
                     const previousQuestion =
                       items
                         .slice(0, items.indexOf(message))
@@ -356,7 +362,7 @@ export function AiPanel({
                     const response = await mutate("/api/questions", {
                       action: "copy",
                       id: question.id,
-                      deckId: target.id,
+                      deckId: target?.id ?? null,
                       title: `${question.title} · ${previousQuestion}`.slice(
                         0,
                         200,

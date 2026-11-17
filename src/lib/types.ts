@@ -16,7 +16,8 @@ export type StoredCard = {
 };
 export type QuestionView = {
   id: string;
-  deckId: string;
+  sourceQuestionId?: string;
+  deckId: string | null;
   parentId: string | null;
   title: string;
   answer: string;
@@ -52,6 +53,7 @@ export type DeckView = {
   newCount: number;
   updatedAt: string;
   releaseSummary: string;
+  sourceDeleted: boolean;
 };
 export type CatalogDeck = {
   id: string;
@@ -65,6 +67,14 @@ export type CatalogDeck = {
   isOwner: boolean;
   updatedAt: string;
 };
+export type TrashedQuestion = {
+  id: string;
+  title: string;
+  deckId: string | null;
+  deckTitle: string;
+  deletedAt: string;
+  expiresAt: string;
+};
 export type Workspace = {
   user: { id: string; name: string; email: string };
   decks: DeckView[];
@@ -73,6 +83,7 @@ export type Workspace = {
     due: number;
     new: number;
     reviewedToday: number;
+    newLearnedToday: number;
     totalReviews: number;
     streak: number;
     total: number;
@@ -95,6 +106,7 @@ export type Workspace = {
     baseUrl: string;
     model: string;
     dailyGoal: number;
+    dailyNewLimit: number;
     theme: string;
     timeZone: string;
   };

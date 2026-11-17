@@ -30,10 +30,12 @@ export default defineConfig({
         command:
           "node node_modules/next/dist/bin/next dev --webpack --port 3107 -H 127.0.0.1",
         url: "http://localhost:3107",
-        reuseExistingServer: true,
+        reuseExistingServer: false,
         timeout: 90_000,
         env: {
           BETTER_AUTH_URL: "http://localhost:3107",
+          DATABASE_URL: "",
+          PGHOST: "",
           LOCAL_DATABASE_PATH: ".data/e2e-postgres",
           NEXT_DIST_DIR: ".next-e2e",
           NEXT_TELEMETRY_DISABLED: "1",

@@ -63,6 +63,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("preferences"),
     dailyGoal: z.number().int().min(1).max(200),
+    dailyNewLimit: z.number().int().min(0).max(50).optional(),
     theme: z.enum(["light", "dark"]),
     timeZone: z
       .string()
@@ -130,7 +131,11 @@ export const POST = route(async (request, user) => {
       encryptedKey: data.key
         ? encryptKey(data.key, user.id)
         : existing!.encryptedKey,
-      keyHint: data.key ? data.key.slice(-4) : existing!.keyHint,
+      keyHint: data.key
+        ? data.key.length > 4
+          ? data.key.slice(-4)
+          : ""
+        : existing!.keyHint,
       provider: AI_PROTOCOL,
       baseUrl: data.baseUrl,
       model: data.model,
@@ -156,6 +161,9 @@ export const POST = route(async (request, user) => {
       .update(preferences)
       .set({
         dailyGoal: data.dailyGoal,
+        ...(data.dailyNewLimit === undefined
+          ? {}
+          : { dailyNewLimit: data.dailyNewLimit }),
         theme: data.theme,
         timeZone: data.timeZone,
       })

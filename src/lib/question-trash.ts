@@ -1,0 +1,5 @@
+export const TRASH_RETENTION_DAYS = 30;
+export const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+export function questionExpiresAt(deletedAt: Date | string) {
+  return new Date(new Date(deletedAt).getTime() + TRASH_RETENTION_MS);
+}

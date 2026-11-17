@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   decks,
@@ -72,7 +72,13 @@ export async function ownedDeck(userId: string, deckId: string) {
   const [deck] = await db
     .select()
     .from(decks)
-    .where(and(eq(decks.id, deckId), eq(decks.ownerId, userId)));
+    .where(
+      and(
+        eq(decks.id, deckId),
+        eq(decks.ownerId, userId),
+        isNull(decks.deletedAt),
+      ),
+    );
   if (!deck) throw new AppError(404, "题库不存在或没有编辑权限。");
   return deck;
 }
@@ -83,34 +89,39 @@ export async function accessibleQuestion(
 ): Promise<PublishedQuestion & { isOwner: boolean }> {
   const db = await getDb();
   const [row] = await db
-    .select({ question: questions, deck: decks })
+    .select()
     .from(questions)
-    .innerJoin(decks, eq(questions.deckId, decks.id))
     .where(eq(questions.id, questionId));
   if (!row) throw new AppError(404, "题目不存在或无权访问。");
-  if (row.deck.ownerId === userId)
-    return { ...publishedQuestion(row.question), isOwner: true };
-  const [subscription] = await db
-    .select()
+  if (row.ownerId === userId) {
+    if (row.deletedAt || row.purgedAt)
+      throw new AppError(404, "题目已删除或不可访问。");
+    return { ...publishedQuestion(row), isOwner: true };
+  }
+  // A published question keeps its stable identity when the author removes a category or deletes the draft.
+  const snapshots = await db
+    .select({ release: releases })
     .from(subscriptions)
+    .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+    .innerJoin(
+      releases,
+      and(
+        eq(releases.deckId, decks.id),
+        eq(releases.version, decks.publishedVersion),
+      ),
+    )
     .where(
       and(
         eq(subscriptions.userId, userId),
-        eq(subscriptions.deckId, row.deck.id),
+        sql`${releases.questions} @> ${JSON.stringify([{ id: questionId }])}::jsonb`,
       ),
-    );
-  if (!subscription) throw new AppError(404, "请先订阅题库再学习。");
-  const [release] = await db
-    .select()
-    .from(releases)
-    .where(
-      and(
-        eq(releases.deckId, row.deck.id),
-        eq(releases.version, row.deck.publishedVersion),
-      ),
-    );
-  const question = release?.questions.find((q) => q.id === questionId);
-  if (!question) throw new AppError(404, "这道题尚未发布。");
+    )
+    .orderBy(releases.deckId)
+    .limit(1);
+  const question = snapshots[0]?.release.questions.find(
+    (q) => q.id === questionId,
+  );
+  if (!question) throw new AppError(404, "这道题尚未发布或无权访问。");
   return { ...question, isOwner: false };
 }
 
@@ -121,7 +132,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     db
       .select()
       .from(decks)
-      .where(eq(decks.ownerId, identity.id))
+      .where(and(eq(decks.ownerId, identity.id), isNull(decks.deletedAt)))
       .orderBy(decks.createdAt),
     db
       .select({ deck: decks, subscription: subscriptions, owner: users.name })
@@ -148,20 +159,20 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       .where(eq(credentials.userId, identity.id)),
   ]);
   const timeZone = prefRows[0]?.timeZone ?? "Asia/Shanghai";
+  const today = dateKey(new Date(), timeZone);
   const dayExpression = sql<string>`to_char(${reviewEvents.createdAt} at time zone ${timeZone}, 'YYYY-MM-DD')`;
   const recentCutoff = new Date(Date.now() - 30 * 86400_000);
   const [drafts, activityRows, aggregateRows, published] = await Promise.all([
-    own.length
-      ? db
-          .select()
-          .from(questions)
-          .where(
-            inArray(
-              questions.deckId,
-              own.map((d) => d.id),
-            ),
-          )
-      : [],
+    db
+      .select()
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, identity.id),
+          isNull(questions.deletedAt),
+          isNull(questions.purgedAt),
+        ),
+      ),
     db
       .select({ date: dayExpression, count: sql<number>`count(*)::int` })
       .from(reviewEvents)
@@ -172,6 +183,8 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         total: sql<number>`count(*)::int`,
         recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
         remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
+        today: sql<number>`count(distinct case when ${dayExpression} = ${today} then ${reviewEvents.questionId} end)::int`,
+        newToday: sql<number>`count(distinct case when ${dayExpression} = ${today} and ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
       })
       .from(reviewEvents)
       .where(eq(reviewEvents.userId, identity.id)),
@@ -202,7 +215,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
   const deckViews: DeckView[] = [];
   const now = Date.now();
   function append(
-    deck: typeof decks.$inferSelect,
+    deck: typeof decks.$inferSelect | null,
     qs: PublishedQuestion[],
     isOwner: boolean,
     ownerName: string,
@@ -216,26 +229,32 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       return s?.fsrs && new Date(String(s.fsrs.due)).getTime() <= now;
     }).length;
     const newCount = eligible.filter((q) => !stateMap.get(q.id)?.fsrs).length;
-    const release = releaseMap.get(deck.id);
-    const title = isOwner ? deck.title : (release?.title ?? deck.title);
-    deckViews.push({
-      id: deck.id,
-      title,
-      description: isOwner
-        ? deck.description
-        : (release?.description ?? deck.description),
-      color: deck.color,
-      visibility: deck.visibility,
-      isOwner,
-      ownerName,
-      publishedVersion: deck.publishedVersion,
-      seenVersion,
-      count: active.length,
-      due,
-      newCount,
-      updatedAt: deck.updatedAt.toISOString(),
-      releaseSummary,
-    });
+    const release = deck ? releaseMap.get(deck.id) : undefined;
+    const title = deck
+      ? isOwner
+        ? deck.title
+        : (release?.title ?? deck.title)
+      : "未分类";
+    if (deck)
+      deckViews.push({
+        id: deck.id,
+        title,
+        description: isOwner
+          ? deck.description
+          : (release?.description ?? deck.description),
+        color: deck.color,
+        visibility: deck.visibility,
+        isOwner,
+        ownerName,
+        publishedVersion: deck.publishedVersion,
+        seenVersion,
+        count: active.length,
+        due,
+        newCount,
+        updatedAt: deck.updatedAt.toISOString(),
+        releaseSummary,
+        sourceDeleted: !!deck.deletedAt,
+      });
     for (const q of qs) {
       const s = stateMap.get(q.id);
       questionViews.push({
@@ -259,6 +278,13 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       identity.name,
       deck.publishedVersion,
     );
+  append(
+    null,
+    drafts.filter((q) => !q.deckId).map(publishedQuestion),
+    true,
+    identity.name,
+    0,
+  );
   for (const item of subscribed) {
     const release = releaseMap.get(item.deck.id);
     if (release)
@@ -272,7 +298,6 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       );
   }
   const pref = prefRows[0];
-  const today = dateKey(new Date(), timeZone);
   const counts = new Map(activityRows.map((row) => [row.date, row.count]));
   let streak = 0;
   const cursor = new Date(`${today}T12:00:00Z`);
@@ -289,9 +314,13 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     decks: deckViews,
     questions: questionViews,
     stats: {
-      due: deckViews.reduce((n, d) => n + d.due, 0),
-      new: deckViews.reduce((n, d) => n + d.newCount, 0),
-      reviewedToday: counts.get(today) ?? 0,
+      due: active.filter(
+        (q) =>
+          q.answer.trim() && q.fsrs && new Date(q.fsrs.due).getTime() <= now,
+      ).length,
+      new: active.filter((q) => q.answer.trim() && !q.fsrs).length,
+      reviewedToday: aggregate.today,
+      newLearnedToday: aggregate.newToday,
       totalReviews: aggregate.total,
       streak,
       total: active.length,
@@ -315,7 +344,8 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       provider: "openai-compatible",
       baseUrl: keyRows[0]?.baseUrl ?? "https://api.deepseek.com",
       model: keyRows[0]?.model ?? "deepseek-flash",
-      dailyGoal: pref?.dailyGoal ?? 20,
+      dailyGoal: pref?.dailyGoal ?? 5,
+      dailyNewLimit: pref?.dailyNewLimit ?? 3,
       theme: pref?.theme ?? "light",
       timeZone,
     },

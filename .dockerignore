@@ -10,3 +10,11 @@ node_modules
 test-results
 playwright-report
 *.log
+*.dump
+.idea
+*.tsbuildinfo
+docs
+tests
+content
+scripts
+README.md

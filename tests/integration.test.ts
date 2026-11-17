@@ -7,6 +7,7 @@ import dns from "node:dns/promises";
 Object.assign(process.env, { NODE_ENV: "test" });
 process.env.LOCAL_DATABASE_PATH = ":memory:";
 delete process.env.DATABASE_URL;
+delete process.env.PGHOST;
 process.env.BETTER_AUTH_SECRET = randomBytes(32).toString("hex");
 process.env.KEY_ENCRYPTION_SECRET = randomBytes(32).toString("hex");
 process.env.BETTER_AUTH_URL = "http://localhost:3000";
@@ -21,6 +22,7 @@ const questionRoute = await import("../src/app/api/questions/route");
 const reviewRoute = await import("../src/app/api/reviews/route");
 const settings = await import("../src/app/api/settings/route");
 const chat = await import("../src/app/api/chat/route");
+const aiAnswer = await import("../src/app/api/questions/answer/route");
 const exporter = await import("../src/app/api/export/route");
 type UserContext = { cookie: string; id: string };
 async function register(name: string): Promise<UserContext> {
@@ -723,6 +725,410 @@ test("written reviews: preserve private attempts, enforce idempotency and keep s
     }),
   );
   assert.equal(response.status, 400);
+});
+
+let emptyQuestions: { id: string; title: string }[];
+let bobEmptyId: string;
+test("question-only import: store missing answers, deduplicate answered titles and retain input kind on retries", async () => {
+  const raw = "什么是乐观锁？\n1. 如何避免死锁？\n- 解释比较并交换。";
+  const batchId = randomUUID();
+  const payload = { deckId, batchId, raw, inputType: "questions" };
+  let response = await importer.POST(request(alice, "/api/import", payload));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).added, 3);
+  assert.equal(
+    (await importer.POST(request(alice, "/api/import", payload))).status,
+    200,
+  );
+  assert.equal(
+    (
+      await importer.POST(
+        request(alice, "/api/import", { ...payload, inputType: "qa" }),
+      )
+    ).status,
+    409,
+  );
+  const state = await snapshot(alice);
+  emptyQuestions = state.questions.filter((q: { title: string }) =>
+    ["什么是乐观锁？", "如何避免死锁？", "解释比较并交换。"].includes(q.title),
+  );
+  assert.equal(emptyQuestions.length, 3);
+  for (const q of emptyQuestions) {
+    const stored = state.questions.find(
+      (item: { id: string }) => item.id === q.id,
+    );
+    assert.equal(stored.answer, "");
+    assert.equal(stored.needsEditing, true);
+    assert.equal(stored.fsrs, null);
+  }
+  await importer.POST(
+    request(alice, "/api/import", {
+      deckId,
+      batchId: randomUUID(),
+      raw: "## 已经有完整答案的题目\n已有参考答案。",
+    }),
+  );
+  response = await importer.POST(
+    request(alice, "/api/import", {
+      deckId,
+      batchId: randomUUID(),
+      raw: "已经有完整答案的题目\n什么是乐观锁？",
+      inputType: "questions",
+    }),
+  );
+  assert.deepEqual(await response.json(), { added: 0, duplicates: 2 });
+  assert.equal(
+    (await snapshot(alice)).questions.find(
+      (q: { title: string }) => q.title === "已经有完整答案的题目",
+    ).answer,
+    "已有参考答案。",
+  );
+  const exported = await (
+    await exporter.GET(request(alice, "/api/export"))
+  ).json();
+  const receipt = exported.imports.find(
+    (item: { id: string }) => item.id === batchId,
+  );
+  assert.equal(receipt.inputType, "questions");
+  assert.equal(receipt.raw, raw);
+  response = await importer.POST(
+    request(alice, "/api/import", {
+      deckId,
+      batchId: randomUUID(),
+      raw: "长".repeat(201),
+      inputType: "questions",
+    }),
+  );
+  assert.equal(response.status, 400);
+  response = await importer.POST(
+    request(alice, "/api/import", {
+      deckId,
+      batchId: randomUUID(),
+      raw: "题目",
+      inputType: "questions",
+      mode: "ai",
+    }),
+  );
+  assert.equal(response.status, 400);
+});
+
+test("AI answer drafts: per-user providers generate without saving; explicit save fills the inbox item", async () => {
+  const bobDeck = (await snapshot(bob)).decks.find(
+    (d: { isOwner: boolean }) => d.isOwner,
+  ).id;
+  await importer.POST(
+    request(bob, "/api/import", {
+      deckId: bobDeck,
+      batchId: randomUUID(),
+      raw: "Bob 的私有并发问题",
+      inputType: "questions",
+    }),
+  );
+  bobEmptyId = (await snapshot(bob)).questions.find(
+    (q: { title: string }) => q.title === "Bob 的私有并发问题",
+  ).id;
+  const connections = new Map([
+    [
+      alice.id,
+      {
+        baseUrl: "https://alice-answer.example/v1",
+        model: "alice-answer-model",
+        key: "fake-alice-answer-key",
+      },
+    ],
+    [
+      bob.id,
+      {
+        baseUrl: "https://bob-answer.example/v1",
+        model: "bob-answer-model",
+        key: "fake-bob-answer-key",
+      },
+    ],
+  ]);
+  for (const owner of [alice, bob])
+    assert.equal(
+      (
+        await settings.POST(
+          request(owner, "/api/settings", {
+            action: "saveConnection",
+            ...connections.get(owner.id),
+          }),
+        )
+      ).status,
+      200,
+    );
+  const dnsMock = mock.method(dns, "lookup", async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  const calls: string[] = [];
+  const fetchMock = mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit) => {
+      const owner = String(url).includes("alice-answer") ? alice : bob;
+      const connection = connections.get(owner.id)!;
+      const payload = JSON.parse(String(init?.body));
+      assert.equal(String(url), `${connection.baseUrl}/chat/completions`);
+      assert.equal(payload.stream, false);
+      assert.equal(payload.model, connection.model);
+      assert.equal(
+        (init?.headers as Record<string, string>).Authorization,
+        `Bearer ${connection.key}`,
+      );
+      assert.ok(
+        !JSON.stringify(payload).includes(
+          owner.id === alice.id ? "Bob 的私有" : "什么是乐观锁",
+        ),
+      );
+      calls.push(owner.id);
+      return Response.json({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: `## 核心回答\n${owner.id === alice.id ? "Alice" : "Bob"} 生成的参考答案。`,
+            },
+            finish_reason: "stop",
+          },
+        ],
+      });
+    },
+  );
+  try {
+    const q = emptyQuestions[0];
+    const results = await Promise.all([
+      aiAnswer.POST(
+        request(alice, "/api/questions/answer", {
+          questionId: q.id,
+          expectedRevision: 1,
+          instructions: "用 Java 举例",
+        }),
+      ),
+      aiAnswer.POST(
+        request(bob, "/api/questions/answer", {
+          questionId: bobEmptyId,
+          expectedRevision: 1,
+        }),
+      ),
+    ]);
+    for (const result of results) {
+      assert.equal(result.status, 200);
+      assert.match(result.headers.get("Cache-Control")!, /private.*no-store/);
+    }
+    const draft = await results[0].json();
+    assert.equal(draft.questionRevision, 1);
+    assert.ok(draft.answer.includes("Alice"));
+    await results[1].json();
+    let current = (await snapshot(alice)).questions.find(
+      (item: { id: string }) => item.id === q.id,
+    );
+    assert.equal(
+      current.answer,
+      "",
+      "generation must never write the reference answer",
+    );
+    assert.equal(current.needsEditing, true);
+    const saved = await questionRoute.POST(
+      request(alice, "/api/questions", {
+        action: "edit",
+        id: q.id,
+        expectedRevision: 1,
+        title: q.title,
+        answer: draft.answer,
+        tags: [],
+        major: false,
+      }),
+    );
+    assert.equal(saved.status, 200);
+    current = (await snapshot(alice)).questions.find(
+      (item: { id: string }) => item.id === q.id,
+    );
+    assert.equal(current.answer, draft.answer);
+    assert.equal(current.needsEditing, false);
+    assert.equal(current.revision, 2);
+    assert.ok(
+      !(await snapshot(bob)).questions.some((item: { answer: string }) =>
+        item.answer.includes("Alice 生成"),
+      ),
+    );
+    const existing = await aiAnswer.POST(
+      request(alice, "/api/questions/answer", {
+        questionId: q.id,
+        expectedRevision: 2,
+      }),
+    );
+    assert.equal(existing.status, 409);
+    assert.equal((await existing.json()).code, "ANSWER_EXISTS");
+    assert.equal(calls.length, 2);
+    const second = emptyQuestions[1];
+    const beforeEdit = await aiAnswer.POST(
+      request(alice, "/api/questions/answer", {
+        questionId: second.id,
+        expectedRevision: 1,
+      }),
+    );
+    const oldDraft = await beforeEdit.json();
+    await questionRoute.POST(
+      request(alice, "/api/questions", {
+        action: "edit",
+        id: second.id,
+        expectedRevision: 1,
+        title: second.title + "（已修改）",
+        answer: "",
+        tags: [],
+        major: false,
+      }),
+    );
+    const conflict = await questionRoute.POST(
+      request(alice, "/api/questions", {
+        action: "edit",
+        id: second.id,
+        expectedRevision: 1,
+        title: second.title,
+        answer: oldDraft.answer,
+        tags: [],
+        major: false,
+      }),
+    );
+    assert.equal(conflict.status, 409);
+    assert.equal(
+      (await snapshot(alice)).questions.find(
+        (item: { id: string }) => item.id === second.id,
+      ).answer,
+      "",
+    );
+  } finally {
+    fetchMock.mock.restore();
+    dnsMock.mock.restore();
+  }
+});
+
+test("AI answer drafts: deny foreign questions, subscribers, stale revisions and unsafe model results", async () => {
+  const q = emptyQuestions[2];
+  const payload = { questionId: q.id, expectedRevision: 1 };
+  assert.equal(
+    (
+      await aiAnswer.POST(
+        new Request("http://localhost:3000/api/questions/answer", {
+          method: "POST",
+          headers: {
+            origin: "http://localhost:3000",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }),
+      )
+    ).status,
+    401,
+  );
+  assert.equal(
+    (await aiAnswer.POST(request(bob, "/api/questions/answer", payload)))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await aiAnswer.POST(
+        request(bob, "/api/questions/answer", {
+          questionId,
+          expectedRevision: 2,
+        }),
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await aiAnswer.POST(
+        request(alice, "/api/questions/answer", {
+          ...payload,
+          expectedRevision: 2,
+        }),
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await aiAnswer.POST(
+        request(
+          alice,
+          "/api/questions/answer",
+          payload,
+          "https://evil.example",
+        ),
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await aiAnswer.POST(
+        request(alice, "/api/questions/answer", {
+          ...payload,
+          instructions: "x".repeat(1001),
+        }),
+      )
+    ).status,
+    400,
+  );
+  const dnsMock = mock.method(dns, "lookup", async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  const responses = [
+    new Response("not JSON"),
+    Response.json({
+      choices: [{ message: { role: "assistant", content: "" } }],
+    }),
+    Response.json({
+      choices: [
+        {
+          message: { role: "assistant", content: "partial" },
+          finish_reason: "length",
+        },
+      ],
+    }),
+    Response.json({
+      choices: [{ message: { role: "user", content: "wrong role" } }],
+    }),
+    new Response("provider-private-debug-value", { status: 401 }),
+    Response.json({
+      choices: [
+        {
+          message: { role: "assistant", content: "最终有效草稿。" },
+          finish_reason: "stop",
+        },
+      ],
+    }),
+  ];
+  const fetchMock = mock.method(globalThis, "fetch", async () =>
+    responses.shift()!,
+  );
+  try {
+    for (const expected of [502, 502, 502, 502, 400, 200]) {
+      const response = await aiAnswer.POST(
+        request(alice, "/api/questions/answer", payload),
+      );
+      assert.equal(response.status, expected);
+      const text = await response.text();
+      assert.ok(!text.includes("provider-private-debug-value"));
+      assert.ok(!text.includes("fake-alice-answer-key"));
+    }
+    assert.equal(
+      responses.length,
+      0,
+      "errors must release the per-user AI slot",
+    );
+    assert.equal(
+      (await snapshot(alice)).questions.find(
+        (item: { id: string }) => item.id === q.id,
+      ).answer,
+      "",
+    );
+  } finally {
+    fetchMock.mock.restore();
+    dnsMock.mock.restore();
+  }
 });
 
 test("registration: the approved eight-character minimum is enforced", async () => {

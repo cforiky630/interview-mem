@@ -10,12 +10,17 @@ export class RequestError extends Error {
 export async function api<T = Record<string, unknown>>(
   url: string,
   data?: unknown,
+  options: { userId?: string; signal?: AbortSignal } = {},
 ): Promise<T> {
   const response = await fetch(url, {
     method: data === undefined ? "GET" : "POST",
-    headers: data === undefined ? {} : { "Content-Type": "application/json" },
+    headers: {
+      ...(data === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(options.userId ? { "X-Workspace-User": options.userId } : {}),
+    },
     body: data === undefined ? undefined : JSON.stringify(data),
     cache: "no-store",
+    signal: options.signal,
   });
   const result = await response.json();
   if (!response.ok)

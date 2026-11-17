@@ -1,13 +1,6 @@
 "use client";
 import { useState, type FormEvent } from "react";
-import {
-  ArrowRight,
-  BookOpen,
-  Check,
-  Loader2,
-  Sparkles,
-  Quote,
-} from "lucide-react";
+import { ArrowRight, BookOpen, Loader2 } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { Button } from "./ui/button";
 import { NotebookSketch } from "./sketch";
@@ -30,11 +23,13 @@ export function AuthScreen() {
           : await authClient.signIn.email({ email, password });
       if (result.error)
         setError(
-          result.error.code === "INVALID_EMAIL_OR_PASSWORD"
-            ? "邮箱或密码不正确。"
-            : result.error.code === "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"
-              ? "邮箱已经注册，可以直接登录。"
-              : (result.error.message ?? "暂时无法登录，请重试。"),
+          result.error.status === 429
+            ? "操作太频繁，请稍后再试。"
+            : result.error.code === "INVALID_EMAIL_OR_PASSWORD"
+              ? "邮箱或密码不正确。"
+              : result.error.code === "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"
+                ? "邮箱已经注册，可以直接登录。"
+                : (result.error.message ?? "暂时无法登录，请重试。"),
         );
     } catch {
       setError("连接失败，请检查网络后重试。");

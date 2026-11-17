@@ -1,8 +1,35 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseQuestions } from "../src/lib/importer";
+import { parseQuestions, parseQuestionTitles } from "../src/lib/importer";
 import { contentHash, decryptKey, encryptKey } from "../src/server/crypto";
 import { schedule, reviewInsight } from "../src/server/scheduler";
+
+test("question-only import: plain lines, numbering and Markdown titles stay separate and unanswered", () => {
+  const parsed = parseQuestions(
+    "什么是闭包？\r\n\r\n1. 为什么需要索引？\n- 请说明事务隔离。\n## Q3: 如何处理并发？\n二、谈谈缓存失效。\n+ [ ] Java 的 volatile 有什么作用？\n1.2 版与 1.3 版有什么区别？",
+    "questions",
+  );
+  assert.deepEqual(
+    parsed.map((q) => q.title),
+    [
+      "什么是闭包？",
+      "为什么需要索引？",
+      "请说明事务隔离。",
+      "如何处理并发？",
+      "谈谈缓存失效。",
+      "Java 的 volatile 有什么作用？",
+      "1.2 版与 1.3 版有什么区别？",
+    ],
+  );
+  assert.ok(parsed.every((q) => q.answer === "" && q.needsEditing));
+  assert.deepEqual(parseQuestionTitles(" \n\r\n"), []);
+  const long = "原始问题".repeat(60);
+  assert.equal(
+    parseQuestionTitles(long)[0].title,
+    long,
+    "long titles must be validated, never silently truncated",
+  );
+});
 
 test("import: split Markdown questions and preserve code, nested headings and lists", () => {
   const raw =
@@ -26,6 +53,15 @@ test("import: Q/A and numbered questions keep answer lists together", () => {
   );
   assert.equal(parsed.length, 2);
   assert.ok(parsed[0].answer.includes("2. 再验证查询"));
+});
+
+test("import: shorter fences inside a longer code block cannot expose fake main questions", () => {
+  const raw =
+    "## 真正的第一题？\n解释。\n````md\n```text\n## 代码中的假问题？\n```\n````\n\n## 真正的第二题？\n第二个答案。";
+  const cards = parseQuestions(raw, "qa", { preserveSource: true });
+  assert.equal(cards.length, 2);
+  assert.equal(cards[1].title, "真正的第二题？");
+  assert.ok(cards[0].answer.includes("代码中的假问题"));
 });
 test("import: missing answers are put in inbox; CRLF, empty input and tables survive", () => {
   assert.deepEqual(parseQuestions("  "), []);

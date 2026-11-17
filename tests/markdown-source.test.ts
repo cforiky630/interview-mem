@@ -44,3 +44,14 @@ test("source Markdown: formulas, Obsidian callouts and links render; code stays 
     normalizedNoteTitle("关联题？"),
   );
 });
+
+test("source Markdown: imported answers and AI text cannot enable HTML or trusted math commands", () => {
+  const source =
+    "<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[click](javascript:alert%281%29)\n\n$\\href{javascript:alert(1)}{click}$\n\n$\\includegraphics{https://tracking.example/secret}$";
+  const html = renderToStaticMarkup(
+    createElement(Markdown, { children: source }),
+  );
+  assert.ok(!/<(?:script|iframe|img)\b/i.test(html));
+  assert.ok(!/(?:href|src)=["'](?:javascript:|data:)/i.test(html));
+  assert.ok(!html.includes('src="https://tracking.example'));
+});

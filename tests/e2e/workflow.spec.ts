@@ -1,6 +1,6 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
-test("register, import automatically, select text, write a note and review", async ({
+test("register, preview imports, select text, write a note and review", async ({
   page,
 }, testInfo) => {
   const errors: string[] = [];
@@ -28,23 +28,18 @@ test("register, import automatically, select text, write a note and review", asy
   await page.screenshot({
     path: `test-results/dashboard-${testInfo.project.name}.png`,
     fullPage: true,
+    animations: "disabled",
   });
   await page.getByRole("button", { name: "导入面试题", exact: true }).click();
   const textarea = page.getByLabel("面试资料");
-  await textarea.evaluate((element) => {
-    const clipboard = new DataTransfer();
-    clipboard.setData(
-      "text/plain",
-      "## 为什么需要稳定的标识？\n稳定标识用于把个人复习记录和持续更新的题目关联起来。\n\n版本改变，关联保持不变。\n\n|字段|用途|\n|---|---|\n|ID|关联历史|\n\n> [!question] 面试追问\n> **Q：内容更新后怎么关联？**\n> **A：** 用相同 ID 关联新的版本。\n>\n> **Q：个人笔记放在哪里？**\n> **A：** 单独按用户保存。\n\n## 如何保持独立笔记？\n将个人笔记与发布内容分开保存。",
-    );
-    element.dispatchEvent(
-      new ClipboardEvent("paste", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: clipboard,
-      }),
-    );
-  });
+  await textarea.fill(
+    "## 为什么需要稳定的标识？\n稳定标识用于把个人复习记录和持续更新的题目关联起来。\n\n版本改变，关联保持不变。\n\n|字段|用途|\n|---|---|\n|ID|关联历史|\n\n> [!question] 面试追问\n> **Q：内容更新后怎么关联？**\n> **A：** 用相同 ID 关联新的版本。\n>\n> **Q：个人笔记放在哪里？**\n> **A：** 单独按用户保存。\n\n## 如何保持独立笔记？\n将个人笔记与发布内容分开保存。",
+  );
+  await page.getByRole("button", { name: "解析并预览", exact: true }).click();
+  await expect(page.locator(".import-review-card")).toHaveCount(2);
+  await page
+    .getByRole("button", { name: "确认入库 2 道", exact: true })
+    .click();
   await expect(
     page.getByRole("status").filter({ hasText: "已入库 2 道题" }),
   ).toBeVisible({ timeout: 30_000 });
@@ -126,6 +121,7 @@ test("register, import automatically, select text, write a note and review", asy
   await page.screenshot({
     path: `test-results/followups-${testInfo.project.name}.png`,
     fullPage: true,
+    animations: "disabled",
   });
   await page.getByRole("tab", { name: "笔记", exact: true }).click();
   await page.getByLabel("个人笔记").fill("这是我的补充，更新题库时应保留。");
@@ -164,8 +160,12 @@ test("register, import automatically, select text, write a note and review", asy
     .getByRole("button", { name: "已合并，保存到最新版本", exact: true })
     .click();
   await expect(page.locator(".note-conflict")).toHaveCount(0);
-  await page.getByLabel("更多题目操作").click();
+  await page.getByLabel("更多题目操作", { exact: true }).click();
   await page.getByRole("button", { name: "编辑题目", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "编辑题目", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "文档", exact: true }).click();
   const editor = page.getByLabel("答案编辑器");
   await expect(editor.locator("table")).toContainText("关联历史");
   await editor.click();
@@ -190,6 +190,7 @@ test("register, import automatically, select text, write a note and review", asy
       ? page.locator(".mobile-bottom-nav")
       : page.locator(".sidebar");
   await nav.getByRole("button", { name: "我的题库", exact: true }).click();
+  await page.getByRole("tab", { name: "全部题目", exact: true }).click();
   await page.getByRole("button", { name: /^为什么需要稳定的标识？/ }).click();
   await page.getByRole("button", { name: "开始答题", exact: true }).click();
   await expect(page.getByLabel("本题作答", { exact: true })).toHaveValue(
@@ -201,6 +202,7 @@ test("register, import automatically, select text, write a note and review", asy
   await page.screenshot({
     path: `test-results/answer-${testInfo.project.name}.png`,
     fullPage: true,
+    animations: "disabled",
   });
   await page.getByRole("button", { name: /记得/ }).click();
   await expect(
@@ -214,6 +216,7 @@ test("register, import automatically, select text, write a note and review", asy
   await page.screenshot({
     path: `test-results/completed-${testInfo.project.name}.png`,
     fullPage: true,
+    animations: "disabled",
   });
   expect(
     await page.evaluate(

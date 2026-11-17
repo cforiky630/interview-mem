@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { imports, questions, decks } from "@/db/schema";
 import { body, route } from "@/server/api";
@@ -14,6 +14,7 @@ const schema = z.object({
   batchId: z.string().uuid(),
   deckId: z.string().uuid(),
   raw: z.string().trim().min(1).max(100_000),
+  inputType: z.enum(["qa", "questions"]).default("qa"),
   mode: z.enum(["rules", "ai"]).default("rules"),
 });
 const aiSchema = z.object({
@@ -30,6 +31,8 @@ const aiSchema = z.object({
 });
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);
+  if (data.inputType === "questions" && data.mode === "ai")
+    throw new AppError(400, "只有题目时请先入库，再选择题目生成答案。");
   await ownedDeck(user.id, data.deckId);
   const db = await getDb();
   const existing = await db
@@ -40,6 +43,7 @@ export const POST = route(async (request, user) => {
     if (
       existing[0].userId !== user.id ||
       existing[0].deckId !== data.deckId ||
+      existing[0].inputType !== data.inputType ||
       existing[0].raw !== data.raw
     )
       throw new AppError(409, "导入标识冲突。");
@@ -56,8 +60,9 @@ export const POST = route(async (request, user) => {
     userId: user.id,
     deckId: data.deckId,
     raw: data.raw,
+    inputType: data.inputType,
   });
-  let parsed: ParsedQuestion[] = parseQuestions(data.raw);
+  let parsed: ParsedQuestion[] = parseQuestions(data.raw, data.inputType);
   try {
     if (data.mode === "ai") {
       if (data.raw.length > 25_000)
@@ -104,20 +109,56 @@ export const POST = route(async (request, user) => {
     }
     if (!parsed.length || parsed.length > 200)
       throw new AppError(400, "每批支持 1–200 道题，请分批导入。");
+    const longTitle = parsed.findIndex((q) => q.title.length > 200);
+    if (longTitle >= 0)
+      throw new AppError(
+        400,
+        `第 ${longTitle + 1} 道题超过 200 字，请缩短题目或使用题目与答案模式。`,
+      );
     const result = await db.transaction(async (tx) => {
-      await tx
+      const [activeDeck] = await tx
         .select()
         .from(decks)
-        .where(eq(decks.id, data.deckId))
+        .where(
+          and(
+            eq(decks.id, data.deckId),
+            eq(decks.ownerId, user.id),
+            isNull(decks.deletedAt),
+          ),
+        )
         .for("update");
+      if (!activeDeck) throw new AppError(404, "题库已删除，请选择其他题库。");
       let added = 0;
       let duplicates = 0;
+      const normalizeTitle = (title: string) =>
+        title.trim().replace(/\s+/g, " ");
+      const knownTitles = new Set(
+        data.inputType === "questions"
+          ? (
+              await tx
+                .select({ title: questions.title })
+                .from(questions)
+                .where(
+                  and(
+                    eq(questions.deckId, data.deckId),
+                    isNull(questions.deletedAt),
+                  ),
+                )
+            ).map((q) => normalizeTitle(q.title))
+          : [],
+      );
       for (const q of parsed) {
+        if (knownTitles.has(normalizeTitle(q.title))) {
+          duplicates++;
+          continue;
+        }
         const inserted = await tx
           .insert(questions)
           .values({
             id: crypto.randomUUID(),
+            importId: data.batchId,
             deckId: data.deckId,
+            ownerId: user.id,
             title: q.title,
             answer: q.answer,
             tags: q.tags,
@@ -127,8 +168,11 @@ export const POST = route(async (request, user) => {
           })
           .onConflictDoNothing()
           .returning({ id: questions.id });
-        if (inserted.length) added++;
-        else duplicates++;
+        if (inserted.length) {
+          added++;
+          if (data.inputType === "questions")
+            knownTitles.add(normalizeTitle(q.title));
+        } else duplicates++;
       }
       await tx
         .update(imports)

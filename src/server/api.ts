@@ -2,12 +2,20 @@ import { NextResponse } from "next/server";
 import { ZodError, type ZodType } from "zod";
 import { getAuth } from "./auth";
 import { AppError } from "./errors";
+import { applicationOrigins } from "./config.mjs";
 
 export type Identity = { id: string; name: string; email: string };
 export async function identity(request: Request): Promise<Identity> {
   const auth = await getAuth();
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) throw new AppError(401, "请先登录。", "UNAUTHENTICATED");
+  const expectedUser = request.headers.get("X-Workspace-User");
+  if (expectedUser && expectedUser !== session.user.id)
+    throw new AppError(
+      409,
+      "账号已切换，请刷新页面后重试。",
+      "ACCOUNT_CHANGED",
+    );
   return {
     id: session.user.id,
     name: session.user.name,
@@ -16,13 +24,7 @@ export async function identity(request: Request): Promise<Identity> {
 }
 export function checkOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  const allowedOrigins = [
-    process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
-    ...(process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "").split(","),
-  ]
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .map((value) => new URL(value).origin);
+  const allowedOrigins = applicationOrigins();
   if (!origin || !allowedOrigins.includes(origin))
     throw new AppError(
       403,
@@ -80,6 +82,20 @@ export function failure(error: unknown) {
     { status: 500 },
   );
 }
+export function privateResponse(response: Response) {
+  response.headers.set("Cache-Control", "private, no-store, max-age=0");
+  response.headers.set("Pragma", "no-cache");
+  const vary = new Set(
+    (response.headers.get("Vary") ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
+  );
+  vary.add("Cookie");
+  vary.add("Origin");
+  response.headers.set("Vary", [...vary].join(", "));
+  return response;
+}
 export function route(
   handler: (request: Request, user: Identity) => Promise<Response>,
   mutate = false,
@@ -87,9 +103,9 @@ export function route(
   return async (request: Request) => {
     try {
       if (mutate) checkOrigin(request);
-      return await handler(request, await identity(request));
+      return privateResponse(await handler(request, await identity(request)));
     } catch (error) {
-      return failure(error);
+      return privateResponse(failure(error));
     }
   };
 }

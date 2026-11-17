@@ -13,6 +13,8 @@ import type {
   ContentValidation,
   ContentValidationView,
 } from "@/lib/content-validation";
+import type { ImportPreviewItem } from "@/lib/import-preview";
+import { sql } from "drizzle-orm";
 
 const dates = () => ({
   createdAt: timestamp("created_at", { withTimezone: true })
@@ -81,7 +83,8 @@ export const preferences = pgTable("preferences", {
   userId: text("user_id")
     .primaryKey()
     .references(() => user.id, { onDelete: "cascade" }),
-  dailyGoal: integer("daily_goal").notNull().default(20),
+  dailyGoal: integer("daily_goal").notNull().default(5),
+  dailyNewLimit: integer("daily_new_limit").notNull().default(3),
   theme: text("theme").notNull().default("light"),
   timeZone: text("time_zone").notNull().default("Asia/Shanghai"),
   onboarded: boolean("onboarded").notNull().default(false),
@@ -109,6 +112,7 @@ export const decks = pgTable(
     color: text("color").notNull().default("sage"),
     visibility: text("visibility").notNull().default("private"),
     publishedVersion: integer("published_version").notNull().default(0),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     ...dates(),
   },
   (t) => [index("deck_owner_idx").on(t.ownerId)],
@@ -117,14 +121,18 @@ export const questions = pgTable(
   "questions",
   {
     id: text("id").primaryKey(),
-    deckId: text("deck_id")
+    ownerId: text("owner_id")
       .notNull()
-      .references(() => decks.id),
+      .references(() => user.id),
+    deckId: text("deck_id").references(() => decks.id),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
     parentId: text("parent_id"),
     title: text("title").notNull(),
     answer: text("answer").notNull(),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
     sourceText: text("source_text").notNull().default(""),
+    importId: text("import_id").references(() => imports.id),
     validation: jsonb("content_validation").$type<ContentValidation>(),
     contentHash: text("content_hash").notNull(),
     revision: integer("revision").notNull().default(1),
@@ -135,12 +143,19 @@ export const questions = pgTable(
   },
   (t) => [
     index("question_deck_idx").on(t.deckId),
-    uniqueIndex("question_hash_idx").on(t.deckId, t.contentHash),
+    index("question_owner_idx").on(t.ownerId, t.deletedAt),
+    index("question_trash_expiry_idx")
+      .on(t.deletedAt)
+      .where(sql`${t.deletedAt} is not null and ${t.purgedAt} is null`),
+    uniqueIndex("question_hash_idx")
+      .on(t.deckId, t.contentHash)
+      .where(sql`${t.deletedAt} is null`),
   ],
 );
 export type PublishedQuestion = {
   id: string;
-  deckId: string;
+  sourceQuestionId?: string;
+  deckId: string | null;
   parentId: string | null;
   title: string;
   answer: string;
@@ -233,12 +248,23 @@ export const imports = pgTable("imports", {
   userId: text("user_id")
     .notNull()
     .references(() => user.id, { onDelete: "cascade" }),
-  deckId: text("deck_id")
-    .notNull()
-    .references(() => decks.id),
+  deckId: text("deck_id").references(() => decks.id),
   raw: text("raw").notNull(),
+  inputType: text("input_type")
+    .$type<"qa" | "questions">()
+    .notNull()
+    .default("qa"),
+  method: text("method").notNull().default("rules"),
+  sourceName: text("source_name"),
+  sourceHash: text("source_hash"),
+  preview: jsonb("preview").$type<ImportPreviewItem[]>(),
+  commitHash: text("commit_hash"),
   status: text("status").notNull().default("pending"),
-  result: jsonb("result").$type<{ added: number; duplicates: number }>(),
+  result: jsonb("result").$type<{
+    added: number;
+    duplicates: number;
+    updated?: number;
+  }>(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

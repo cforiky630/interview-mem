@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   ArrowLeft,
   ArrowRight,
@@ -9,7 +10,6 @@ import {
   Eye,
   MessageSquare,
   X,
-  MoreHorizontal,
   Archive,
   Copy,
   Check,
@@ -19,6 +19,8 @@ import {
   BookOpen,
   Mic,
   PenLine,
+  Trash2,
+  FolderInput,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
@@ -31,6 +33,7 @@ import {
   studyDocument,
 } from "@/lib/study-document";
 import { Button } from "./ui/button";
+import { ActionMenu } from "./ui/action-menu";
 import { Dialog } from "./ui/dialog";
 import { Markdown } from "./markdown";
 import { ParagraphPractice, FollowupCards } from "./paragraph-practice";
@@ -43,6 +46,9 @@ type Insight = {
   curve: { day: number; retention: number }[];
 };
 type ReaderTab = "answer" | "followups" | "notes" | "memory";
+const SourceDialog = dynamic(() =>
+  import("./source-dialog").then((m) => m.SourceDialog),
+);
 function Curve({ curve }: { curve: Insight["curve"] }) {
   const points = curve
     .map(
@@ -97,8 +103,12 @@ export function QuestionReader({
   question,
   data,
   onBack,
+  backLabel = "返回题库",
   onEdit,
+  onDelete,
+  onMove,
   onSettings,
+  onGenerateAnswer,
   onFavorite,
   mutate,
   review,
@@ -110,8 +120,12 @@ export function QuestionReader({
   question: QuestionView;
   data: Workspace;
   onBack: () => void;
+  backLabel?: string;
   onEdit: () => void;
+  onDelete: () => void;
+  onMove: () => void;
   onSettings: () => void;
+  onGenerateAnswer: (q: QuestionView) => void;
   onFavorite: () => void;
   mutate: Mutate;
   review?: boolean;
@@ -131,6 +145,7 @@ export function QuestionReader({
   const [hideAll, setHideAll] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [validationOpen, setValidationOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
   const [trigger, setTrigger] = useState<AiTrigger | null>(null);
   const [selection, setSelection] = useState<{
     text: string;
@@ -181,7 +196,9 @@ export function QuestionReader({
   }, [question.note, question.noteVersion, noteDirty, draftKey]);
   useEffect(() => {
     let cancelled = false;
-    void api<Insight>(`/api/reviews?questionId=${question.id}`)
+    void api<Insight>(`/api/reviews?questionId=${question.id}`, undefined, {
+      userId: data.user.id,
+    })
       .then((result) => {
         if (!cancelled) setInsight(result);
       })
@@ -327,7 +344,7 @@ export function QuestionReader({
         <div className="reader-toolbar">
           <button className="back-link" onClick={onBack}>
             <ArrowLeft size={16} />
-            {review ? "结束答题" : "返回题库"}
+            {review ? "结束答题" : backLabel}
           </button>
           {review && progress && (
             <div className="review-position">
@@ -363,52 +380,71 @@ export function QuestionReader({
                 <Sparkles size={15} /> AI
               </Button>
             )}
-            <details className="reader-more">
-              <summary className="icon-button" aria-label="更多题目操作">
-                <MoreHorizontal size={19} />
-              </summary>
-              <div>
-                {question.isOwner && !review && (
-                  <button onClick={onEdit}>
-                    <PencilLine size={15} /> 编辑题目
+            <ActionMenu label="更多题目操作">
+              {question.isOwner && !review && (
+                <button onClick={onMove}>
+                  <FolderInput size={15} />
+                  移动到题库
+                </button>
+              )}
+              {question.isOwner && (
+                <button onClick={() => setSourceOpen(true)}>
+                  <BookOpen size={15} />
+                  查看导入原文
+                </button>
+              )}
+              {question.isOwner && !review && (
+                <button onClick={onEdit}>
+                  <PencilLine size={15} /> 编辑题目
+                </button>
+              )}
+              {question.validation && (
+                <button onClick={() => setValidationOpen(true)}>
+                  <Check size={15} /> 校验记录
+                </button>
+              )}
+              {!review &&
+                (question.isOwner ? (
+                  <button
+                    onClick={async () => {
+                      await mutate("/api/questions", {
+                        action: "archive",
+                        id: question.id,
+                        archived: !question.archived,
+                      });
+                    }}
+                  >
+                    <Archive size={15} />
+                    {question.archived ? "恢复题目" : "归档题目"}
                   </button>
-                )}
-                {question.validation && (
-                  <button onClick={() => setValidationOpen(true)}>
-                    <Check size={15} /> 校验记录
+                ) : (
+                  <button
+                    onClick={async () => {
+                      const target = data.decks.find((deck) => deck.isOwner);
+                      await mutate("/api/questions", {
+                        action: "copy",
+                        id: question.id,
+                        deckId: target?.id ?? null,
+                      });
+                    }}
+                  >
+                    <Copy size={15} /> 另存副本
                   </button>
-                )}
-                {!review &&
-                  (question.isOwner ? (
-                    <button
-                      onClick={async () => {
-                        await mutate("/api/questions", {
-                          action: "archive",
-                          id: question.id,
-                          archived: !question.archived,
-                        });
-                      }}
-                    >
-                      <Archive size={15} />
-                      {question.archived ? "恢复题目" : "归档题目"}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={async () => {
-                        const target = data.decks.find((deck) => deck.isOwner);
-                        if (target)
-                          await mutate("/api/questions", {
-                            action: "copy",
-                            id: question.id,
-                            deckId: target.id,
-                          });
-                      }}
-                    >
-                      <Copy size={15} /> 另存副本
-                    </button>
-                  ))}
-              </div>
-            </details>
+                ))}
+              {question.isOwner && !review && (
+                <button className="danger-text" onClick={onDelete}>
+                  <Trash2 size={15} />
+                  删除题目
+                </button>
+              )}
+            </ActionMenu>
+            {sourceOpen && (
+              <SourceDialog
+                questionId={question.id}
+                userId={data.user.id}
+                onClose={() => setSourceOpen(false)}
+              />
+            )}
           </div>
         </div>
         <article className="question-article">
@@ -425,7 +461,7 @@ export function QuestionReader({
                   <span key={tag}>{tag}</span>
                 ))}
               </div>
-              {!review && !question.archived && (
+              {!review && !question.archived && !!question.answer.trim() && (
                 <Button size="sm" onClick={onSingleReview}>
                   <PenLine size={15} /> 开始答题
                 </Button>
@@ -580,7 +616,27 @@ export function QuestionReader({
                           />
                         ))
                       ) : (
-                        <p className="quiet-empty">还没有参考答案。</p>
+                        <div className="missing-answer-card">
+                          <span className="missing-answer-mark">
+                            <PenLine size={27} strokeWidth={1.4} />
+                          </span>
+                          <h3>先把答案补上</h3>
+                          {question.isOwner && !question.archived ? (
+                            <div>
+                              <Button
+                                onClick={() => onGenerateAnswer(question)}
+                              >
+                                <Sparkles size={16} />
+                                AI 写答案
+                              </Button>
+                              <Button variant="ghost" onClick={onEdit}>
+                                自己补充
+                              </Button>
+                            </div>
+                          ) : (
+                            <p className="quiet-empty">还没有参考答案。</p>
+                          )}
+                        </div>
                       )}
                     </div>
                   </>

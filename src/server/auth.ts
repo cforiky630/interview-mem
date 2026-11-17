@@ -2,8 +2,13 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { getDb } from "@/db";
 import * as schema from "@/db/schema";
+import {
+  applicationOrigins,
+  validateProductionEnvironment,
+} from "./config.mjs";
 
 async function createAuth() {
+  validateProductionEnvironment();
   if (
     !process.env.BETTER_AUTH_SECRET ||
     process.env.BETTER_AUTH_SECRET.length < 32
@@ -15,6 +20,7 @@ async function createAuth() {
   return betterAuth({
     appName: "拾忆",
     baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    trustedOrigins: applicationOrigins(),
     secret: process.env.BETTER_AUTH_SECRET,
     database: drizzleAdapter(db, { provider: "pg", schema, transaction: true }),
     emailAndPassword: {

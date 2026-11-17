@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("configure OpenAI-compatible presets, test drafts and preserve keys only for the same endpoint", async ({
   page,

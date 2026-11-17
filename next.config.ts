@@ -1,19 +1,17 @@
 import type { NextConfig } from "next";
+import { applicationOrigins } from "./src/server/config.mjs";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  output: process.env.NEXT_STANDALONE === "true" ? "standalone" : undefined,
   // Keep development resources aligned with the explicit authentication origins.
-  allowedDevOrigins: [
-    process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
-    ...(process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "").split(","),
-  ]
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-    .map((origin) => new URL(origin).hostname),
+  allowedDevOrigins: applicationOrigins().map(
+    (origin) => new URL(origin).hostname,
+  ),
   distDir:
     process.env.NEXT_DIST_DIR ??
     (process.env.NODE_ENV === "production" ? ".next-build" : ".next"),
-  serverExternalPackages: ["@electric-sql/pglite", "pg", "ts-fsrs"],
+  serverExternalPackages: ["@electric-sql/pglite", "pg", "drizzle-orm"],
   poweredByHeader: false,
   async headers() {
     return [

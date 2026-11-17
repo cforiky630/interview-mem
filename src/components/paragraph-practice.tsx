@@ -1,17 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import {
-  PencilLine,
-  Eye,
-  RotateCcw,
-  X,
-  Check,
-  ChevronLeft,
-  ChevronRight,
-} from "lucide-react";
+import { PencilLine, Eye, RotateCcw, X, Check } from "lucide-react";
 import { toast } from "sonner";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
+import { CarouselArrows } from "./ui/carousel-arrows";
 import {
   readPracticeDraft,
   savePracticeDraft,
@@ -173,55 +166,48 @@ export function FollowupCards({
       <div className="carousel-controls">
         <span>面试追问</span>
         <div>
-          <button
-            className="icon-button"
-            aria-label="上一道追问"
-            disabled={followups.length < 2}
-            onClick={() => move(-1)}
-          >
-            <ChevronLeft size={18} />
-          </button>
           <span aria-live="polite">
             {index + 1} / {followups.length}
           </span>
-          <button
-            className="icon-button"
-            aria-label="下一道追问"
-            disabled={followups.length < 2}
-            onClick={() => move(1)}
-          >
-            <ChevronRight size={18} />
-          </button>
         </div>
       </div>
-      <div className="followup-card" key={current.id}>
-        <span className="card-number">
-          Q{String(index + 1).padStart(2, "0")}
-        </span>
-        <div className="followup-question">
-          <Markdown>{current.question}</Markdown>
-        </div>
-        <textarea
-          aria-label="追问作答"
-          placeholder="试着回答…"
-          rows={4}
-          maxLength={20000}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            if (!savePracticeDraft(key, event.target.value))
-              toast.error("草稿暂时无法保存在浏览器中。");
-          }}
+      <div className="followup-card-frame">
+        <CarouselArrows
+          count={followups.length}
+          previousLabel="上一道追问"
+          nextLabel="下一道追问"
+          onPrevious={() => move(-1)}
+          onNext={() => move(1)}
         />
-        <Button variant="secondary" onClick={() => setRevealed(!revealed)}>
-          <Eye size={15} />
-          {revealed ? "收起答案" : "查看答案"}
-        </Button>
-        {revealed && (
-          <div className="followup-answer">
-            <Markdown>{current.answer}</Markdown>
+        <div className="followup-card" key={current.id}>
+          <span className="card-number">
+            Q{String(index + 1).padStart(2, "0")}
+          </span>
+          <div className="followup-question">
+            <Markdown>{current.question}</Markdown>
           </div>
-        )}
+          <textarea
+            aria-label="追问作答"
+            placeholder="试着回答…"
+            rows={4}
+            maxLength={20000}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              if (!savePracticeDraft(key, event.target.value))
+                toast.error("草稿暂时无法保存在浏览器中。");
+            }}
+          />
+          <Button variant="secondary" onClick={() => setRevealed(!revealed)}>
+            <Eye size={15} />
+            {revealed ? "收起答案" : "查看答案"}
+          </Button>
+          {revealed && (
+            <div className="followup-answer">
+              <Markdown>{current.answer}</Markdown>
+            </div>
+          )}
+        </div>
       </div>
       <div className="carousel-dots" aria-label="选择追问">
         {followups.map((item, i) => (

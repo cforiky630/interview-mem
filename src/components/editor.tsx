@@ -1,5 +1,6 @@
 "use client";
 import { useEditor, EditorContent } from "@tiptap/react";
+import { useEffect, useRef } from "react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TableKit } from "@tiptap/extension-table";
@@ -12,30 +13,93 @@ import {
   Heading2,
   Quote,
   Undo2,
+  MessageSquarePlus,
 } from "lucide-react";
 import { Button } from "./ui/button";
+import { markAsFollowup } from "@/lib/editor-document";
 export function Editor({
   value,
   onChange,
+  onWholePaste,
+  onPartialPaste,
+  disabled = false,
+  onSelectionRequired,
 }: {
   value: string;
   onChange: (value: string) => void;
+  onWholePaste?: (value: string) => void;
+  onPartialPaste?: () => void;
+  disabled?: boolean;
+  onSelectionRequired?: () => void;
 }) {
+  const emitted = useRef(value);
   const editor = useEditor({
     extensions: [StarterKit, TableKit, Markdown],
     immediatelyRender: false,
     content: value,
     contentType: "markdown",
     editorProps: {
+      handlePaste(view, event) {
+        const value = event.clipboardData?.getData("text/plain");
+        const selection = view.state.selection;
+        const whole =
+          !view.state.doc.textContent.trim() ||
+          (selection.from <= 1 &&
+            selection.to >= view.state.doc.content.size - 1);
+        if (onWholePaste && whole && value && /\n|\r/.test(value)) {
+          event.preventDefault();
+          onWholePaste(value);
+          return true;
+        }
+        if (value && /\n|\r/.test(value)) onPartialPaste?.();
+        return false;
+      },
       attributes: {
         class: "prose-content tiptap-content",
         "aria-label": "答案编辑器",
       },
     },
-    onUpdate: ({ editor }) => onChange(editor.getMarkdown()),
+    onUpdate: ({ editor }) => {
+      emitted.current = editor.getMarkdown();
+      onChange(emitted.current);
+    },
   });
+  useEffect(() => {
+    editor?.setEditable(!disabled);
+  }, [editor, disabled]);
+  useEffect(() => {
+    if (editor && value !== emitted.current) {
+      editor.commands.setContent(value, {
+        contentType: "markdown",
+        emitUpdate: false,
+      });
+      emitted.current = value;
+    }
+  }, [editor, value]);
   if (!editor) return <div className="editor-loading">编辑器加载中…</div>;
   const tools = [
+    {
+      icon: MessageSquarePlus,
+      label: "指定追问",
+      active: false,
+      run: () => {
+        const { from, to, empty } = editor.state.selection;
+        if (empty) {
+          onSelectionRequired?.();
+          return;
+        }
+        const content = editor.markdown?.serialize({
+          type: "doc",
+          content: editor.state.doc.slice(from, to).content.toJSON() ?? [],
+        });
+        if (content)
+          editor
+            .chain()
+            .focus()
+            .insertContent(markAsFollowup(content), { contentType: "markdown" })
+            .run();
+      },
+    },
     {
       icon: Bold,
       label: "加粗",
@@ -98,11 +162,11 @@ export function Editor({
             aria-label={label}
             className={active ? "active" : ""}
             onClick={run}
+            disabled={disabled}
           >
             <Icon size={16} />
           </Button>
         ))}
-        <span>支持 Markdown 粘贴</span>
       </div>
       <EditorContent editor={editor} />
     </div>

@@ -1,0 +1,36 @@
+{
+  "environment": "Windows, Node 24.22.2, production Next.js build, Chrome 1440x1000, localhost without throttling",
+  "method": "One cold-server navigation per build, same synthetic private nine-question account, fresh browser context; measured until the home heading is visible. Database initialization is moved to server startup, not eliminated.",
+  "before": {
+    "readyMs": 1515,
+    "jsBytes": 342748,
+    "api": [
+      {
+        "path": "/api/auth/get-session",
+        "startMs": 165,
+        "durationMs": 995
+      },
+      {
+        "path": "/api/workspace",
+        "startMs": 1166,
+        "durationMs": 68
+      }
+    ]
+  },
+  "after": {
+    "readyMs": 560,
+    "jsBytes": 184763,
+    "api": [
+      {
+        "path": "/api/auth/get-session",
+        "startMs": 230,
+        "durationMs": 144
+      },
+      {
+        "path": "/api/workspace",
+        "startMs": 380,
+        "durationMs": 85
+      }
+    ]
+  }
+}

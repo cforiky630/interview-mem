@@ -15,10 +15,15 @@ services:
     restart: unless-stopped
   app:
     build: .
+    init: true
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      DATABASE_URL: postgresql://shiyi:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/shiyi
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: shiyi
+      PGDATABASE: shiyi
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:?Set public HTTPS origin}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET}
       KEY_ENCRYPTION_SECRET: ${KEY_ENCRYPTION_SECRET:?Set KEY_ENCRYPTION_SECRET}
@@ -26,5 +31,6 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    stop_grace_period: 30s
 volumes:
   postgres-data:

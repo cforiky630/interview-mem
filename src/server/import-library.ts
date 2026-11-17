@@ -104,6 +104,7 @@ export async function importLibrary(
             .values({
               id,
               deckId,
+              ownerId,
               title: document.title,
               answer: document.raw,
               sourceText: document.raw,

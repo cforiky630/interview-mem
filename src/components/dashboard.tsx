@@ -5,8 +5,6 @@ import {
   ArrowUpRight,
   BookOpen,
   Plus,
-  ChevronLeft,
-  ChevronRight,
   PenLine,
   Sprout,
 } from "lucide-react";
@@ -14,6 +12,7 @@ import type { QuestionView, Workspace } from "@/lib/types";
 import { dateKey } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { NotebookSketch } from "./sketch";
+import { CarouselArrows } from "./ui/carousel-arrows";
 
 export function Activity({
   data,
@@ -58,20 +57,30 @@ export function Dashboard({
   onCatalog,
   onSeed,
   onLibrary,
+  onInbox,
 }: {
   data: Workspace;
   onReview: () => void;
   onPractice: (question: QuestionView) => void;
-  onDeck: (id: string) => void;
+  onDeck: (id: string | null) => void;
   onImport: () => void;
   onCatalog: () => void;
   onSeed: () => void;
   onLibrary: () => void;
+  onInbox: () => void;
 }) {
   const [index, setIndex] = useState(0);
+  const remainingNew = Math.max(
+    0,
+    data.settings.dailyNewLimit - data.stats.newLearnedToday,
+  );
   const active = data.questions.filter(
     (question) => !question.archived && question.answer.trim(),
   );
+  const unanswered = data.questions.filter(
+    (question) => !question.archived && !question.answer.trim(),
+  );
+  const missing = unanswered.filter((question) => question.isOwner).length;
   const due = active
     .filter(
       (question) =>
@@ -81,10 +90,10 @@ export function Dashboard({
       (a, b) =>
         new Date(a.fsrs!.due).getTime() - new Date(b.fsrs!.due).getTime(),
     );
-  const cards = [...due, ...active.filter((question) => !question.fsrs)].slice(
-    0,
-    12,
-  );
+  const cards = [
+    ...due,
+    ...active.filter((question) => !question.fsrs).slice(0, remainingNew),
+  ].slice(0, 12);
   const selectedIndex = cards.length ? index % cards.length : 0;
   const question = cards[selectedIndex];
   const percent = Math.min(
@@ -131,33 +140,22 @@ export function Dashboard({
               <h2>今日练习</h2>
               {cards.length > 0 && (
                 <div className="carousel-controls">
-                  <button
-                    className="icon-button"
-                    aria-label="上一张题目卡片"
-                    disabled={cards.length < 2}
-                    onClick={() =>
-                      setIndex(
-                        (selectedIndex - 1 + cards.length) % cards.length,
-                      )
-                    }
-                  >
-                    <ChevronLeft size={18} />
-                  </button>
                   <span aria-live="polite">
                     {selectedIndex + 1} / {cards.length}
                   </span>
-                  <button
-                    className="icon-button"
-                    aria-label="下一张题目卡片"
-                    disabled={cards.length < 2}
-                    onClick={() => setIndex((selectedIndex + 1) % cards.length)}
-                  >
-                    <ChevronRight size={18} />
-                  </button>
                 </div>
               )}
             </div>
             <div className={`focus-stack ${question ? "has-cards" : ""}`}>
+              <CarouselArrows
+                count={cards.length}
+                previousLabel="上一张题目卡片"
+                nextLabel="下一张题目卡片"
+                onPrevious={() =>
+                  setIndex((selectedIndex - 1 + cards.length) % cards.length)
+                }
+                onNext={() => setIndex((selectedIndex + 1) % cards.length)}
+              />
               {question ? (
                 <article
                   className="focus-card"
@@ -195,13 +193,30 @@ export function Dashboard({
                   <NotebookSketch />
                   <div>
                     <h3>
-                      {data.stats.total
-                        ? "今天的复习完成了"
-                        : "放进你的第一道题"}
+                      {missing
+                        ? "先补上参考答案"
+                        : data.stats.total
+                          ? remainingNew === 0 && data.stats.new > 0
+                            ? "今天的新题先学到这里"
+                            : "今天的复习完成了"
+                          : "放进你的第一道题"}
                     </h3>
                     <div className="empty-focus-actions">
-                      <Button onClick={onImport}>
-                        <Plus size={15} /> 导入题目
+                      <Button
+                        onClick={
+                          missing
+                            ? onInbox
+                            : data.stats.total
+                              ? onLibrary
+                              : onImport
+                        }
+                      >
+                        {missing ? <PenLine size={15} /> : <Plus size={15} />}{" "}
+                        {missing
+                          ? "去补答案"
+                          : data.stats.total
+                            ? "去题库自由练习"
+                            : "导入题目"}
                       </Button>
                       {!data.stats.total && (
                         <button className="text-button" onClick={onSeed}>
@@ -245,15 +260,21 @@ export function Dashboard({
                           ? `${deck.due} 题待复习`
                           : deck.newCount
                             ? `${deck.newCount} 道新题`
-                            : "已学完"}
+                            : unanswered.some((q) => q.deckId === deck.id)
+                              ? `${unanswered.filter((q) => q.deckId === deck.id).length} 道待补答案`
+                              : "已学完"}
                       </span>
                     </div>
                   </button>
                 ))}
               </div>
             ) : (
-              <button className="empty-deck-link" onClick={onImport}>
-                <Plus size={18} /> 新建你的学习卡片
+              <button
+                className="empty-deck-link"
+                onClick={data.stats.total ? () => onDeck(null) : onImport}
+              >
+                <Plus size={18} />{" "}
+                {data.stats.total ? "去整理未分类题目" : "新建你的学习卡片"}
               </button>
             )}
           </section>
@@ -268,7 +289,7 @@ export function Dashboard({
             </div>
             <div className="plan-count">
               <strong>{data.stats.reviewedToday}</strong>
-              <span>/ {data.settings.dailyGoal} 题</span>
+              <span>/ {data.settings.dailyGoal} 道</span>
             </div>
             <div
               className="plan-progress"
@@ -285,8 +306,10 @@ export function Dashboard({
               <strong>{data.stats.due}</strong>
             </div>
             <div className="plan-item">
-              <span>新题</span>
-              <strong>{data.stats.new}</strong>
+              <span>今日新学</span>
+              <strong>
+                {data.stats.newLearnedToday} / {data.settings.dailyNewLimit}
+              </strong>
             </div>
             <Button variant="secondary" onClick={onReview}>
               开始今日复习

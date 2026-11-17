@@ -103,6 +103,7 @@ export async function seedSamples(userId: string) {
         await tx.insert(questions).values({
           id: crypto.randomUUID(),
           deckId,
+          ownerId: userId,
           title: q.title,
           answer: q.answer,
           tags: q.tags,

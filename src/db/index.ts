@@ -2,8 +2,11 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle as localDrizzle } from "drizzle-orm/pglite";
 import { migrate as localMigrate } from "drizzle-orm/pglite/migrator";
 import { drizzle as postgresDrizzle } from "drizzle-orm/node-postgres";
-import { migrate as postgresMigrate } from "drizzle-orm/node-postgres/migrator";
-import { Pool } from "pg";
+import {
+  createPostgresPool,
+  hasPostgres,
+  migratePostgres,
+} from "./postgres.mjs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import * as schema from "./schema";
@@ -14,15 +17,19 @@ const state = globalThis as unknown as {
   interviewDatabase?: Promise<Connection>;
 };
 
-export async function openDatabase(): Promise<Connection> {
+export async function openDatabase({
+  migrate = process.env.NODE_ENV !== "production",
+} = {}): Promise<Connection> {
   const folder = path.resolve("drizzle");
-  if (process.env.DATABASE_URL) {
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 5,
-    });
+  if (hasPostgres()) {
+    const pool = createPostgresPool();
     const db = postgresDrizzle(pool, { schema });
-    await postgresMigrate(db, { migrationsFolder: folder });
+    try {
+      if (migrate) await migratePostgres(pool, folder);
+    } catch (error) {
+      await pool.end();
+      throw error;
+    }
     return { db: db as unknown as Database, close: () => pool.end() };
   }
   if (
@@ -40,7 +47,12 @@ export async function openDatabase(): Promise<Connection> {
   if (directory) await mkdir(path.dirname(directory), { recursive: true });
   const client = new PGlite(directory);
   const db = localDrizzle(client, { schema });
-  await localMigrate(db, { migrationsFolder: folder });
+  try {
+    if (migrate) await localMigrate(db, { migrationsFolder: folder });
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
   return { db, close: () => client.close() };
 }
 

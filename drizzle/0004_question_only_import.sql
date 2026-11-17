@@ -1,0 +1,1 @@
+ALTER TABLE "imports" ADD COLUMN "input_type" text DEFAULT 'qa' NOT NULL;

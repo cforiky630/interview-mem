@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   BookOpen,
   LayoutDashboard,
@@ -12,16 +13,11 @@ import {
   Settings2,
   Search,
   Plus,
-  ArrowUpRight,
   LogOut,
   Menu,
-  X,
   Loader2,
-  Check,
   Cloud,
   RefreshCw,
-  Archive,
-  Sprout,
   WifiOff,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -30,21 +26,56 @@ import { api, RequestError } from "@/lib/client";
 import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { normalizedNoteTitle } from "@/lib/markdown-source";
-import { practiceDraftKey, savePracticeDraft } from "@/lib/study-document";
+import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
 import { Button } from "./ui/button";
 import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
 import { Library, Catalog } from "./library";
-import { QuestionReader, ReviewComplete } from "./question-reader";
-import { HistoryView } from "./history";
-import {
-  CreateDeckDialog,
-  EditQuestionDialog,
-  ImportDialog,
-  PublishDialog,
-  SettingsDialog,
-  type Mutate,
-} from "./dialogs";
+import { useAiAnswerDraft } from "./use-ai-answer-draft";
+import type { Mutate } from "./dialogs";
+const QuestionReader = dynamic(
+  () => import("./question-reader").then((m) => m.QuestionReader),
+  {
+    loading: () => (
+      <div className="view-loading">
+        <Loader2 className="spin" size={20} />
+      </div>
+    ),
+  },
+);
+const ReviewComplete = dynamic(() =>
+  import("./question-reader").then((m) => m.ReviewComplete),
+);
+const HistoryView = dynamic(() =>
+  import("./history").then((m) => m.HistoryView),
+);
+const AiAnswerDialog = dynamic(() =>
+  import("./ai-answer-dialog").then((m) => m.AiAnswerDialog),
+);
+const CreateDeckDialog = dynamic(() =>
+  import("./dialogs").then((m) => m.CreateDeckDialog),
+);
+const QuestionEditPage = dynamic(() =>
+  import("./question-edit-page").then((m) => m.QuestionEditPage),
+);
+const ImportDialog = dynamic(() =>
+  import("./import-dialog").then((m) => m.ImportDialog),
+);
+const PublishDialog = dynamic(() =>
+  import("./dialogs").then((m) => m.PublishDialog),
+);
+const SettingsDialog = dynamic(() =>
+  import("./dialogs").then((m) => m.SettingsDialog),
+);
+const DeleteDeckDialog = dynamic(() =>
+  import("./deck-delete-dialog").then((m) => m.DeleteDeckDialog),
+);
+
+const QuestionActionDialog = dynamic(() =>
+  import("./question-action-dialog").then((m) => m.QuestionActionDialog),
+);
+
+import type { ImportSeed } from "./import-dialog";
 
 type View =
   | "today"
@@ -58,28 +89,68 @@ type View =
   | "question";
 export function StudyApp() {
   const { data: session, isPending } = authClient.useSession();
+  if (isPending)
+    return (
+      <div className="app-loading">
+        <span className="brand-mark">
+          <BookOpen size={27} />
+        </span>
+        <p>让知识，慢慢留下来。</p>
+        <Loader2 size={20} className="spin" />
+      </div>
+    );
+  if (!session) return <AuthScreen />;
+  return <WorkspaceApp key={session.user.id} sessionId={session.user.id} />;
+}
+
+function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [data, setData] = useState<Workspace | null>(null);
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState(false);
   const [view, setView] = useState<View>("today");
-  const [deckId, setDeckId] = useState<string | undefined>();
+  const [deckId, setDeckId] = useState<string | null | undefined>();
   const [questionId, setQuestionId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [importSeed, setImportSeed] = useState<ImportSeed>();
+  const importCommitted = useRef<(() => void) | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editQuestion, setEditQuestion] = useState<QuestionView | null>(null);
+  const editingId = useRef<string | null>(null);
+  editingId.current = editQuestion?.id ?? null;
   const [publishId, setPublishId] = useState<string | null>(null);
+  const [deleteDeck, setDeleteDeck] = useState<
+    Workspace["decks"][number] | null
+  >(null);
+  const [questionAction, setQuestionAction] = useState<{
+    question: QuestionView;
+    action: "delete" | "move";
+  } | null>(null);
+  const [searchToken, setSearchToken] = useState(0);
+  const origin = useRef<{ view: View; deckId?: string | null }>({
+    view: "library",
+  });
   const [catalog, setCatalog] = useState<CatalogDeck[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [pending, setPending] = useState(0);
+  const pendingCount = useRef(0);
+  pendingCount.current = pending;
   const [queue, setQueue] = useState<QuestionView[]>([]);
   const [reviewIndex, setReviewIndex] = useState(0);
   const [ratings, setRatings] = useState<number[]>([]);
   const [reviewBusy, setReviewBusy] = useState(false);
   const grading = useRef(false);
   const eventId = useRef(crypto.randomUUID());
-  const sessionId = session?.user.id;
+  const lifetime = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => {
+      controller.abort();
+      lifetime.current = null;
+    };
+  }, []);
   useEffect(() => {
     function openLinkedNote(event: Event) {
       const target = (event as CustomEvent<unknown>).detail;
@@ -107,6 +178,8 @@ export function StudyApp() {
         );
         return;
       }
+      if (editingId.current && pendingCount.current) return;
+      setEditQuestion(null);
       setQuestionId(matches[0].id);
       setView("question");
       window.scrollTo({ top: 0, behavior: "instant" });
@@ -114,35 +187,60 @@ export function StudyApp() {
     window.addEventListener("shiyi:open-note", openLinkedNote);
     return () => window.removeEventListener("shiyi:open-note", openLinkedNote);
   }, [data?.questions]);
-  const refresh = useCallback(async (silent = false) => {
-    try {
-      const result = await api<Workspace>("/api/workspace");
-      setData(result);
-      setError("");
-      setSyncError(false);
-      return result;
-    } catch (e) {
-      if (e instanceof RequestError && e.status === 401) {
-        setData(null);
-        void authClient.signOut();
-      } else if (silent) setSyncError(true);
-      else setError(e instanceof Error ? e.message : "题库暂时无法读取。");
-      return null;
-    }
-  }, []);
-  const loadCatalog = useCallback(async (shared?: string) => {
-    setCatalogLoading(true);
-    try {
-      const result = await api<CatalogDeck[]>(
-        `/api/catalog${shared ? `?id=${encodeURIComponent(shared)}` : ""}`,
-      );
-      setCatalog(result);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "题库暂时无法加载。");
-    } finally {
-      setCatalogLoading(false);
-    }
-  }, []);
+  const refresh = useCallback(
+    async (silent = false) => {
+      const signal = lifetime.current?.signal;
+      if (!signal || signal.aborted) return null;
+      try {
+        const result = await api<Workspace>("/api/workspace", undefined, {
+          userId: sessionId,
+          signal,
+        });
+        if (result.user.id !== sessionId) {
+          window.location.reload();
+          return null;
+        }
+        setData(result);
+        setError("");
+        setSyncError(false);
+        return result;
+      } catch (e) {
+        if (signal.aborted) return null;
+        if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
+          window.location.reload();
+          return null;
+        }
+        if (e instanceof RequestError && e.status === 401) {
+          setData(null);
+          window.location.reload();
+        } else if (silent) setSyncError(true);
+        else setError(e instanceof Error ? e.message : "题库暂时无法读取。");
+        return null;
+      }
+    },
+    [sessionId],
+  );
+  const loadCatalog = useCallback(
+    async (shared?: string) => {
+      const signal = lifetime.current?.signal;
+      if (!signal || signal.aborted) return;
+      setCatalogLoading(true);
+      try {
+        const result = await api<CatalogDeck[]>(
+          `/api/catalog${shared ? `?id=${encodeURIComponent(shared)}` : ""}`,
+          undefined,
+          { userId: sessionId, signal },
+        );
+        setCatalog(result);
+      } catch (e) {
+        if (signal.aborted) return;
+        toast.error(e instanceof Error ? e.message : "题库暂时无法加载。");
+      } finally {
+        setCatalogLoading(false);
+      }
+    },
+    [sessionId],
+  );
   useEffect(() => {
     setData(null);
     setError("");
@@ -182,8 +280,11 @@ export function StudyApp() {
         ((event.metaKey || event.ctrlKey) && event.key === "k")
       ) {
         event.preventDefault();
+        if (editingId.current && pendingCount.current) return;
+        setEditQuestion(null);
         setView("library");
         setDeckId(undefined);
+        setSearchToken((n) => n + 1);
         setTimeout(
           () =>
             (
@@ -200,12 +301,22 @@ export function StudyApp() {
     return () => window.removeEventListener("keydown", shortcuts);
   }, []);
   const mutate: Mutate = async (url, payload) => {
+    const signal = lifetime.current?.signal;
+    if (!signal || signal.aborted) return null;
     setPending((n) => n + 1);
     try {
-      const result = await api<Record<string, unknown>>(url, payload);
+      const result = await api<Record<string, unknown>>(url, payload, {
+        userId: sessionId,
+        signal,
+      });
       await refresh(true);
       return result;
     } catch (e) {
+      if (signal.aborted) return null;
+      if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
+        window.location.reload();
+        return null;
+      }
       toast.error(e instanceof Error ? e.message : "操作失败，请重试。");
       if (e instanceof RequestError && e.status === 409) await refresh(true);
       return null;
@@ -213,25 +324,42 @@ export function StudyApp() {
       setPending((n) => n - 1);
     }
   };
+  const answerDraft = useAiAnswerDraft(data, mutate, () =>
+    setSettingsOpen(true),
+  );
+  function openImport() {
+    setImportSeed(undefined);
+    importCommitted.current = null;
+    setImportOpen(true);
+  }
   function navigate(next: View) {
+    if (editingId.current && pendingCount.current) return;
+    setEditQuestion(null);
     setView(next);
     setSidebarOpen(false);
     if (next === "library") setDeckId(undefined);
     if (next === "catalog") void loadCatalog();
     window.scrollTo({ top: 0, behavior: "instant" });
   }
-  function openDeck(id?: string) {
+  function openDeck(id?: string | null) {
+    if (editingId.current && pendingCount.current) return;
+    setEditQuestion(null);
     setDeckId(id);
     setView("library");
     setSidebarOpen(false);
     window.scrollTo({ top: 0, behavior: "instant" });
   }
   function openQuestion(question: QuestionView) {
+    if (editingId.current && pendingCount.current) return;
+    setEditQuestion(null);
+    origin.current = { view, deckId };
     setQuestionId(question.id);
     setView("question");
     window.scrollTo({ top: 0, behavior: "instant" });
   }
   function startReview(targetDeck?: string, single?: QuestionView) {
+    if (editingId.current && pendingCount.current) return;
+    setEditQuestion(null);
     if (!data) return;
     const active = data.questions.filter(
       (q) =>
@@ -247,7 +375,10 @@ export function StudyApp() {
       );
     const fresh = active
       .filter((q) => !q.fsrs)
-      .slice(0, data.settings.dailyGoal);
+      .slice(
+        0,
+        Math.max(0, data.settings.dailyNewLimit - data.stats.newLearnedToday),
+      );
     setQueue(single ? [single] : [...due, ...fresh]);
     setReviewIndex(0);
     setRatings([]);
@@ -308,17 +439,6 @@ export function StudyApp() {
       setReviewBusy(false);
     }
   }
-  if (isPending)
-    return (
-      <div className="app-loading">
-        <span className="brand-mark">
-          <BookOpen size={27} />
-        </span>
-        <p>让知识，慢慢留下来。</p>
-        <Loader2 size={20} className="spin" />
-      </div>
-    );
-  if (!session) return <AuthScreen />;
   if (!data)
     return (
       <div className="app-loading">
@@ -343,8 +463,8 @@ export function StudyApp() {
     );
   const currentQuestion = data.questions.find((q) => q.id === questionId);
   const queueQuestion = queue[reviewIndex];
-  const currentReview =
-    data.questions.find((q) => q.id === queueQuestion?.id) ?? queueQuestion;
+  const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
+  const libraryView = view === "question" ? origin.current.view : view;
   const nav = [
     { id: "today" as const, label: "今日", icon: LayoutDashboard },
     { id: "library" as const, label: "我的题库", icon: Layers2 },
@@ -357,7 +477,9 @@ export function StudyApp() {
     { id: "catalog" as const, label: "发现题库", icon: Rss },
   ];
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${editQuestion ? "editor-open" : ""} ${editQuestion && pending ? "editor-saving" : ""}`}
+    >
       {sidebarOpen && (
         <button
           className="sidebar-backdrop"
@@ -381,6 +503,7 @@ export function StudyApp() {
           className="sidebar-search"
           onClick={() => {
             navigate("library");
+            setSearchToken((n) => n + 1);
             setTimeout(
               () =>
                 (
@@ -418,7 +541,6 @@ export function StudyApp() {
             { id: "favorites" as const, label: "我的收藏", icon: Star },
             { id: "inbox" as const, label: "待整理", icon: Inbox },
             { id: "history" as const, label: "回顾记录", icon: History },
-            { id: "archived" as const, label: "已归档", icon: Archive },
           ].map(({ id, label, icon: Icon }) => (
             <button
               className={cn("nav-item", view === id && "active")}
@@ -484,19 +606,19 @@ export function StudyApp() {
             </button>
             <span className="topbar-breadcrumb">
               <strong>
-                {
-                  {
-                    today: "今日",
-                    library: "我的题库",
-                    favorites: "我的收藏",
-                    inbox: "待整理",
-                    archived: "已归档",
-                    review: "答题",
-                    catalog: "发现题库",
-                    history: "回顾记录",
-                    question: "学习卡",
-                  }[view]
-                }
+                {editQuestion
+                  ? "编辑题目"
+                  : {
+                      today: "今日",
+                      library: "我的题库",
+                      favorites: "我的收藏",
+                      inbox: "待整理",
+                      archived: "已归档",
+                      review: "答题",
+                      catalog: "发现题库",
+                      history: "回顾记录",
+                      question: "学习卡",
+                    }[view]}
               </strong>
             </span>
           </div>
@@ -533,6 +655,7 @@ export function StudyApp() {
               className="icon-button logout-button"
               aria-label="退出登录"
               onClick={() => {
+                if (editingId.current && pendingCount.current) return;
                 if (confirm("退出当前账号？")) {
                   void authClient.signOut();
                   setView("today");
@@ -543,142 +666,222 @@ export function StudyApp() {
             </button>
           </div>
         </header>
-        {syncError && (
-          <div className="connection-banner">
-            <WifiOff size={14} />{" "}
-            当前显示上次读取的内容。请恢复网络后再保存或复习。
-            <button onClick={() => void refresh(true)}>重试连接</button>
-          </div>
-        )}
-        {view === "today" && (
-          <Dashboard
-            data={data}
-            onReview={() => startReview()}
-            onPractice={(question) => startReview(undefined, question)}
-            onDeck={openDeck}
-            onImport={() => setImportOpen(true)}
-            onCatalog={() => navigate("catalog")}
-            onLibrary={() => navigate("library")}
-            onSeed={async () => {
-              const result = await mutate("/api/workspace", {});
-              if (result)
-                toast.success(
-                  Number(result.added)
-                    ? `已载入 ${result.added} 道示例题，可自由编辑或归档。`
-                    : "示例题库已经载入过了。",
-                );
-            }}
-          />
-        )}
-        {["library", "favorites", "inbox", "archived"].includes(view) && (
-          <Library
-            key={`${view}:${deckId ?? "all"}`}
-            data={data}
-            deckId={view === "library" ? deckId : undefined}
-            filter={view === "library" ? undefined : view}
-            onQuestion={openQuestion}
-            onDeck={openDeck}
-            onImport={() => setImportOpen(true)}
-            onCreate={() => setCreateOpen(true)}
-            onReview={startReview}
-            onPublish={setPublishId}
-            onFavorite={(q) => void favorite(q)}
-            onAcknowledge={async (id, version) => {
-              await mutate("/api/decks", {
-                action: "acknowledge",
-                deckId: id,
-                version,
-              });
-            }}
-            onUnsubscribe={async (id) => {
-              if (
-                confirm(
-                  "取消订阅后停止接收更新，已有个人笔记和复习历史仍保留。确定继续？",
-                )
-              ) {
-                const result = await mutate("/api/decks", {
-                  action: "unsubscribe",
-                  deckId: id,
-                });
-                if (result) openDeck();
-              }
-            }}
-          />
-        )}
-        {view === "question" && currentQuestion && (
-          <QuestionReader
-            key={`${currentQuestion.id}:${currentQuestion.revision}`}
-            question={currentQuestion}
-            data={data}
-            onBack={() => openDeck(currentQuestion.deckId)}
-            onEdit={() => setEditQuestion(currentQuestion)}
-            onSettings={() => setSettingsOpen(true)}
-            onFavorite={() => void favorite(currentQuestion)}
-            mutate={mutate}
-            onSingleReview={() => startReview(undefined, currentQuestion)}
-          />
-        )}
-        {view === "question" && !currentQuestion && (
-          <div className="empty-state">
-            <BookOpen size={32} />
-            <h3>题目已不可访问</h3>
-            <Button variant="outline" onClick={() => navigate("library")}>
-              返回题库
-            </Button>
-          </div>
-        )}
-        {view === "review" &&
-          (currentReview ? (
-            <QuestionReader
-              key={`review:${currentReview.id}:${reviewIndex}`}
-              question={currentReview}
+        <div hidden={!!editQuestion}>
+          {syncError && (
+            <div className="connection-banner">
+              <WifiOff size={14} />{" "}
+              当前显示上次读取的内容。请恢复网络后再保存或复习。
+              <button onClick={() => void refresh(true)}>重试连接</button>
+            </div>
+          )}
+          {view === "today" && (
+            <Dashboard
               data={data}
-              review
-              onBack={() => navigate("today")}
-              onEdit={() => setEditQuestion(currentReview)}
-              onSettings={() => setSettingsOpen(true)}
-              onFavorite={() => void favorite(currentReview)}
-              mutate={mutate}
-              progress={{ current: reviewIndex + 1, total: queue.length }}
-              onGrade={(rating, answer) => void grade(rating, answer)}
-              busy={reviewBusy}
-            />
-          ) : (
-            <ReviewComplete
-              count={ratings.length}
-              ratings={ratings}
-              onBack={() => navigate("today")}
+              onReview={() => startReview()}
+              onPractice={(question) => startReview(undefined, question)}
+              onDeck={openDeck}
+              onImport={openImport}
+              onCatalog={() => navigate("catalog")}
               onLibrary={() => navigate("library")}
+              onInbox={() => navigate("inbox")}
+              onSeed={async () => {
+                const result = await mutate("/api/workspace", {});
+                if (result)
+                  toast.success(
+                    Number(result.added)
+                      ? `已载入 ${result.added} 道示例题，可自由编辑或归档。`
+                      : "示例题库已经载入过了。",
+                  );
+              }}
             />
-          ))}
-        {view === "catalog" && (
-          <>
-            {catalogLoading && (
-              <div className="catalog-loading">
-                <Loader2 size={16} className="spin" /> 正在更新题库列表
+          )}
+          {["library", "favorites", "inbox", "archived"].includes(
+            libraryView,
+          ) &&
+            (view === libraryView || view === "question") && (
+              <div hidden={view === "question"}>
+                <Library
+                  key={`${libraryView}:${deckId === null ? "unfiled" : (deckId ?? "all")}`}
+                  data={data}
+                  deckId={libraryView === "library" ? deckId : undefined}
+                  filter={libraryView === "library" ? undefined : libraryView}
+                  searchToken={searchToken}
+                  mutate={mutate}
+                  onDelete={setDeleteDeck}
+                  onDeleteQuestion={(q) =>
+                    setQuestionAction({ question: q, action: "delete" })
+                  }
+                  onMoveQuestion={(q) =>
+                    setQuestionAction({ question: q, action: "move" })
+                  }
+                  onQuestion={openQuestion}
+                  onDeck={openDeck}
+                  onImport={openImport}
+                  onCreate={() => setCreateOpen(true)}
+                  onReview={startReview}
+                  onPublish={setPublishId}
+                  onFavorite={(q) => void favorite(q)}
+                  onGenerateAnswer={answerDraft.open}
+                  onAcknowledge={async (id, version) => {
+                    await mutate("/api/decks", {
+                      action: "acknowledge",
+                      deckId: id,
+                      version,
+                    });
+                  }}
+                  onUnsubscribe={async (id) => {
+                    if (
+                      confirm(
+                        "取消订阅后停止接收更新，已有个人笔记和复习历史仍保留。确定继续？",
+                      )
+                    ) {
+                      const result = await mutate("/api/decks", {
+                        action: "unsubscribe",
+                        deckId: id,
+                      });
+                      if (result) openDeck();
+                    }
+                  }}
+                />
               </div>
             )}
-            <Catalog
-              entries={catalog}
-              busy={pending > 0}
-              onSubscribe={async (id) => {
-                const result = await mutate("/api/decks", {
-                  action: "subscribe",
-                  deckId: id,
-                });
-                if (result) {
-                  toast.success("订阅成功，后续发布的更新会自动同步。");
-                  openDeck(id);
-                }
+          {view === "question" && currentQuestion && (
+            <QuestionReader
+              key={`${currentQuestion.id}:${currentQuestion.revision}`}
+              question={currentQuestion}
+              data={data}
+              onBack={() => {
+                setView(origin.current.view);
+                setDeckId(origin.current.deckId);
+                window.scrollTo({ top: 0, behavior: "instant" });
               }}
-              onOpen={openDeck}
-              onCreate={() => navigate("library")}
-              onRefresh={() => void loadCatalog()}
+              backLabel={
+                origin.current.view === "history"
+                  ? "返回记录"
+                  : origin.current.view === "inbox"
+                    ? "返回待整理"
+                    : origin.current.view === "favorites"
+                      ? "返回收藏"
+                      : origin.current.view === "today"
+                        ? "返回今日"
+                        : "返回题库"
+              }
+              onEdit={() => setEditQuestion(currentQuestion)}
+              onDelete={() =>
+                setQuestionAction({
+                  question: currentQuestion,
+                  action: "delete",
+                })
+              }
+              onMove={() =>
+                setQuestionAction({ question: currentQuestion, action: "move" })
+              }
+              onSettings={() => setSettingsOpen(true)}
+              onGenerateAnswer={answerDraft.open}
+              onFavorite={() => void favorite(currentQuestion)}
+              mutate={mutate}
+              onSingleReview={() => startReview(undefined, currentQuestion)}
             />
-          </>
-        )}
-        {view === "history" && (
-          <HistoryView data={data} onQuestion={openQuestion} />
+          )}
+          {view === "question" && !currentQuestion && (
+            <div className="empty-state">
+              <BookOpen size={32} />
+              <h3>题目已不可访问</h3>
+              <Button variant="outline" onClick={() => navigate("library")}>
+                返回题库
+              </Button>
+            </div>
+          )}
+          {view === "review" &&
+            (currentReview ? (
+              <QuestionReader
+                key={`review:${currentReview.id}:${reviewIndex}`}
+                question={currentReview}
+                data={data}
+                review
+                onBack={() => navigate("today")}
+                onEdit={() => setEditQuestion(currentReview)}
+                onDelete={() =>
+                  setQuestionAction({
+                    question: currentReview,
+                    action: "delete",
+                  })
+                }
+                onMove={() =>
+                  setQuestionAction({ question: currentReview, action: "move" })
+                }
+                onSettings={() => setSettingsOpen(true)}
+                onGenerateAnswer={answerDraft.open}
+                onFavorite={() => void favorite(currentReview)}
+                mutate={mutate}
+                progress={{ current: reviewIndex + 1, total: queue.length }}
+                onGrade={(rating, answer) => void grade(rating, answer)}
+                busy={reviewBusy}
+              />
+            ) : (
+              <ReviewComplete
+                count={ratings.length}
+                ratings={ratings}
+                onBack={() => navigate("today")}
+                onLibrary={() => navigate("library")}
+              />
+            ))}
+          {view === "catalog" && (
+            <>
+              {catalogLoading && (
+                <div className="catalog-loading">
+                  <Loader2 size={16} className="spin" /> 正在更新题库列表
+                </div>
+              )}
+              <Catalog
+                entries={catalog}
+                busy={pending > 0}
+                onSubscribe={async (id) => {
+                  const result = await mutate("/api/decks", {
+                    action: "subscribe",
+                    deckId: id,
+                  });
+                  if (result) {
+                    toast.success("订阅成功，后续发布的更新会自动同步。");
+                    openDeck(id);
+                  }
+                }}
+                onOpen={openDeck}
+                onCreate={() => navigate("library")}
+                onRefresh={() => void loadCatalog()}
+              />
+            </>
+          )}
+          {view === "history" && (
+            <HistoryView data={data} onQuestion={openQuestion} />
+          )}
+        </div>
+        {editQuestion && (
+          <QuestionEditPage
+            key={editQuestion.id}
+            question={editQuestion}
+            current={data.questions.find(
+              (q) => q.id === editQuestion.id && q.isOwner,
+            )}
+            userId={data.user.id}
+            mutate={mutate}
+            onBack={() => {
+              if (pendingCount.current) return;
+              setEditQuestion(null);
+              window.scrollTo({ top: 0, behavior: "instant" });
+            }}
+            onSaved={() => {
+              if (editingId.current === editQuestion.id) {
+                setEditQuestion(null);
+                window.scrollTo({ top: 0, behavior: "instant" });
+              }
+            }}
+            onBatchImport={(seed, onCommitted) => {
+              setImportSeed(seed);
+              importCommitted.current = onCommitted;
+              setImportOpen(true);
+            }}
+          />
         )}
       </main>
       <nav className="mobile-bottom-nav">
@@ -693,40 +896,91 @@ export function StudyApp() {
           </button>
         ))}
       </nav>
-      <ImportDialog
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        data={data}
-        preferredDeck={
-          deckId && data.decks.find((d) => d.id === deckId)?.isOwner
-            ? deckId
-            : undefined
-        }
-        mutate={mutate}
-        onView={openDeck}
-      />
-      <CreateDeckDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        mutate={mutate}
-        onCreated={openDeck}
-      />
-      <SettingsDialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        data={data}
-        mutate={mutate}
-      />
-      <EditQuestionDialog
-        question={editQuestion}
-        onClose={() => setEditQuestion(null)}
-        mutate={mutate}
-      />
-      <PublishDialog
-        deck={data.decks.find((d) => d.id === publishId) ?? null}
-        onClose={() => setPublishId(null)}
-        mutate={mutate}
-      />
+      {importOpen && (
+        <ImportDialog
+          open={importOpen}
+          onClose={() => {
+            setImportOpen(false);
+            setImportSeed(undefined);
+            importCommitted.current = null;
+          }}
+          data={data}
+          seed={importSeed}
+          onImported={() => {
+            importCommitted.current?.();
+            importCommitted.current = null;
+          }}
+          preferredDeck={
+            importSeed?.deckId !== undefined
+              ? importSeed.deckId
+              : deckId === null
+                ? null
+                : deckId && data.decks.find((d) => d.id === deckId)?.isOwner
+                  ? deckId
+                  : undefined
+          }
+          mutate={mutate}
+          onView={openDeck}
+          onInbox={() => navigate("inbox")}
+          onSettings={() => {
+            setImportOpen(false);
+            setSettingsOpen(true);
+          }}
+        />
+      )}
+      {createOpen && (
+        <CreateDeckDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          mutate={mutate}
+          onCreated={openDeck}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsDialog
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          data={data}
+          mutate={mutate}
+        />
+      )}
+      {publishId && (
+        <PublishDialog
+          deck={data.decks.find((d) => d.id === publishId) ?? null}
+          onClose={() => setPublishId(null)}
+          mutate={mutate}
+        />
+      )}
+      {answerDraft.question && <AiAnswerDialog draft={answerDraft} />}
+      {questionAction && (
+        <QuestionActionDialog
+          {...questionAction}
+          data={data}
+          mutate={mutate}
+          onClose={() => setQuestionAction(null)}
+          onDone={() => {
+            if (
+              questionAction.action === "delete" &&
+              view === "question" &&
+              questionId === questionAction.question.id
+            ) {
+              setQuestionId(null);
+              setView(origin.current.view);
+              setDeckId(origin.current.deckId);
+            }
+          }}
+        />
+      )}
+      {deleteDeck && (
+        <DeleteDeckDialog
+          deck={deleteDeck}
+          mutate={mutate}
+          onClose={() => setDeleteDeck(null)}
+          onDeleted={() => {
+            openDeck(null);
+          }}
+        />
+      )}
     </div>
   );
 }
