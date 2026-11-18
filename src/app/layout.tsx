@@ -1,8 +1,14 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Toaster } from "sonner";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import "./notebook.css";
+import "./mobile.css";
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
 export const metadata: Metadata = {
   title: "拾忆 · 把知识变成自己的表达",
   description: "面试题知识库、间隔复习与随文 AI 助教。每天一点，记得更久。",

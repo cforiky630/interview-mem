@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { PencilLine, Eye, RotateCcw, X, Check } from "lucide-react";
 import { toast } from "sonner";
 import { Markdown } from "./markdown";
@@ -12,7 +12,7 @@ import {
   type StudyBlock,
 } from "@/lib/study-document";
 
-export function ParagraphPractice({
+export const ParagraphPractice = memo(function ParagraphPractice({
   block,
   draftKey,
   references,
@@ -132,7 +132,7 @@ export function ParagraphPractice({
       )}
     </section>
   );
-}
+});
 
 export function FollowupCards({
   followups,

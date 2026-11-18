@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import dynamic from "next/dynamic";
 import {
   BookOpen,
@@ -32,6 +32,7 @@ import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
 import { Library, Catalog } from "./library";
 import { useAiAnswerDraft } from "./use-ai-answer-draft";
+import { usePageScroll } from "./use-page-scroll";
 import type { Mutate } from "./dialogs";
 const QuestionReader = dynamic(
   () => import("./question-reader").then((m) => m.QuestionReader),
@@ -108,6 +109,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState(false);
   const [view, setView] = useState<View>("today");
+  const [navigationTarget, setNavigationTarget] = useState<View>("today");
+  const [isNavigating, startTransition] = useTransition();
   const [deckId, setDeckId] = useState<string | null | undefined>();
   const [questionId, setQuestionId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -143,6 +146,47 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const grading = useRef(false);
   const eventId = useRef(crypto.randomUUID());
   const lifetime = useRef<AbortController | null>(null);
+  const pageKey = editQuestion
+    ? `edit:${editQuestion.id}`
+    : view === "question"
+      ? `question:${questionId}`
+      : view === "review"
+        ? `review:${reviewIndex}:${queue[reviewIndex]?.id ?? "done"}`
+        : view === "library"
+          ? `library:${deckId === null ? "unfiled" : (deckId ?? "all")}`
+          : view;
+  const rememberScroll = usePageScroll(pageKey, !!data);
+  useEffect(() => {
+    if (!data) return;
+    const connection = (
+      navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string };
+      }
+    ).connection;
+    if (
+      connection?.saveData ||
+      /(^|-)2g$/.test(connection?.effectiveType ?? "")
+    )
+      return;
+    // 首页可用后再空闲预热阅读器，让手机第一次点题目时不必等待整块脚本。
+    const warm = () => {
+      void import("./question-reader").catch(() => {});
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(warm, { timeout: 500 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(warm, 150);
+    return () => window.clearTimeout(id);
+  }, [data?.user.id]);
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const previous = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = previous;
+    };
+  }, [sidebarOpen]);
   useEffect(() => {
     const controller = new AbortController();
     lifetime.current = controller;
@@ -179,10 +223,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         return;
       }
       if (editingId.current && pendingCount.current) return;
-      setEditQuestion(null);
-      setQuestionId(matches[0].id);
-      setView("question");
-      window.scrollTo({ top: 0, behavior: "instant" });
+      changePage("question", () => {
+        setEditQuestion(null);
+        setQuestionId(matches[0].id);
+      });
     }
     window.addEventListener("shiyi:open-note", openLinkedNote);
     return () => window.removeEventListener("shiyi:open-note", openLinkedNote);
@@ -281,10 +325,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       ) {
         event.preventDefault();
         if (editingId.current && pendingCount.current) return;
-        setEditQuestion(null);
-        setView("library");
-        setDeckId(undefined);
-        setSearchToken((n) => n + 1);
+        changePage("library", () => {
+          setEditQuestion(null);
+          setDeckId(undefined);
+          setSearchToken((n) => n + 1);
+        });
         setTimeout(
           () =>
             (
@@ -334,28 +379,37 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }
   function navigate(next: View) {
     if (editingId.current && pendingCount.current) return;
-    setEditQuestion(null);
-    setView(next);
+    changePage(next, () => {
+      setEditQuestion(null);
+      if (next === "library") setDeckId(undefined);
+    });
     setSidebarOpen(false);
-    if (next === "library") setDeckId(undefined);
     if (next === "catalog") void loadCatalog();
-    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+  function changePage(next: View, prepare?: () => void) {
+    rememberScroll();
+    setNavigationTarget(next);
+    // 导航反馈先提交，长文的 Markdown 渲染可被下一次触控打断。
+    startTransition(() => {
+      prepare?.();
+      setView(next);
+    });
   }
   function openDeck(id?: string | null) {
     if (editingId.current && pendingCount.current) return;
-    setEditQuestion(null);
-    setDeckId(id);
-    setView("library");
+    changePage("library", () => {
+      setEditQuestion(null);
+      setDeckId(id);
+    });
     setSidebarOpen(false);
-    window.scrollTo({ top: 0, behavior: "instant" });
   }
   function openQuestion(question: QuestionView) {
     if (editingId.current && pendingCount.current) return;
-    setEditQuestion(null);
     origin.current = { view, deckId };
-    setQuestionId(question.id);
-    setView("question");
-    window.scrollTo({ top: 0, behavior: "instant" });
+    changePage("question", () => {
+      setEditQuestion(null);
+      setQuestionId(question.id);
+    });
   }
   function startReview(targetDeck?: string, single?: QuestionView) {
     if (editingId.current && pendingCount.current) return;
@@ -379,13 +433,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         0,
         Math.max(0, data.settings.dailyNewLimit - data.stats.newLearnedToday),
       );
-    setQueue(single ? [single] : [...due, ...fresh]);
-    setReviewIndex(0);
-    setRatings([]);
-    setView("review");
+    changePage("review", () => {
+      setQueue(single ? [single] : [...due, ...fresh]);
+      setReviewIndex(0);
+      setRatings([]);
+    });
     setSidebarOpen(false);
     eventId.current = crypto.randomUUID();
-    window.scrollTo({ top: 0, behavior: "instant" });
+    rememberScroll();
   }
   async function favorite(question: QuestionView) {
     await mutate("/api/questions", {
@@ -395,7 +450,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     });
   }
   async function grade(rating: number, answer = "") {
-    if (grading.current) return;
+    if (grading.current || isNavigating) return;
     const q = queue[reviewIndex];
     if (!q) return;
     const latest = data?.questions.find((item) => item.id === q.id);
@@ -432,7 +487,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         setRatings((previous) => [...previous, rating]);
         setReviewIndex((n) => n + 1);
         eventId.current = crypto.randomUUID();
-        window.scrollTo({ top: 0, behavior: "instant" });
+        rememberScroll();
       }
     } finally {
       grading.current = false;
@@ -465,6 +520,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const queueQuestion = queue[reviewIndex];
   const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
   const libraryView = view === "question" ? origin.current.view : view;
+  const displayedView = isNavigating ? navigationTarget : view;
   const nav = [
     { id: "today" as const, label: "今日", icon: LayoutDashboard },
     { id: "library" as const, label: "我的题库", icon: Layers2 },
@@ -479,6 +535,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   return (
     <div
       className={`app-shell ${editQuestion ? "editor-open" : ""} ${editQuestion && pending ? "editor-saving" : ""}`}
+      onPointerDownCapture={rememberScroll}
+      onKeyDownCapture={rememberScroll}
     >
       {sidebarOpen && (
         <button
@@ -594,12 +652,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           </button>
         </div>
       </aside>
-      <main className="main-layout">
+      <main className="main-layout" aria-busy={isNavigating}>
+        {isNavigating && (
+          <div className="page-transition-progress" aria-hidden="true" />
+        )}
         <header className="topbar">
           <div>
             <button
               className="icon-button mobile-menu"
               aria-label="打开导航"
+              aria-expanded={sidebarOpen}
               onClick={() => setSidebarOpen(true)}
             >
               <Menu size={21} />
@@ -618,7 +680,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                       catalog: "发现题库",
                       history: "回顾记录",
                       question: "学习卡",
-                    }[view]}
+                    }[displayedView]}
               </strong>
             </span>
           </div>
@@ -751,9 +813,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               question={currentQuestion}
               data={data}
               onBack={() => {
-                setView(origin.current.view);
-                setDeckId(origin.current.deckId);
-                window.scrollTo({ top: 0, behavior: "instant" });
+                changePage(origin.current.view, () =>
+                  setDeckId(origin.current.deckId),
+                );
               }}
               backLabel={
                 origin.current.view === "history"
@@ -868,12 +930,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             onBack={() => {
               if (pendingCount.current) return;
               setEditQuestion(null);
-              window.scrollTo({ top: 0, behavior: "instant" });
+              rememberScroll();
             }}
             onSaved={() => {
               if (editingId.current === editQuestion.id) {
                 setEditQuestion(null);
-                window.scrollTo({ top: 0, behavior: "instant" });
+                rememberScroll();
               }
             }}
             onBatchImport={(seed, onCommitted) => {
@@ -884,11 +946,28 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           />
         )}
       </main>
-      <nav className="mobile-bottom-nav">
+      <nav className="mobile-bottom-nav" aria-label="手机主导航">
         {nav.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
-            className={view === id ? "active" : ""}
+            className={
+              displayedView === id ||
+              (id === "library" &&
+                ["question", "favorites", "inbox", "archived"].includes(
+                  displayedView,
+                ))
+                ? "active"
+                : ""
+            }
+            aria-current={
+              displayedView === id ||
+              (id === "library" &&
+                ["question", "favorites", "inbox", "archived"].includes(
+                  displayedView,
+                ))
+                ? "page"
+                : undefined
+            }
             onClick={() => (id === "review" ? startReview() : navigate(id))}
           >
             <Icon size={20} />

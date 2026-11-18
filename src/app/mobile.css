@@ -1,0 +1,184 @@
+/* 手机沿用原有手绘绿色，只调整触控、留白和阅读密度。 */
+.load-more-questions {
+  grid-column: 1 / -1;
+  min-height: 44px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.page-transition-progress {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  inset-inline: 0;
+  z-index: 60;
+  height: 2px;
+  overflow: hidden;
+  background: var(--accent-soft);
+}
+.page-transition-progress::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 35%;
+  background: var(--accent);
+  animation: navigation-progress 0.85s ease-in-out infinite;
+}
+@keyframes navigation-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(390%);
+  }
+}
+@media (max-width: 760px) {
+  .main-layout {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: calc(58px + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+    background: var(--bg);
+  }
+  .topbar .icon-button,
+  .topbar-actions > .icon-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+  .topbar > div,
+  .topbar-actions {
+    gap: 4px;
+  }
+  .sidebar {
+    z-index: 80;
+    padding-top: calc(24px + env(safe-area-inset-top));
+    padding-bottom: env(safe-area-inset-bottom);
+    height: 100dvh;
+  }
+  .sidebar-backdrop {
+    z-index: 79;
+    backdrop-filter: none;
+  }
+  .mobile-bottom-nav {
+    height: calc(64px + env(safe-area-inset-bottom));
+  }
+  .mobile-bottom-nav > button {
+    position: relative;
+    gap: 4px;
+    font-size: 11px;
+    touch-action: manipulation;
+  }
+  .mobile-bottom-nav > button > * {
+    position: relative;
+  }
+  .mobile-bottom-nav > button.active::before {
+    content: "";
+    position: absolute;
+    top: 5px;
+    width: min(80px, 86%);
+    height: 51px;
+    border-radius: 12px 5px 11px 6px;
+    background: var(--accent-soft);
+  }
+  .mobile-bottom-nav > button:active {
+    background: var(--accent-soft);
+  }
+  .page,
+  .reader-layout,
+  .question-article,
+  .reader-tab-panel {
+    animation: none;
+  }
+  .notebook-decks .deck-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .button,
+  .back-link,
+  .text-button,
+  .reader-tabs > button,
+  .library-sections > button,
+  .action-menu > div > button {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+  .heading-actions > .button,
+  .library-page .page-heading .heading-actions > .button {
+    padding-inline: 14px;
+    font-size: 12px;
+  }
+  .reader-tools .icon-button,
+  .reader-more .icon-button,
+  .question-row-tools .icon-button {
+    width: 40px;
+    min-width: 40px;
+    height: 44px;
+  }
+  .notebook-reader .reader-toolbar {
+    padding-block: 6px;
+  }
+  .question-card-heading {
+    padding: 20px 18px 16px;
+  }
+  .question-card-heading h1 {
+    font-size: 26px;
+  }
+  .reader-tab-panel {
+    padding: 18px 20px 22px;
+  }
+  .notebook-reader .prose-content {
+    font-size: 16px;
+    line-height: 1.85;
+  }
+  .reader-tabs {
+    margin-top: 12px;
+  }
+  .reader-tabs > button {
+    font-size: 14px;
+    padding-inline: 14px;
+  }
+  .library-page .search-field input,
+  .library-page .list-toolbar select,
+  .notebook-reader .personal-notes textarea,
+  .notebook-reader .followup-card textarea,
+  .notebook-reader .practice-block textarea,
+  .notebook-reader .answer-draft textarea,
+  .notebook-reader .ai-panel textarea {
+    font-size: 16px;
+  }
+  .search-field,
+  .list-toolbar select {
+    min-height: 44px;
+  }
+  .paragraph-start {
+    left: -25px;
+    width: 28px;
+    min-height: 36px;
+    opacity: 0.65;
+    touch-action: manipulation;
+  }
+  .review-rating-panel {
+    bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+  .notebook-reader .ai-panel {
+    bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+  .table-scroll,
+  .prose-content pre {
+    overscroll-behavior-x: contain;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-transition-progress::after {
+    animation: none;
+    width: 100%;
+  }
+  .page,
+  .reader-layout,
+  .followup-card {
+    animation: none;
+  }
+}

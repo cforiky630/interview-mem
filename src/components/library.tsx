@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   Search,
@@ -63,6 +63,9 @@ export function Library({
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [section, setSection] = useState("decks");
+  const [visibleCount, setVisibleCount] = useState(40);
+  const more = useRef<HTMLButtonElement>(null);
+  const query = useDeferredValue(search.trim().toLowerCase());
   useEffect(() => {
     if (searchToken) {
       setSection("questions");
@@ -79,22 +82,47 @@ export function Library({
   const unfiled = deckId === null || (root && section === "unfiled");
   const archived = filter === "archived" || (root && section === "archived");
   const deck = data.decks.find((d) => d.id === deckId);
-  const filtered = data.questions.filter((q) => {
-    if (deckId !== undefined && q.deckId !== deckId) return false;
-    if (unfiled && (!q.isOwner || q.deckId !== null)) return false;
-    if (archived ? !q.archived : q.archived) return false;
-    if (filter === "favorites" && !q.favorite) return false;
-    if (filter === "inbox" && !q.needsEditing) return false;
-    if (status === "new" && q.fsrs) return false;
-    if (
-      status === "due" &&
-      (!q.fsrs || new Date(q.fsrs.due).getTime() > Date.now())
-    )
-      return false;
-    return `${q.title} ${q.answer} ${q.tags.join(" ")}`
-      .toLowerCase()
-      .includes(search.toLowerCase());
-  });
+  const filtered = useMemo(
+    () =>
+      data.questions.filter((q) => {
+        if (deckId !== undefined && q.deckId !== deckId) return false;
+        if (unfiled && (!q.isOwner || q.deckId !== null)) return false;
+        if (archived ? !q.archived : q.archived) return false;
+        if (filter === "favorites" && !q.favorite) return false;
+        if (filter === "inbox" && !q.needsEditing) return false;
+        if (status === "new" && q.fsrs) return false;
+        if (
+          status === "due" &&
+          (!q.fsrs || new Date(q.fsrs.due).getTime() > Date.now())
+        )
+          return false;
+        return (
+          !query ||
+          `${q.title} ${q.answer} ${q.tags.join(" ")}`
+            .toLowerCase()
+            .includes(query)
+        );
+      }),
+    [data.questions, deckId, unfiled, archived, filter, status, query],
+  );
+  useEffect(
+    () => setVisibleCount(40),
+    [deckId, filter, status, query, section],
+  );
+  useEffect(() => {
+    const button = more.current;
+    if (!button || visibleCount >= filtered.length) return;
+    // 长题库逐步展开，保留已展开的条目以便返回时恢复滚动。
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting))
+          setVisibleCount((count) => count + 40);
+      },
+      { rootMargin: "400px" },
+    );
+    observer.observe(button);
+    return () => observer.disconnect();
+  }, [visibleCount, filtered.length, section, deckId, filter]);
   const heading =
     (deckId === null ? "未分类" : deck?.title) ??
     (filter === "favorites"
@@ -278,7 +306,7 @@ export function Library({
           </div>
           {filtered.length ? (
             <div className="question-list">
-              {filtered.map((q, i) => (
+              {filtered.slice(0, visibleCount).map((q, i) => (
                 <div className="question-row" key={q.id}>
                   <span className="row-index">
                     {String(i + 1).padStart(2, "0")}
@@ -357,6 +385,15 @@ export function Library({
                   </button>
                 </div>
               ))}
+              {visibleCount < filtered.length && (
+                <button
+                  ref={more}
+                  className="load-more-questions"
+                  onClick={() => setVisibleCount((count) => count + 40)}
+                >
+                  加载更多题目
+                </button>
+              )}
             </div>
           ) : (
             <div className="empty-state">

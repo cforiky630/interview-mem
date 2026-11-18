@@ -1,0 +1,89 @@
+{
+  "measuredOn": "2026-11-18",
+  "method": "Single before/after run, production build, Chrome 390x844 touch viewport, synthetic account",
+  "note": "CPU/network emulation measures this machine, not a physical phone or a population percentile. First opening includes optional reader prewarming.",
+  "before": {
+    "cpuSlowdown": 4,
+    "latencyMs": 120,
+    "questions": 120,
+    "samples": [
+      {
+        "name": "today-to-library",
+        "ms": 75,
+        "longTasksMs": 0
+      },
+      {
+        "name": "cold-reader",
+        "ms": 1540,
+        "longTasksMs": 475
+      },
+      {
+        "name": "open-ai",
+        "ms": 246,
+        "longTasksMs": 207
+      },
+      {
+        "name": "reader-to-library",
+        "ms": 224,
+        "longTasksMs": 123
+      },
+      {
+        "name": "warm-reader",
+        "ms": 321,
+        "longTasksMs": 280
+      },
+      {
+        "name": "reader-to-today",
+        "ms": 63,
+        "longTasksMs": 0
+      },
+      {
+        "name": "today-to-review",
+        "ms": 154,
+        "longTasksMs": 55
+      }
+    ]
+  },
+  "after": {
+    "cpuSlowdown": 4,
+    "latencyMs": 120,
+    "questions": 120,
+    "samples": [
+      {
+        "name": "today-to-library",
+        "ms": 110,
+        "longTasksMs": 0
+      },
+      {
+        "name": "cold-reader",
+        "ms": 1008,
+        "longTasksMs": 333
+      },
+      {
+        "name": "open-ai",
+        "ms": 104,
+        "longTasksMs": 0
+      },
+      {
+        "name": "reader-to-library",
+        "ms": 166,
+        "longTasksMs": 0
+      },
+      {
+        "name": "warm-reader",
+        "ms": 392,
+        "longTasksMs": 52
+      },
+      {
+        "name": "reader-to-today",
+        "ms": 113,
+        "longTasksMs": 0
+      },
+      {
+        "name": "today-to-review",
+        "ms": 157,
+        "longTasksMs": 0
+      }
+    ]
+  }
+}

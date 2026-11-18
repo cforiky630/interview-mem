@@ -134,11 +134,11 @@ export function QuestionReader({
   progress?: { current: number; total: number };
   onSingleReview?: () => void;
 }) {
-  const documentView = useMemo(
-    () => studyDocument(question.answer, question.title),
-    [question.answer, question.title],
-  );
   const [revealed, setRevealed] = useState(!review);
+  const documentView = useMemo(
+    () => studyDocument(revealed ? question.answer : "", question.title),
+    [question.answer, question.title, revealed],
+  );
   const [tab, setTab] = useState<ReaderTab>("answer");
   const [inputMode, setInputMode] = useState<"written" | "oral">("written");
   const [answer, setAnswer] = useState("");
@@ -157,6 +157,7 @@ export function QuestionReader({
   const [noteDirty, setNoteDirty] = useState(false);
   const [noteBusy, setNoteBusy] = useState(false);
   const [insight, setInsight] = useState<Insight | null>(null);
+  const insightVersion = useRef("");
   const answerRef = useRef<HTMLDivElement>(null);
   const draftKey = `shiyi:note:${data.user.id}:${question.id}`;
   const answerKey = practiceDraftKey(
@@ -195,20 +196,30 @@ export function QuestionReader({
     }
   }, [question.note, question.noteVersion, noteDirty, draftKey]);
   useEffect(() => {
+    // 普通阅读不抢发曲线请求；答题或打开“记忆”时才读取，同版本复用结果。
+    if (!review && tab !== "memory") return;
+    const version = `${question.id}:${question.studyVersion}`;
+    if (insightVersion.current === version) return;
+    const controller = new AbortController();
     let cancelled = false;
     void api<Insight>(`/api/reviews?questionId=${question.id}`, undefined, {
       userId: data.user.id,
+      signal: controller.signal,
     })
       .then((result) => {
-        if (!cancelled) setInsight(result);
+        if (!cancelled) {
+          insightVersion.current = version;
+          setInsight(result);
+        }
       })
       .catch((error) => {
         if (!cancelled) toast.error(error.message);
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [question.id, question.studyVersion]);
+  }, [question.id, question.studyVersion, review, tab]);
   useEffect(() => {
     function detect() {
       const selected = window.getSelection();

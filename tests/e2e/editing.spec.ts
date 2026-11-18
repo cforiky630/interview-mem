@@ -246,6 +246,9 @@ test("rich document selection can become a followup without a separate answer ed
   await page.getByRole("button", { name: "指定追问", exact: true }).click();
   await expect(page.locator(".editor-detected-count")).toContainText("追问 1");
   await page.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "编辑题目", exact: true }),
+  ).not.toBeVisible();
   await page.getByRole("tab", { name: /^追问/ }).click();
   await expect(page.locator(".followup-question")).toContainText("手选问题");
   await page.getByRole("button", { name: "查看答案", exact: true }).click();
@@ -273,6 +276,9 @@ test("rich document selection can become a followup without a separate answer ed
   await expect(page.getByLabel("题目原文", { exact: true })).toHaveValue(whole);
   await expect(page.locator(".editor-detected-count")).toContainText("追问 1");
   await page.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "编辑题目", exact: true }),
+  ).not.toBeVisible();
   await expect(page.locator(".answer-content")).toContainText("新的核心回答");
   await page.getByRole("tab", { name: /^追问/ }).click();
   await expect(page.locator(".followup-question")).toContainText(
