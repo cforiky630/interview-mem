@@ -2,9 +2,9 @@
 .load-more-questions {
   grid-column: 1 / -1;
   min-height: 44px;
-  padding: 12px;
-  color: var(--muted);
-  font-size: 13px;
+  padding: 13px;
+  color: var(--subtle);
+  font-size: 14px;
 }
 .page-transition-progress {
   position: fixed;
@@ -69,7 +69,7 @@
   .mobile-bottom-nav > button {
     position: relative;
     gap: 4px;
-    font-size: 11px;
+    font-size: 12px;
     touch-action: manipulation;
   }
   .mobile-bottom-nav > button > * {
@@ -105,10 +105,20 @@
     min-height: 44px;
     touch-action: manipulation;
   }
+  .button.row-action-btn,
+  .ai-model-label-row > .button,
+  .topbar-import-btn {
+    min-height: 36px;
+    padding: 5px 10px;
+  }
+  .heading-actions {
+    align-items: center;
+  }
   .heading-actions > .button,
   .library-page .page-heading .heading-actions > .button {
-    padding-inline: 14px;
-    font-size: 12px;
+    margin-top: 0;
+    padding-inline: 15px;
+    font-size: 13px;
   }
   .reader-tools .icon-button,
   .reader-more .icon-button,
@@ -129,15 +139,18 @@
   .reader-tab-panel {
     padding: 18px 20px 22px;
   }
+  .notebook-reader .answer-content {
+    padding-left: 8px;
+  }
   .notebook-reader .prose-content {
-    font-size: 16px;
+    font-size: 16.5px;
     line-height: 1.85;
   }
   .reader-tabs {
     margin-top: 12px;
   }
   .reader-tabs > button {
-    font-size: 14px;
+    font-size: 14.5px;
     padding-inline: 14px;
   }
   .library-page .search-field input,
@@ -149,19 +162,36 @@
   .notebook-reader .ai-panel textarea {
     font-size: 16px;
   }
+  .library-page .list-toolbar select {
+    padding-right: 34px;
+  }
   .search-field,
   .list-toolbar select {
     min-height: 44px;
   }
+  .library-tag-bar {
+    align-items: center;
+  }
+  .tag-filter-pill,
+  .tag-bar-toggle {
+    min-height: 34px;
+  }
+  .obsidian-prop-row {
+    grid-template-columns: minmax(64px, 88px) minmax(0, 1fr);
+    gap: 8px;
+  }
   .paragraph-start {
-    left: -25px;
-    width: 28px;
-    min-height: 36px;
+    left: -26px;
+    width: 24px;
+    min-height: 32px;
     opacity: 0.65;
     touch-action: manipulation;
   }
   .review-rating-panel {
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: calc(64px + env(safe-area-inset-bottom));
+    box-shadow:
+      0 12px 0 var(--bg),
+      0 -4px 14px color-mix(in srgb, var(--bg) 85%, transparent);
   }
   .notebook-reader .ai-panel {
     bottom: calc(8px + env(safe-area-inset-bottom));

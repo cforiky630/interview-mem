@@ -5,8 +5,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown } from "../src/components/markdown";
 import {
+  extractNoteAliases,
   markdownDocument,
   normalizedNoteTitle,
+  parseTagListInput,
 } from "../src/lib/markdown-source";
 
 test("source Markdown: metadata is read without changing CRLF, BOM or original text", () => {
@@ -15,10 +17,39 @@ test("source Markdown: metadata is read without changing CRLF, BOM or original t
   const hash = createHash("sha256").update(source).digest("hex");
   const result = markdownDocument(source);
   assert.deepEqual(result.tags, ["RAG", "面试"]);
+  assert.deepEqual(result.properties, []);
   assert.equal(result.body, "# 原题\r\n\r\n答案\r\n");
   assert.equal(createHash("sha256").update(source).digest("hex"), hash);
   const ordinary = "---\n这是一段正文\n---\n后续段落";
   assert.equal(markdownDocument(ordinary).body, ordinary);
+});
+
+test("source Markdown: Obsidian frontmatter parses inline tags, hash tags and note properties", () => {
+  const inlineSource =
+    '---\ntags: [JavaScript, "异步", #高频]\naliases:\n  - "Event Loop"\n  - 宏任务与微任务\ndifficulty: 高频核心\n公司: "Example Corp"\n---\n正文内容';
+  const parsed = markdownDocument(inlineSource);
+  assert.deepEqual(parsed.tags, ["JavaScript", "异步", "高频"]);
+  assert.deepEqual(parsed.properties, [
+    { key: "aliases", value: ["Event Loop", "宏任务与微任务"] },
+    { key: "difficulty", value: "高频核心" },
+    { key: "公司", value: "Example Corp" },
+  ]);
+  assert.deepEqual(extractNoteAliases(inlineSource), [
+    "Event Loop",
+    "宏任务与微任务",
+  ]);
+  assert.equal(parsed.body, "正文内容");
+
+  const stringTags = markdownDocument(
+    "---\ntag: #前端, React, Vue\n---\n题解",
+  );
+  assert.deepEqual(stringTags.tags, ["前端", "React", "Vue"]);
+  assert.deepEqual(parseTagListInput("#React, 并发，异步 #高频"), [
+    "React",
+    "并发",
+    "异步",
+    "高频",
+  ]);
 });
 
 test("source Markdown: formulas, Obsidian callouts and links render; code stays literal", () => {

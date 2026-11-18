@@ -66,7 +66,7 @@ export function CreateDeckDialog({
         if (!v) onClose();
       }}
       title="新建一个题库"
-      description="给这一组知识，一个清楚的名字。"
+      description="按技术栈或面试专题归类题目。"
     >
       <div className="dialog-form">
         <label className="field">
@@ -75,7 +75,7 @@ export function CreateDeckDialog({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             maxLength={80}
-            placeholder="例如：Java 后端核心知识"
+            placeholder="例如：前端工程化、MySQL 索引与锁、高并发系统设计"
             autoFocus
           />
         </label>
@@ -86,7 +86,7 @@ export function CreateDeckDialog({
             onChange={(e) => setDescription(e.target.value)}
             maxLength={500}
             rows={3}
-            placeholder="准备学习哪些内容？"
+            placeholder="写一句话备注题库范围、目标岗位或当前复习重心（可选）…"
           />
         </label>
         <div className="field">
@@ -113,7 +113,7 @@ export function CreateDeckDialog({
         </div>
       </div>
       <div className="dialog-footer">
-        <span className="muted small">创建后默认只有你自己可见。</span>
+        <span className="muted small">默认仅自己可见。</span>
         <Button disabled={busy || !title.trim()} onClick={() => void create()}>
           {busy ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}{" "}
           创建题库
@@ -174,7 +174,9 @@ export function PublishDialog({
       <div className="dialog-form">
         <div className="publish-notice">
           <Rss size={23} />
-          <p>发布后的内容可被其他用户订阅。</p>
+          <p>
+            发布只读快照供他人订阅；个人笔记与复习进度始终私有。
+          </p>
         </div>
         <label className="field">
           谁可以找到这个题库
@@ -297,14 +299,18 @@ export function SettingsDialog({
       setBusy(false);
     }
   }
+  function close() {
+    document.documentElement.dataset.theme = data.settings.theme;
+    onClose();
+  }
   return (
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!v) onClose();
+        if (!v) close();
       }}
       title="让拾忆更适合你"
-      description="管理 AI 连接、学习节奏与自己的数据。"
+      description="管理 AI 连接、学习偏好与数据备份。"
       className="settings-dialog"
     >
       <div className="settings-tabs">
@@ -329,7 +335,11 @@ export function SettingsDialog({
       </div>
       <div className="dialog-form">
         {tab === "ai" ? (
-          <AiConnectionForm settings={data.settings} mutate={mutate} />
+          <AiConnectionForm
+            userId={data.user.id}
+            settings={data.settings}
+            mutate={mutate}
+          />
         ) : tab === "study" ? (
           <>
             <label className="field">
@@ -367,13 +377,19 @@ export function SettingsDialog({
               <div className="theme-options">
                 <button
                   className={theme === "light" ? "selected" : ""}
-                  onClick={() => setTheme("light")}
+                  onClick={() => {
+                    setTheme("light");
+                    document.documentElement.dataset.theme = "light";
+                  }}
                 >
                   <Sun size={22} /> 清晨 · 浅色
                 </button>
                 <button
                   className={theme === "dark" ? "selected" : ""}
-                  onClick={() => setTheme("dark")}
+                  onClick={() => {
+                    setTheme("dark");
+                    document.documentElement.dataset.theme = "dark";
+                  }}
                 >
                   <Moon size={22} /> 夜读 · 深色
                 </button>
@@ -395,8 +411,7 @@ export function SettingsDialog({
             </div>
             <h3>你的积累，随时带走。</h3>
             <p className="muted">
-              导出包含题库内容、私人笔记、完整复习历史、导入原文以及 AI 对话的
-              JSON 文件。API Key 不包含在导出中。
+              导出题库、笔记、复习记录、原文与 AI 对话的 JSON 备份（不含 API Key）。
             </p>
             <Button
               variant="outline"
@@ -405,9 +420,7 @@ export function SettingsDialog({
             >
               <Download size={16} /> 导出我的数据
             </Button>
-            <p className="muted small">
-              当前提供备份导出。完整备份恢复功能尚未提供。
-            </p>
+            <p className="muted small">当前支持导出备份文件，暂不支持导入恢复。</p>
           </>
         )}
       </div>

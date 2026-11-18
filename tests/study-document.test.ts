@@ -6,7 +6,7 @@ import { parseQuestions } from "../src/lib/importer";
 
 test("whole documents share heading-based followup recognition with imports", () => {
   const source =
-    "# 闭包是什么？\r\n\r\n正文与示例。\r\n\r\n## 面试追问\r\n\r\nQ1：怎么保存状态？\r\nA：用词法环境。\r\n\r\nQ2：注意什么？\r\nA：避免持有多余引用。\r\n```text\r\nQ：代码里的示例\r\nA：不是追问\r\n```\r\n\r\n## 参考资料\r\n保留链接说明。\r\n";
+    "# 闭包是什么？\r\n\r\n正文与示例。\r\n\r\n1. 要点\r\n   - 嵌套列表\r\n2. 结论\r\n\r\n## 面试追问\r\n\r\nQ1：怎么保存状态？\r\nA：用词法环境。\r\n\r\nQ2：注意什么？\r\nA：避免持有多余引用。\r\n```text\r\nQ：代码里的示例\r\nA：不是追问\r\n```\r\n\r\n## 参考资料\r\n保留链接说明。\r\n";
   const view = studyDocument(source, "闭包是什么？");
   assert.equal(view.followups.length, 2);
   assert.equal(view.followups[0].question, "怎么保存状态？");
@@ -17,6 +17,9 @@ test("whole documents share heading-based followup recognition with imports", ()
   assert.ok(
     !view.blocks.some((block) => block.markdown.includes("怎么保存状态")),
   );
+  assert.ok(view.bodyMarkdown.includes("1. 要点\r\n   - 嵌套列表\r\n2. 结论"));
+  assert.ok(view.bodyMarkdown.includes("## 参考资料\r\n保留链接说明。"));
+  assert.doesNotMatch(view.bodyMarkdown, /闭包是什么|怎么保存状态|注意什么/);
   const imported = parseQuestions(source, "qa", { preserveSource: true });
   assert.equal(imported.length, 1);
   assert.equal(imported[0].title, "闭包是什么？");
@@ -68,6 +71,7 @@ test("incomplete followups and question-like code remain in the document instead
   assert.ok(
     view.blocks.some((block) => block.markdown.includes("暂时没有答案")),
   );
+  assert.ok(view.bodyMarkdown.includes("暂时没有答案"));
   const cards = parseQuestions(source, "qa", { preserveSource: true });
   assert.equal(cards.length, 2);
   assert.ok(cards[0].answer.includes("暂时没有答案"));

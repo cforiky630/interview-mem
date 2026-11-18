@@ -4,17 +4,23 @@ export const AI_PRESETS = [
     id: "deepseek",
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
-    model: "deepseek-flash",
-    models: ["deepseek-flash", "deepseek-v4-pro"],
+    model: "",
+    models: [] as readonly string[],
   },
   {
     id: "openai",
     name: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4.1-mini",
-    models: ["gpt-4.1-mini"],
+    model: "",
+    models: [] as readonly string[],
   },
-  { id: "custom", name: "自定义", baseUrl: "", model: "", models: [] },
+  {
+    id: "custom",
+    name: "自定义",
+    baseUrl: "",
+    model: "",
+    models: [] as readonly string[],
+  },
 ] as const;
 export const DEFAULT_AI = AI_PRESETS[0];
 

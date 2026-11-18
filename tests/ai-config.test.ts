@@ -17,7 +17,7 @@ import {
   aiFetch,
   trustedAiProxyOrigin,
 } from "../src/server/ai-transport";
-import { providerRequest } from "../src/server/ai";
+import { providerModels, providerRequest } from "../src/server/ai";
 
 const publicAddress = { address: "93.184.216.34", family: 4 };
 test("AI transport: native Node fetch and the pinned dispatcher use a compatible wire interface", async () => {
@@ -42,8 +42,13 @@ test("AI transport: native Node fetch and the pinned dispatcher use a compatible
     );
   }
 });
-test("AI configuration: presets share one protocol, API prefixes survive and full endpoints normalize", () => {
+test("AI configuration: presets share one protocol, omit preset models and full endpoints normalize", () => {
   assert.equal(AI_PRESETS.length, 3);
+  assert.ok(
+    AI_PRESETS.every(
+      (preset) => preset.model === "" && preset.models.length === 0,
+    ),
+  );
   assert.equal(aiPresetFor("https://api.deepseek.com/"), "deepseek");
   assert.equal(
     aiPresetFor("https://api.openai.com/v1/chat/completions"),
@@ -266,6 +271,58 @@ test("AI adapter: custom API paths, streamed calls and OpenAI token parameters s
       (calls[1].init.headers as Record<string, string>).Authorization,
       "Bearer fake-gateway-key",
     );
+  } finally {
+    fetcher.mock.restore();
+    resolver.mock.restore();
+  }
+});
+
+test("AI adapter: providerModels fetches /models and falls back to /v1/models on 404", async () => {
+  const resolver = mock.method(dns, "lookup", async () => [publicAddress]);
+  const calls: { url: string; method?: string; auth?: string }[] = [];
+  const fetcher = mock.method(
+    globalThis,
+    "fetch",
+    async (url: URL | string | Request, init?: RequestInit) => {
+      const urlStr = String(url);
+      calls.push({
+        url: urlStr,
+        method: init?.method,
+        auth: (init?.headers as Record<string, string>)?.Authorization,
+      });
+      if (urlStr === "https://gateway.example.com/models") {
+        return new Response("Not Found", { status: 404 });
+      }
+      if (urlStr === "https://gateway.example.com/v1/models") {
+        return Response.json({
+          data: [
+            { id: "model-a" },
+            { id: "model-b" },
+            { id: "model-a" },
+          ],
+        });
+      }
+      return Response.json({
+        data: [{ id: "deepseek-chat" }, { id: "deepseek-reasoner" }],
+      });
+    },
+  );
+  try {
+    const direct = await providerModels({
+      baseUrl: "https://api.deepseek.com",
+      key: "fake-ds-key",
+    });
+    assert.deepEqual(direct, ["deepseek-chat", "deepseek-reasoner"]);
+
+    const fallback = await providerModels({
+      baseUrl: "https://gateway.example.com",
+      key: "fake-gw-key",
+    });
+    assert.deepEqual(fallback, ["model-a", "model-b"]);
+    assert.equal(calls[0].method, "GET");
+    assert.equal(calls[0].auth, "Bearer fake-ds-key");
+    assert.equal(calls[1].url, "https://gateway.example.com/models");
+    assert.equal(calls[2].url, "https://gateway.example.com/v1/models");
   } finally {
     fetcher.mock.restore();
     resolver.mock.restore();

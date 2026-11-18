@@ -18,6 +18,7 @@ export type StudyBlock = {
 };
 export type StudyDocument = {
   blocks: StudyBlock[];
+  bodyMarkdown: string;
   followups: Followup[];
   references: string;
   unresolvedFollowups: number;
@@ -40,7 +41,14 @@ export function studyDocument(source: string, title = ""): StudyDocument {
       .join("\n") ?? "";
   const blocks: StudyBlock[] = [],
     followups: Followup[] = [];
+  const bodyParts: string[] = [];
+  let bodyOffset = 0;
   let number = 0;
+  // 整篇预览按原文位置去掉追问，列表缩进和代码块保持原样。
+  function omitFromBody(start: number, end: number) {
+    bodyParts.push(body.slice(bodyOffset, start));
+    bodyOffset = end;
+  }
   function append(
     unit: Node,
     depth = 0,
@@ -100,22 +108,25 @@ export function studyDocument(source: string, title = ""): StudyDocument {
     }
   }
   for (const node of root.children ?? []) {
+    const offset = node.position?.start.offset ?? 0;
+    const region = regions.find(
+      (region) =>
+        region.complete && offset >= region.start && offset < region.end,
+    );
+    if (region) {
+      if (offset === region.start) {
+        omitFromBody(region.start, region.end);
+        followups.push(...region.items);
+      }
+      continue;
+    }
     if (node.type === "definition") continue;
     if (
       node.type === "heading" &&
       node === leading &&
       normalizedNoteTitle(text(node)) === normalizedNoteTitle(title)
-    )
-      continue;
-    const region = regions.find(
-      (region) =>
-        region.complete &&
-        (node.position?.start.offset ?? 0) >= region.start &&
-        (node.position?.start.offset ?? 0) < region.end,
-    );
-    if (region) {
-      if ((node.position?.start.offset ?? 0) === region.start)
-        followups.push(...region.items);
+    ) {
+      omitFromBody(offset, node.position?.end.offset ?? offset);
       continue;
     }
     if (node.type === "list") listItems(node, 0);
@@ -123,6 +134,7 @@ export function studyDocument(source: string, title = ""): StudyDocument {
   }
   return {
     blocks,
+    bodyMarkdown: bodyParts.join("") + body.slice(bodyOffset),
     followups,
     references: definitions,
     unresolvedFollowups: regions.filter((region) => !region.complete).length,

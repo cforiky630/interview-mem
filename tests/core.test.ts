@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseQuestions, parseQuestionTitles } from "../src/lib/importer";
+import {
+  applyCorrectionSpan,
+  computeInlineDiff,
+  sanitizeProofreadCorrections,
+} from "../src/lib/ai-proofread";
 import { contentHash, decryptKey, encryptKey } from "../src/server/crypto";
 import { schedule, reviewInsight } from "../src/server/scheduler";
 
@@ -74,6 +79,92 @@ test("import: missing answers are put in inbox; CRLF, empty input and tables sur
     parseQuestions("## 缓存？\r\n|字段|说明|\r\n|---|---|\r\n|ETag|验证器|")[0]
       .answer,
     "|字段|说明|\n|---|---|\n|ETag|验证器|",
+  );
+  const withFrontmatter = parseQuestions(
+    "---\ntags: [JavaScript, 异步]\n---\n\n## 什么是 Promise？\n异步编程解决方案。\n\n## 什么是微任务？\n当前宏任务末尾执行。",
+  );
+  assert.equal(withFrontmatter.length, 2);
+  assert.deepEqual(withFrontmatter[0].tags, ["JavaScript", "异步"]);
+  assert.deepEqual(withFrontmatter[1].tags, ["JavaScript", "异步"]);
+  const untitledFrontmatter = parseQuestions(
+    "---\ntags:\n  - 系统设计\n---\n只有一个无标题题目\n这是回答正文",
+  );
+  assert.equal(untitledFrontmatter.length, 1);
+  assert.equal(untitledFrontmatter[0].title, "只有一个无标题题目");
+  assert.deepEqual(untitledFrontmatter[0].tags, ["系统设计"]);
+});
+
+test("ai-proofread: validates exact spans, aligns CRLF, rejects hallucinated or unchanged edits, and computes inline diffs", () => {
+  const source = {
+    title: "什么是 Promsie 微任务？",
+    answer: "第一行无误。\r\n第二行用 $100 和 `setTimout`\r\n回调。\r\n",
+  };
+  const checked = sanitizeProofreadCorrections(source, [
+    {
+      field: "title",
+      category: "term",
+      original: "Promsie",
+      replacement: "Promise",
+      reason: "Promise 拼写笔误",
+    },
+    {
+      field: "answer",
+      category: "code",
+      original: "`setTimout`\n回调",
+      replacement: "`setTimeout`\n回调",
+      reason: "setTimeout API 拼写错误",
+    },
+    {
+      field: "answer",
+      category: "typo",
+      original: "原文里根本不存在这句话",
+      replacement: "修正",
+      reason: "幻觉片段必须被过滤",
+    },
+    {
+      field: "answer",
+      category: "typo",
+      original: "第一行无误。",
+      replacement: "第一行无误。",
+      reason: "无改动建议必须被过滤",
+    },
+  ]);
+  assert.equal(checked.length, 2);
+  assert.equal(checked[0].original, "Promsie");
+  assert.equal(checked[1].original, "`setTimout`\r\n回调");
+  assert.equal(checked[1].replacement, "`setTimeout`\r\n回调");
+  assert.equal(checked[0].status, "pending");
+
+  const updatedAnswer = applyCorrectionSpan(
+    source.answer,
+    checked[1].original,
+    checked[1].replacement,
+  );
+  assert.ok(updatedAnswer.includes("$100"));
+  assert.ok(updatedAnswer.includes("`setTimeout`\r\n回调"));
+  assert.equal(
+    applyCorrectionSpan(
+      updatedAnswer,
+      checked[1].replacement,
+      checked[1].original,
+    ),
+    source.answer,
+  );
+
+  const segments = computeInlineDiff("异步 Promsie 队列", "异步 Promise 队列");
+  assert.equal(
+    segments
+      .filter((s) => s.type !== "insert")
+      .map((s) => s.text)
+      .join(""),
+    "异步 Promsie 队列",
+  );
+  assert.equal(
+    segments
+      .filter((s) => s.type !== "delete")
+      .map((s) => s.text)
+      .join(""),
+    "异步 Promise 队列",
   );
 });
 test("crypto: authenticated encryption binds each secret to its owner", () => {

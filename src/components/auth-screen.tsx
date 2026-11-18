@@ -54,7 +54,9 @@ export function AuthScreen() {
             <br />
             <span>都能说清楚。</span>
           </h1>
-          <p className="auth-intro">读一遍，写一遍，再复习。</p>
+          <p className="auth-intro">
+            整理属于自己的面试答案库，先合上原文默写一遍，再跟着记忆曲线把每个知识点稳稳内化成自己的表达。
+          </p>
           <div className="auth-illustration" aria-hidden="true">
             <NotebookSketch />
           </div>
@@ -74,7 +76,7 @@ export function AuthScreen() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   autoComplete="nickname"
-                  placeholder="你的名字"
+                  placeholder="希望怎么称呼你"
                   required
                   minLength={1}
                   maxLength={50}
@@ -102,7 +104,9 @@ export function AuthScreen() {
                 autoComplete={
                   mode === "signup" ? "new-password" : "current-password"
                 }
-                placeholder={mode === "signup" ? "至少 8 位字符" : "输入密码"}
+                placeholder={
+                  mode === "signup" ? "设置至少 8 位登录密码" : "输入你的密码"
+                }
                 required
                 minLength={8}
                 maxLength={128}

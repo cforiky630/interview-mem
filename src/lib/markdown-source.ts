@@ -1,20 +1,141 @@
-/** Display metadata without rewriting the source kept in the database. */
-export function markdownDocument(source: string) {
+export type NoteProperty = {
+  key: string;
+  value: string | string[];
+};
+
+const MAX_NOTE_TAGS = 12;
+const MAX_TAG_LENGTH = 30;
+
+function stripWrappingQuotes(value: string) {
+  return value.trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+}
+
+function normalizeTagValue(value: string) {
+  return stripWrappingQuotes(value).replace(/^#+/, "").trim();
+}
+
+/** Parse Obsidian-style tag formats: YAML lists, inline arrays, comma/space lists, or `#tag`. */
+export function parseTagListInput(value: string) {
+  const inner = value.trim().replace(/^\[(.*)\]$/, "$1");
+  return Array.from(
+    new Set(
+      inner
+        .split(/[,，\s]+/)
+        .map(normalizeTagValue)
+        .filter((tag) => tag && tag.length <= MAX_TAG_LENGTH),
+    ),
+  ).slice(0, MAX_NOTE_TAGS);
+}
+
+/** Display Obsidian frontmatter properties without rewriting the source kept in the database. */
+export function markdownDocument(source: string): {
+  body: string;
+  tags: string[];
+  properties: NoteProperty[];
+} {
   const match = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  const valid = match && /^[\w-]+:\s*/m.test(match[1]);
+  const valid = !!match && /^[A-Za-z0-9_\u4e00-\u9fa5-]+:\s*/m.test(match[1]);
   const metadata = valid ? match[1] : "";
-  const tags: string[] = [];
-  const block = metadata.match(
-    /^tags:\s*\r?\n((?:[ \t]+-\s*[^\r\n]+\r?\n?)+)/m,
-  )?.[1];
-  for (const item of block?.matchAll(/^[ \t]+-\s*(.+?)\s*$/gm) ?? []) {
-    const tag = item[1].replace(/^["']|["']$/g, "");
-    if (tag && tag.length <= 30) tags.push(tag);
+  const rawEntries: { key: string; rawValue: string | string[] }[] = [];
+  if (metadata) {
+    let currentKey: string | null = null;
+    let currentList: string[] | null = null;
+    const flush = () => {
+      if (currentKey && currentList) {
+        rawEntries.push({ key: currentKey, rawValue: currentList });
+      }
+      currentKey = null;
+      currentList = null;
+    };
+    for (const line of metadata.split(/\r?\n/)) {
+      if (!line.trim() || /^\s*#/.test(line)) continue;
+      const listMatch = line.match(/^[ \t]+-\s*(.*?)\s*$/);
+      if (listMatch && currentKey && currentList) {
+        const item = stripWrappingQuotes(listMatch[1]);
+        if (item) currentList.push(item);
+        continue;
+      }
+      const keyMatch = line.match(/^([A-Za-z0-9_\u4e00-\u9fa5-]+)\s*:\s*(.*)$/);
+      if (keyMatch) {
+        flush();
+        const key = keyMatch[1].trim();
+        const rest = keyMatch[2].trim();
+        if (!rest) {
+          currentKey = key;
+          currentList = [];
+        } else if (/^\[.*\]$/.test(rest)) {
+          const items = rest
+            .slice(1, -1)
+            .split(/[,，]/)
+            .map(stripWrappingQuotes)
+            .filter(Boolean);
+          rawEntries.push({ key, rawValue: items });
+        } else {
+          rawEntries.push({
+            key,
+            rawValue: stripWrappingQuotes(rest),
+          });
+        }
+      }
+    }
+    flush();
   }
-  return {
-    body: valid ? source.slice(match[0].length) : source,
-    tags: Array.from(new Set(tags)),
+
+  const tags: string[] = [];
+  const pushTag = (raw: string) => {
+    const tag = normalizeTagValue(raw);
+    if (tag && tag.length <= MAX_TAG_LENGTH && !tags.includes(tag) && tags.length < MAX_NOTE_TAGS) {
+      tags.push(tag);
+    }
   };
+  const properties: NoteProperty[] = [];
+  for (const entry of rawEntries) {
+    const lower = entry.key.toLowerCase();
+    if (lower === "tags" || lower === "tag") {
+      if (Array.isArray(entry.rawValue)) {
+        for (const item of entry.rawValue) pushTag(item);
+      } else {
+        for (const part of entry.rawValue.split(/[,，\s]+/)) pushTag(part);
+      }
+      continue;
+    }
+    if (lower === "aliases" || lower === "alias") {
+      const aliases = (
+        Array.isArray(entry.rawValue)
+          ? entry.rawValue
+          : entry.rawValue.split(/[,，]/)
+      )
+        .map((item) => stripWrappingQuotes(item).replace(/^\[\[|\]\]$/g, "").trim())
+        .filter(Boolean);
+      if (aliases.length) properties.push({ key: entry.key, value: aliases });
+      continue;
+    }
+    if (Array.isArray(entry.rawValue)) {
+      if (entry.rawValue.length)
+        properties.push({ key: entry.key, value: entry.rawValue });
+    } else if (entry.rawValue) {
+      properties.push({ key: entry.key, value: entry.rawValue });
+    }
+  }
+
+  return {
+    body: valid && match ? source.slice(match[0].length) : source,
+    tags,
+    properties,
+  };
+}
+
+export function extractNoteAliases(source: string) {
+  const { properties } = markdownDocument(source);
+  const aliases: string[] = [];
+  for (const prop of properties) {
+    const lower = prop.key.toLowerCase();
+    if (lower === "aliases" || lower === "alias") {
+      if (Array.isArray(prop.value)) aliases.push(...prop.value);
+      else aliases.push(prop.value);
+    }
+  }
+  return aliases;
 }
 
 export function normalizedNoteTitle(value: string) {

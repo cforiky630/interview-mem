@@ -36,7 +36,8 @@ export async function ensureWorkspace(userId: string) {
         id: crypto.randomUUID(),
         ownerId: userId,
         title: "我的面试题",
-        description: "把值得记住的知识，变成自己的表达。",
+        description:
+          "收录日常整理的高频面经、技术盲点与复盘思路，按记忆曲线逐步内化为自己的表达。",
         color: "sage",
       });
   });
@@ -343,7 +344,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       keyHint: keyRows[0]?.keyHint ?? "",
       provider: "openai-compatible",
       baseUrl: keyRows[0]?.baseUrl ?? "https://api.deepseek.com",
-      model: keyRows[0]?.model ?? "deepseek-flash",
+      model: keyRows[0]?.model ?? "",
       dailyGoal: pref?.dailyGoal ?? 5,
       dailyNewLimit: pref?.dailyNewLimit ?? 3,
       theme: pref?.theme ?? "light",

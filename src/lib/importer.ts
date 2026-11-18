@@ -137,7 +137,14 @@ export function parseQuestions(
     boundaries = markers.filter((m) => m.level === selected);
   }
   if (!boundaries.length) {
-    const firstIndex = lines.findIndex((line) => line.trim());
+    const firstAfterMeta = lines.findIndex(
+      (line, idx) => offsets[idx] >= metadataEnd && line.trim(),
+    );
+    const firstIndex =
+      firstAfterMeta >= 0
+        ? firstAfterMeta
+        : lines.findIndex((line) => line.trim());
+    if (firstIndex < 0) return [];
     const first = lines[firstIndex];
     const rest = lines.slice(firstIndex + 1);
     const answer = preserve
@@ -150,7 +157,7 @@ export function parseQuestions(
       {
         title: first.trim().replace(/^#+\s*/, ""),
         answer,
-        tags: [],
+        tags: document.tags,
         needsEditing: !answer.trim() || first.length > 200,
         ...(preserve ? { sourceText: raw } : {}),
       },
@@ -159,6 +166,10 @@ export function parseQuestions(
   return boundaries
     .map((boundary, i) => {
       const end = offsets[boundaries[i + 1]?.index] ?? raw.length;
+      const slice = raw.slice(offsets[boundary.index], end);
+      const itemTags = Array.from(
+        new Set([...document.tags, ...markdownDocument(slice).tags]),
+      ).slice(0, 12);
       const answer = preserve
         ? raw.slice(offsets[boundary.index + 1] ?? raw.length, end)
         : lines
@@ -172,11 +183,9 @@ export function parseQuestions(
       return {
         title: boundary.title,
         answer,
-        tags: [],
+        tags: itemTags,
         needsEditing: !answer.trim(),
-        ...(preserve
-          ? { sourceText: raw.slice(offsets[boundary.index], end) }
-          : {}),
+        ...(preserve ? { sourceText: slice } : {}),
       };
     })
     .filter((q) => q.title);

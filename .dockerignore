@@ -1,6 +1,5 @@
 node_modules
 .next
-.next-e2e
 .next-build
 .data
 .cache
@@ -8,8 +7,6 @@ node_modules
 .github
 .env
 .env.*
-test-results
-playwright-report
 *.log
 *.dump
 .idea

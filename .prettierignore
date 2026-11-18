@@ -1,9 +1,7 @@
 node_modules
 .next
 .next-build
-.next-e2e
 .data
 .cache
-test-results
 package-lock.json
 content/interview-original/

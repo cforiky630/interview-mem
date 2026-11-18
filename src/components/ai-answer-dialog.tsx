@@ -24,7 +24,7 @@ export function AiAnswerDialog({
         <summary>补充要求</summary>
         <textarea
           aria-label="答案补充要求"
-          placeholder="例如：使用 Java 举例，控制在两分钟内。"
+          placeholder="例如：侧重底层原理并用 Java/TypeScript 举例；按“一句话结论 → 核心机制 → 实战踩坑”三段展开，控制在两分钟口述长度。"
           value={draft.instructions}
           onChange={(e) => draft.changeInstructions(e.target.value)}
           maxLength={1000}
@@ -58,6 +58,7 @@ export function AiAnswerDialog({
           <textarea
             className="answer-composer-editor"
             aria-label="参考答案草稿"
+            placeholder="支持 Markdown 格式编写参考答案；若加入「## 面试追问」及 Q：/ A： 问答，保存后会自动切分为追问抽认卡。"
             value={draft.answer}
             onChange={(e) => draft.edit(e.target.value)}
             maxLength={100000}
@@ -73,7 +74,9 @@ export function AiAnswerDialog({
             <i />
           </div>
         ) : (
-          <p className="quiet-empty">还没有生成答案。</p>
+          <p className="quiet-empty">
+            尚未生成参考答案草稿。你可以先点开上方「补充要求」写明偏好语言栈或详略程度，再点击下方「生成答案」；生成后可直接编辑或直接入库。
+          </p>
         )}
       </div>
       {draft.error && (

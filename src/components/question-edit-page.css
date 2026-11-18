@@ -1,5 +1,5 @@
 .question-editor-page {
-  max-width: 1480px;
+  max-width: 1560px;
 }
 .question-editor-heading {
   position: sticky;
@@ -10,8 +10,8 @@
   align-items: center;
   gap: 20px;
   background: var(--bg);
-  padding: 13px 0 17px;
-  margin-top: -13px;
+  padding: 14px 0 18px;
+  margin-top: -14px;
 }
 .question-editor-heading h1 {
   font: 600 30px/1.5 var(--hand);
@@ -23,7 +23,7 @@
   gap: 18px;
 }
 .editor-heading-actions > span {
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .editor-title-field {
   padding: 18px 0 22px;
@@ -32,10 +32,13 @@
 .editor-title-field > textarea {
   display: block;
   width: 100%;
-  min-height: 48px;
+  min-height: 50px;
   resize: none;
   background: transparent;
   outline: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-left: -10px;
   color: var(--text);
   font: 500 29px/1.6 var(--hand);
   overflow: hidden;
@@ -51,28 +54,29 @@
   gap: 3px;
   padding: 3px;
   border: 1px solid var(--border);
-  border-radius: 7px 3px 8px 4px;
+  border-radius: 8px 3px 9px 4px;
 }
 .editor-modes > button {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 11px;
+  padding: 8px 13px;
   color: var(--subtle);
-  font-size: 12px;
-  border-radius: 4px;
+  font-size: 13.5px;
+  border-radius: 5px;
 }
 .editor-modes > button[aria-pressed="true"] {
   background: var(--accent-soft);
   color: var(--accent-dark);
+  font-weight: 600;
 }
 .editor-view-controls > .text-button {
-  font-size: 12px;
+  font-size: 13.5px;
   white-space: nowrap;
 }
 .editor-detected-count {
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--subtle);
+  font-size: 13px;
   margin-left: auto;
   white-space: nowrap;
 }
@@ -82,8 +86,8 @@
 }
 .question-editor-grid.show-preview {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(310px, 0.75fr);
-  gap: 24px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(330px, 0.75fr);
+  gap: 26px;
   align-items: start;
 }
 .question-editor-grid.hide-preview .question-editor-preview {
@@ -93,27 +97,29 @@
   min-width: 0;
   background: var(--surface);
   border: 1.4px solid var(--border);
-  border-radius: 11px 4px 13px 5px;
+  border-radius: 12px 4px 14px 5px;
+  box-shadow: var(--shadow-card);
 }
 .question-editor-writing > textarea {
   display: block;
   width: 100%;
   resize: vertical;
-  min-height: max(540px, 64dvh);
+  min-height: max(560px, 64dvh);
   padding: 28px;
   outline: none;
   border-radius: inherit;
   color: var(--text);
   background: var(--surface);
   font:
-    14px/1.95 ui-monospace,
+    15.5px/1.95 ui-monospace,
     SFMono-Regular,
     Consolas,
     monospace;
   tab-size: 2;
 }
-.question-editor-writing:focus-within {
-  border-color: var(--accent);
+.question-editor-writing:focus-within > textarea,
+.question-editor-writing:focus-within .tiptap-content {
+  background: var(--focus-surface);
 }
 .question-editor-writing > .editor {
   border: 0;
@@ -121,28 +127,28 @@
   border-radius: inherit;
 }
 .question-editor-writing .editor-toolbar {
-  border-radius: 10px 3px 0 0;
-  padding: 8px 12px;
+  border-radius: 11px 3px 0 0;
+  padding: 9px 13px;
   flex-wrap: wrap;
 }
 .question-editor-writing .tiptap-content {
-  min-height: max(540px, 64dvh);
+  min-height: max(560px, 64dvh);
   max-height: none;
   overflow: visible;
-  padding: 25px 30px;
+  padding: 26px 32px;
   border-radius: 0 0 12px 5px;
-  font-size: 15px;
+  font-size: 16.5px;
   line-height: 1.9;
 }
 .question-editor-preview {
   position: sticky;
-  top: 112px;
+  top: 118px;
   min-width: 0;
-  max-height: calc(100dvh - 138px);
+  max-height: calc(100dvh - 144px);
   overflow: auto;
-  padding: 0 18px 24px;
+  padding: 0 20px 26px;
   background: var(--accent-soft);
-  border-radius: 9px 4px 10px 5px;
+  border-radius: 10px 4px 11px 5px;
 }
 .editor-preview-tabs {
   position: sticky;
@@ -151,31 +157,33 @@
   background: var(--accent-soft);
   display: flex;
   align-items: center;
-  gap: 17px;
+  gap: 18px;
   padding: 18px 0 13px;
   margin-bottom: 10px;
   border-bottom: 1px dashed var(--border);
 }
 .editor-preview-tabs > button {
-  font-size: 12px;
-  color: var(--muted);
-  padding: 4px 0;
-  border-bottom: 1px solid transparent;
+  font-size: 13.5px;
+  color: var(--subtle);
+  padding: 5px 4px;
+  border-radius: 4px 4px 0 0;
+  border-bottom: 2px solid transparent;
 }
 .editor-preview-tabs > button[aria-selected="true"] {
   color: var(--accent-dark);
   border-bottom-color: var(--accent);
+  font-weight: 600;
 }
 .editor-preview-tabs > span {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
 }
 .editor-preview-content {
   overflow-wrap: anywhere;
 }
 .editor-preview-content .prose-content {
-  font-size: 13px;
+  font-size: 14.5px;
   line-height: 1.9;
 }
 .editor-followup-preview {
@@ -196,18 +204,18 @@
 .editor-notice,
 .editor-paste-review,
 .editor-conflict {
-  padding: 12px 15px;
+  padding: 13px 16px;
   background: var(--accent-soft);
   border: 1px dashed var(--border);
-  border-radius: 6px 3px 8px 4px;
+  border-radius: 7px 3px 9px 4px;
   color: var(--subtle);
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.8;
   margin-bottom: 18px;
 }
 .editor-notice .text-button {
   margin-left: 10px;
-  font-size: 12px;
+  font-size: 13.5px;
 }
 .editor-paste-review {
   display: flex;
@@ -222,7 +230,7 @@
 .editor-conflict > strong {
   display: block;
   margin-bottom: 10px;
-  font-weight: 500;
+  font-weight: 600;
 }
 .editor-conflict details {
   margin: 10px 0;
@@ -231,7 +239,7 @@
   cursor: pointer;
 }
 .editor-conflict details > .prose-content {
-  max-height: 330px;
+  max-height: 340px;
   overflow: auto;
   background: var(--surface);
   padding: 16px;
@@ -239,37 +247,83 @@
 }
 .editor-extra {
   border-top: 1px dashed var(--border);
-  margin-top: 26px;
-  padding: 17px 0;
-  font-size: 12px;
+  margin-top: 28px;
+  padding: 18px 0;
+  font-size: 13.5px;
   color: var(--subtle);
 }
 .editor-extra > summary {
   cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 5px;
 }
 .editor-extra .field {
-  max-width: 600px;
-  margin-block: 20px;
+  max-width: 640px;
+  margin-block: 20px 12px;
+}
+.editor-tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  max-width: 640px;
+  margin-bottom: 12px;
+}
+.editor-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 6px 4px 7px 5px;
+  border: 1px solid color-mix(in oklab, var(--accent) 28%, var(--border));
+  background: color-mix(in oklab, var(--accent-soft) 70%, var(--surface));
+  color: var(--accent-dark);
+  font-size: 12.5px;
+  line-height: 1.35;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.editor-tag-chip:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.editor-tag-chip:active:not(:disabled) {
+  transform: scale(0.95);
+}
+.editor-tag-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  max-width: 640px;
+  margin-bottom: 14px;
+  padding: 9px 13px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--accent-soft) 48%, var(--surface));
+  font-size: 13px;
+  color: var(--subtle);
+}
+.editor-tag-sync .text-button {
+  margin-left: auto;
+  font-size: 13px;
+}
+.editor-obsidian-properties {
+  max-width: 640px;
+  margin: 6px 0 14px;
 }
 .editor-extra .checkbox-label {
-  margin-top: 18px;
+  margin-top: 14px;
 }
 .editor-saving .sidebar,
 .editor-saving .topbar-actions,
 .editor-saving .mobile-bottom-nav {
   pointer-events: none;
 }
-.import-replace-field {
-  flex-shrink: 0;
-  margin-bottom: 12px;
-}
-.import-replace-field select {
-  font-size: 11px;
-  padding: 8px 10px;
-}
 @media (max-width: 1100px) {
   .question-editor-grid.show-preview {
-    grid-template-columns: minmax(0, 1fr) minmax(270px, 0.75fr);
+    grid-template-columns: minmax(0, 1fr) minmax(290px, 0.75fr);
     gap: 16px;
   }
   .editor-view-controls {
@@ -292,9 +346,11 @@
     padding: 18px 18px 30px;
   }
   .question-editor-heading {
+    top: calc(58px + env(safe-area-inset-top, 0px));
     padding-top: 9px;
     margin-top: -9px;
     gap: 12px;
+    border-bottom: 1px dashed var(--border);
   }
   .question-editor-heading h1 {
     font-size: 26px;
@@ -321,10 +377,10 @@
     padding-block: 14px;
   }
   .editor-modes > button {
-    padding-inline: 9px;
+    padding-inline: 10px;
   }
   .editor-view-controls > .text-button {
-    font-size: 11px;
+    font-size: 12.5px;
     gap: 4px;
   }
   .editor-detected-count {
@@ -343,12 +399,12 @@
   }
   .question-editor-writing > textarea {
     padding: 18px;
-    font-size: 13px;
+    font-size: 16px;
     min-height: max(440px, 60dvh);
   }
   .question-editor-writing .tiptap-content {
     padding: 18px;
-    font-size: 14px;
+    font-size: 16px;
     min-height: max(440px, 60dvh);
   }
   .question-editor-writing .editor-toolbar {

@@ -32,7 +32,7 @@ export function HistoryView({
           data.recentReviews.map((r) => (
             <div className="history-row" key={r.id}>
               <span
-                className={`history-icon rating-${r.rating === 1 ? "again" : "good"}`}
+                className={`history-icon rating-${["", "again", "hard", "good", "easy"][r.rating] ?? "good"}`}
               >
                 {r.rating === 1 ? <RotateCcw size={16} /> : <Check size={16} />}
               </span>
@@ -71,6 +71,9 @@ export function HistoryView({
           <div className="empty-state">
             <History size={32} />
             <h3>还没有复习记录</h3>
+            <p>
+              完成任意题目「开始答题」或每日复习自评后，记录会显示在这里。
+            </p>
           </div>
         )}
       </div>

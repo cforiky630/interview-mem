@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { QuestionView } from "@/lib/types";
 import { parseQuestions } from "@/lib/importer";
+import { markdownDocument } from "@/lib/markdown-source";
 import { studyDocument } from "@/lib/study-document";
 import { readPracticeDraft, savePracticeDraft } from "@/lib/drafts";
 import {
@@ -23,7 +24,7 @@ import {
 import type { Mutate } from "./dialogs";
 import type { ImportSeed } from "./import-dialog";
 import { Button } from "./ui/button";
-import { Markdown } from "./markdown";
+import { Markdown, ObsidianProperties } from "./markdown";
 import "./question-edit-page.css";
 
 const Editor = dynamic(() => import("./editor").then((m) => m.Editor), {
@@ -40,7 +41,7 @@ type Draft = {
   keepWhole: boolean;
 };
 const needsSource = (source: string) =>
-  /^\uFEFF?---\r?\n|\[!\w+\]|\[\[|\$[^\n]+\$/.test(source);
+  /^\uFEFF?---\r?\n|\[!\w+\]|\[\[|\$[^\n]+\$|\$\$[\s\S]+?\$\$/.test(source);
 
 export function QuestionEditPage({
   question,
@@ -103,6 +104,7 @@ export function QuestionEditPage({
     () => ({
       view: studyDocument(text, draft.title),
       questions: parseQuestions(text, "qa", { preserveSource: true }),
+      meta: markdownDocument(text),
     }),
     [text, draft.title],
   );
@@ -111,11 +113,15 @@ export function QuestionEditPage({
       ...new Set(
         draft.tags
           .split(/[,，]/)
-          .map((tag) => tag.trim())
+          .map((tag) => tag.trim().replace(/^#+/, ""))
           .filter(Boolean),
       ),
     ],
     [draft.tags],
+  );
+  const unsyncedFrontmatterTags = useMemo(
+    () => analysis.meta.tags.filter((tag) => !tags.includes(tag)),
+    [analysis.meta.tags, tags],
   );
   const invalid =
     !draft.title.trim() ||
@@ -402,7 +408,7 @@ export function QuestionEditPage({
           aria-label="题目"
           value={draft.title}
           maxLength={200}
-          placeholder="题目"
+          placeholder="输入清晰、完整的面试题干（最多 200 字）"
           disabled={busy}
           onChange={(e) => patch({ title: e.target.value })}
         />
@@ -580,7 +586,7 @@ export function QuestionEditPage({
                   patch({ pasted: true, keepWhole: false });
                 }
               }}
-              placeholder="把完整答案和追问写在一起，或直接粘贴整篇资料。"
+              placeholder="支持完整 Markdown 编写参考答案与代码示例；若想生成抽认追问卡，可点上方「插入追问」或选中一段问答点击「指定追问」，也支持直接整篇粘贴面经资料自动识别。"
             />
           ) : (
             <Editor
@@ -646,7 +652,10 @@ export function QuestionEditPage({
                 </article>
               ))
             ) : (
-              <p className="quiet-empty">尚未识别到追问。</p>
+              <p className="quiet-empty">
+                尚未识别到面试追问。点击上方「插入追问」快速添加问答模板，或在原文中选中一段 Q/A
+                后点击「指定追问」。
+              </p>
             )}
           </div>
         </aside>
@@ -659,10 +668,62 @@ export function QuestionEditPage({
             aria-label="标签"
             value={draft.tags}
             disabled={busy}
-            placeholder="用逗号分隔"
+            placeholder="例如：高频, React, 并发（用逗号分隔，最多 12 个）"
             onChange={(e) => patch({ tags: e.target.value })}
           />
         </label>
+        {tags.length > 0 && (
+          <div className="editor-tag-chips" aria-label="已选标签">
+            {tags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className="editor-tag-chip"
+                disabled={busy}
+                aria-label={`移除标签 ${tag}`}
+                onClick={() =>
+                  patch({
+                    tags: tags.filter((item) => item !== tag).join(", "),
+                  })
+                }
+              >
+                <span>#{tag}</span>
+                <span aria-hidden="true">×</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {unsyncedFrontmatterTags.length > 0 && (
+          <div className="editor-tag-sync">
+            <span>
+              正文 Obsidian 笔记属性包含标签：
+              {unsyncedFrontmatterTags.map((t) => `#${t}`).join(" ")}
+            </span>
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              onClick={() => {
+                const merged = Array.from(
+                  new Set([...tags, ...unsyncedFrontmatterTags]),
+                ).slice(0, 12);
+                patch({ tags: merged.join(", ") });
+              }}
+            >
+              从笔记属性同步标签 (+{unsyncedFrontmatterTags.length})
+            </button>
+          </div>
+        )}
+        {(analysis.meta.properties.length > 0 ||
+          analysis.meta.tags.length > 0) && (
+          <div className="editor-obsidian-properties">
+            <ObsidianProperties
+              source={text}
+              includeTags
+              defaultExpanded={false}
+            />
+          </div>
+        )}
         <label className="checkbox-label">
           <input
             type="checkbox"

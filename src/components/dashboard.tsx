@@ -100,7 +100,8 @@ export function Dashboard({
     100,
     (data.stats.reviewedToday / data.settings.dailyGoal) * 100,
   );
-  const decks = data.decks.filter((deck) => deck.count > 0).slice(0, 4);
+  const nonEmptyDecks = data.decks.filter((deck) => deck.count > 0);
+  const decks = (nonEmptyDecks.length ? nonEmptyDecks : data.decks).slice(0, 4);
   const today = dateKey(new Date(), data.settings.timeZone);
   const days = Array.from({ length: 7 }, (_, offset) => {
     const date = new Date(`${today}T12:00:00Z`);
@@ -201,6 +202,15 @@ export function Dashboard({
                             : "今天的复习完成了"
                           : "放进你的第一道题"}
                     </h3>
+                    <p>
+                      {missing
+                        ? `还有 ${missing} 道只录了题干，补全答案即可加入每日复习。`
+                        : data.stats.total
+                          ? remainingNew === 0 && data.stats.new > 0
+                            ? "今日新题上限已学完，暂无到期复习题；可去题库自由练习。"
+                            : "今日到期复习已全部完成，明天按遗忘曲线继续巩固。"
+                          : "导入 Markdown / txt 笔记，或先载入示例题库开始记忆。"}
+                    </p>
                     <div className="empty-focus-actions">
                       <Button
                         onClick={
@@ -274,7 +284,7 @@ export function Dashboard({
                 onClick={data.stats.total ? () => onDeck(null) : onImport}
               >
                 <Plus size={18} />{" "}
-                {data.stats.total ? "去整理未分类题目" : "新建你的学习卡片"}
+                {data.stats.total ? "查看未分类题目" : "导入题目或新建题库"}
               </button>
             )}
           </section>
@@ -311,6 +321,18 @@ export function Dashboard({
                 {data.stats.newLearnedToday} / {data.settings.dailyNewLimit}
               </strong>
             </div>
+            {missing > 0 && (
+              <button
+                type="button"
+                className="plan-item plan-item-link"
+                onClick={onInbox}
+              >
+                <span>待补答案</span>
+                <strong>
+                  {missing} 题 <ArrowUpRight size={13} />
+                </strong>
+              </button>
+            )}
             <Button variant="secondary" onClick={onReview}>
               开始今日复习
               <ArrowRight size={15} />

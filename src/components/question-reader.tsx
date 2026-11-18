@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
 import { api } from "@/lib/client";
 import { relativeDue } from "@/lib/utils";
+import { markdownDocument } from "@/lib/markdown-source";
 import {
   practiceDraftKey,
   readPracticeDraft,
@@ -35,7 +36,7 @@ import {
 import { Button } from "./ui/button";
 import { ActionMenu } from "./ui/action-menu";
 import { Dialog } from "./ui/dialog";
-import { Markdown } from "./markdown";
+import { Markdown, ObsidianProperties } from "./markdown";
 import { ParagraphPractice, FollowupCards } from "./paragraph-practice";
 import { ContentValidationPanel } from "./content-validation";
 import { AiPanel, type AiTrigger } from "./ai-panel";
@@ -94,7 +95,11 @@ function Curve({ curve }: { curve: Insight["curve"] }) {
           </text>
         ))}
       </svg>
-      {!curve.length && <span className="curve-empty">完成首次复习后生成</span>}
+      {!curve.length && (
+        <span className="curve-empty">
+          完成首次答题自评后，将绘制未来 30 天记忆曲线
+        </span>
+      )}
     </div>
   );
 }
@@ -135,6 +140,14 @@ export function QuestionReader({
   onSingleReview?: () => void;
 }) {
   const [revealed, setRevealed] = useState(!review);
+  const noteMeta = useMemo(
+    () => markdownDocument(question.answer),
+    [question.answer],
+  );
+  const mergedTags = useMemo(
+    () => Array.from(new Set([...question.tags, ...noteMeta.tags])),
+    [question.tags, noteMeta.tags],
+  );
   const documentView = useMemo(
     () => studyDocument(revealed ? question.answer : "", question.title),
     [question.answer, question.title, revealed],
@@ -251,16 +264,25 @@ export function QuestionReader({
         return;
       }
       const rect = range.getBoundingClientRect();
+      const above = rect.top - 48;
       setSelection({
         text: text.slice(0, 5000),
         x: Math.max(
           12,
           Math.min(window.innerWidth - 290, rect.left + rect.width / 2 - 130),
         ),
-        y: Math.max(72, rect.top - 48),
+        y:
+          above >= 72
+            ? above
+            : Math.min(window.innerHeight - 56, Math.max(72, rect.bottom + 10)),
       });
     }
-    function clear() {
+    function clear(event: Event) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".ai-panel, .table-scroll, pre")
+      )
+        return;
       setSelection(null);
     }
     globalThis.document.addEventListener("selectionchange", detect);
@@ -365,7 +387,7 @@ export function QuestionReader({
               <div>
                 <i
                   style={{
-                    width: `${((progress.current - 1) / progress.total) * 100}%`,
+                    width: `${(progress.current / progress.total) * 100}%`,
                   }}
                 />
               </div>
@@ -391,64 +413,76 @@ export function QuestionReader({
                 <Sparkles size={15} /> AI
               </Button>
             )}
-            <ActionMenu label="更多题目操作">
-              {question.isOwner && !review && (
-                <button onClick={onMove}>
-                  <FolderInput size={15} />
-                  移动到题库
-                </button>
-              )}
-              {question.isOwner && (
-                <button onClick={() => setSourceOpen(true)}>
-                  <BookOpen size={15} />
-                  查看导入原文
-                </button>
-              )}
-              {question.isOwner && !review && (
-                <button onClick={onEdit}>
-                  <PencilLine size={15} /> 编辑题目
-                </button>
-              )}
-              {question.validation && (
-                <button onClick={() => setValidationOpen(true)}>
-                  <Check size={15} /> 校验记录
-                </button>
-              )}
-              {!review &&
-                (question.isOwner ? (
-                  <button
-                    onClick={async () => {
-                      await mutate("/api/questions", {
-                        action: "archive",
-                        id: question.id,
-                        archived: !question.archived,
-                      });
-                    }}
-                  >
-                    <Archive size={15} />
-                    {question.archived ? "恢复题目" : "归档题目"}
+            {(question.isOwner || !!question.validation || !review) && (
+              <ActionMenu label="更多题目操作">
+                {question.isOwner && !review && (
+                  <button onClick={onMove}>
+                    <FolderInput size={15} />
+                    移动到题库
                   </button>
-                ) : (
-                  <button
-                    onClick={async () => {
-                      const target = data.decks.find((deck) => deck.isOwner);
-                      await mutate("/api/questions", {
-                        action: "copy",
-                        id: question.id,
-                        deckId: target?.id ?? null,
-                      });
-                    }}
-                  >
-                    <Copy size={15} /> 另存副本
+                )}
+                {question.isOwner && (
+                  <button onClick={() => setSourceOpen(true)}>
+                    <BookOpen size={15} />
+                    查看导入原文
                   </button>
-                ))}
-              {question.isOwner && !review && (
-                <button className="danger-text" onClick={onDelete}>
-                  <Trash2 size={15} />
-                  删除题目
-                </button>
-              )}
-            </ActionMenu>
+                )}
+                {question.isOwner && !review && (
+                  <button onClick={onEdit}>
+                    <PencilLine size={15} /> 编辑题目
+                  </button>
+                )}
+                {question.validation && (
+                  <button onClick={() => setValidationOpen(true)}>
+                    <Check size={15} /> 校验记录
+                  </button>
+                )}
+                {!review &&
+                  (question.isOwner ? (
+                    <button
+                      onClick={async () => {
+                        const result = await mutate("/api/questions", {
+                          action: "archive",
+                          id: question.id,
+                          archived: !question.archived,
+                        });
+                        if (result)
+                          toast.success(
+                            question.archived
+                              ? "已恢复到题库。"
+                              : "已归档，可在已归档中查看。",
+                          );
+                      }}
+                    >
+                      <Archive size={15} />
+                      {question.archived ? "恢复题目" : "归档题目"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        const target = data.decks.find((deck) => deck.isOwner);
+                        const result = await mutate("/api/questions", {
+                          action: "copy",
+                          id: question.id,
+                          deckId: target?.id ?? null,
+                        });
+                        if (result)
+                          toast.success(
+                            `已另存副本到「${target?.title ?? "未分类"}」。`,
+                          );
+                      }}
+                    >
+                      <Copy size={15} /> 另存副本
+                    </button>
+                  ))}
+                {question.isOwner && !review && (
+                  <button className="danger-text" onClick={onDelete}>
+                    <Trash2 size={15} />
+                    删除题目
+                  </button>
+                )}
+              </ActionMenu>
+            )}
             {sourceOpen && (
               <SourceDialog
                 questionId={question.id}
@@ -468,7 +502,7 @@ export function QuestionReader({
             <h1>{question.title}</h1>
             <div className="question-card-foot">
               <div className="question-tags">
-                {question.tags.slice(0, 2).map((tag) => (
+                {mergedTags.map((tag) => (
                   <span key={tag}>{tag}</span>
                 ))}
               </div>
@@ -514,7 +548,7 @@ export function QuestionReader({
               {inputMode === "written" ? (
                 <textarea
                   aria-label="本题作答"
-                  placeholder="用自己的话回答…"
+                  placeholder="先合上参考答案，按自己的理解默写出核心结论、关键机制与举例说明（Ctrl/⌘ + Enter 对照答案）…"
                   value={answer}
                   maxLength={20000}
                   rows={7}
@@ -538,7 +572,7 @@ export function QuestionReader({
               ) : (
                 <div className="oral-recall">
                   <Mic size={26} strokeWidth={1.3} />
-                  <p>试着完整说一遍。</p>
+                  <p>试着脱稿大声说一遍：先抛结论，再讲机制与取舍。</p>
                 </div>
               )}
               <div className="answer-submit-row">
@@ -593,6 +627,13 @@ export function QuestionReader({
               >
                 {tab === "answer" && (
                   <>
+                    {noteMeta.properties.length > 0 && (
+                      <ObsidianProperties
+                        source={question.answer}
+                        extraTags={question.tags}
+                        defaultExpanded
+                      />
+                    )}
                     <div className="answer-actions">
                       <button
                         className={`text-button ${hideAll ? "active" : ""}`}
@@ -633,19 +674,26 @@ export function QuestionReader({
                           </span>
                           <h3>先把答案补上</h3>
                           {question.isOwner && !question.archived ? (
-                            <div>
-                              <Button
-                                onClick={() => onGenerateAnswer(question)}
-                              >
-                                <Sparkles size={16} />
-                                AI 写答案
-                              </Button>
-                              <Button variant="ghost" onClick={onEdit}>
-                                自己补充
-                              </Button>
-                            </div>
+                            <>
+                              <p>
+                                补全参考答案后即可加入每日复习计划并逐段默写。
+                              </p>
+                              <div>
+                                <Button
+                                  onClick={() => onGenerateAnswer(question)}
+                                >
+                                  <Sparkles size={16} />
+                                  AI 写答案
+                                </Button>
+                                <Button variant="ghost" onClick={onEdit}>
+                                  自己补充
+                                </Button>
+                              </div>
+                            </>
                           ) : (
-                            <p className="quiet-empty">还没有参考答案。</p>
+                            <p className="quiet-empty">
+                              暂无参考答案，可在上方「笔记」中记录你的理解。
+                            </p>
                           )}
                         </div>
                       )}
@@ -686,7 +734,7 @@ export function QuestionReader({
                     )}
                     <textarea
                       aria-label="个人笔记"
-                      placeholder="记下你的理解…"
+                      placeholder="记下你的第一反应、容易混淆的边界条件，或结合过往项目经历梳理出的回答话术…"
                       value={note}
                       maxLength={50000}
                       rows={8}
@@ -734,6 +782,9 @@ export function QuestionReader({
                         下次 <strong>{relativeDue(question.fsrs?.due)}</strong>
                       </span>
                     </div>
+                    <p>
+                      根据每次自评结果结合 FSRS 算法估算遗忘曲线，只在快忘掉前提醒巩固。
+                    </p>
                   </section>
                 )}
               </div>
@@ -829,9 +880,16 @@ export function ReviewComplete({
         <Check size={42} strokeWidth={1.7} />
       </div>
       <h1>{count ? "本轮完成" : "暂时没有待复习的题"}</h1>
+      {!count && (
+        <p>
+          暂无到期或新增题目，可前往题库自由练习或导入新题。
+        </p>
+      )}
       {count > 0 && (
         <>
-          <p>完成 {count} 题</p>
+          <p>
+            本轮已完成 {count} 题主动回忆，下次复习时间已自动安排。
+          </p>
           <div className="completion-stats">
             {["忘了", "困难", "记得", "轻松"].map((label, i) => (
               <div key={label}>

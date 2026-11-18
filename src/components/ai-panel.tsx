@@ -52,6 +52,7 @@ export function AiPanel({
   const [error, setError] = useState("");
   const abort = useRef<AbortController | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
   const lastTrigger = useRef(0);
   useEffect(() => {
@@ -92,8 +93,11 @@ export function AiPanel({
     setActiveId(null);
     setItems([]);
     setInput(trigger.prompt);
-    if (data.settings.hasKey && !inFlight.current)
-      void send(trigger.prompt, trigger.quote, null, true);
+    if (data.settings.hasKey) {
+      if (trigger.prompt.trim())
+        void send(trigger.prompt, trigger.quote, null, true);
+      else requestAnimationFrame(() => composerRef.current?.focus());
+    }
   }, [trigger?.nonce]); // a selection intentionally starts an independent thread
   function selectThread(id: string) {
     const thread = threads.find((t) => t.id === id);
@@ -193,6 +197,11 @@ export function AiPanel({
       const current = rows.find((t) => t.id === resolvedId);
       if (current) setItems(current.messages);
     } catch (e) {
+      setItems((previous) =>
+        previous.filter(
+          (m) => m.id !== assistantId || m.content.trim().length > 0,
+        ),
+      );
       if (!(e instanceof DOMException && e.name === "AbortError")) {
         const message = e instanceof Error ? e.message : "回答未完成。";
         setError(message);
@@ -290,7 +299,7 @@ export function AiPanel({
         </details>
       )}
       <div className="ai-messages" ref={scroll}>
-        {loading && (
+        {loading && !items.length && (
           <div className="ai-loading">
             <Loader2 size={17} className="spin" /> 正在读取你的对话…
           </div>
@@ -301,12 +310,15 @@ export function AiPanel({
               <Sparkles size={30} strokeWidth={1.2} />
             </span>
             <h3>哪里没想明白？</h3>
+            <p>
+              结合本题与参考答案拆解疑问，划选正文即可追问。
+            </p>
             {data.settings.hasKey ? (
               <div className="prompt-suggestions">
                 {[
-                  "用一个生活中的例子解释",
-                  "这道题面试时应该怎么回答？",
-                  "最容易混淆的地方是什么？",
+                  "用生活比喻或代码示例讲透底层机制",
+                  "两分钟面试口述，这段答案怎么凝练？",
+                  "这道题最容易答偏或被深挖的点有哪些？",
                 ].map((p) => (
                   <button key={p} onClick={() => void send(p)}>
                     {p}
@@ -317,6 +329,9 @@ export function AiPanel({
             ) : (
               <div className="ai-key-prompt">
                 <KeyRound size={18} />
+                <p>
+                  请先在设置中配置 OpenAI 兼容模型接口，即可开启划词追问与生成笔记。
+                </p>
                 <Button variant="outline" size="sm" onClick={onSettings}>
                   去配置连接
                 </Button>
@@ -333,10 +348,12 @@ export function AiPanel({
             )}
             {message.content ? (
               <Markdown>{message.content}</Markdown>
-            ) : (
+            ) : busy ? (
               <span className="thinking-dots">
                 正在思考<span>···</span>
               </span>
+            ) : (
+              <span className="muted small">已停止回答</span>
             )}
             {message.role === "assistant" && message.content && !busy && (
               <div className="message-actions">
@@ -388,11 +405,12 @@ export function AiPanel({
       <div className="ai-composer">
         <div className="ai-composer-box">
           <textarea
+            ref={composerRef}
             aria-label="向 AI 提问"
             placeholder={
               data.settings.hasKey
-                ? "问清楚，再记下来…"
-                : "配置 API Key 后即可提问"
+                ? "围绕当前题目或选中段落追问（Enter 发送，Shift + Enter 换行）…"
+                : "请先配置模型 API Key 后提问"
             }
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -432,6 +450,7 @@ export function AiPanel({
             )}
           </div>
         </div>
+        <p>AI 回答结合当前题目上下文生成，请对照自己的理解沉淀为个人笔记</p>
       </div>
     </aside>
   );

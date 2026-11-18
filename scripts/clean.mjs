@@ -8,15 +8,7 @@ const flags = new Set(process.argv.slice(2));
 if ([...flags].some((flag) => !["--dry-run", "--cache"].includes(flag))) {
   throw new Error("支持的选项：--dry-run、--cache。请先停止开发和测试服务。");
 }
-const targets = [
-  ".next",
-  ".next-build",
-  ".next-e2e",
-  "test-results",
-  "playwright-report",
-  "tsconfig.tsbuildinfo",
-  ".data/e2e-postgres",
-];
+const targets = [".next", ".next-build", "tsconfig.tsbuildinfo"];
 if (flags.has("--cache")) targets.push(".cache/npm");
 for (const name of targets.filter((name) => name.startsWith(".next"))) {
   if (

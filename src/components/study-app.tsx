@@ -18,6 +18,7 @@ import {
   Loader2,
   Cloud,
   RefreshCw,
+  Upload,
   WifiOff,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -25,7 +26,10 @@ import { authClient } from "@/lib/auth-client";
 import { api, RequestError } from "@/lib/client";
 import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { normalizedNoteTitle } from "@/lib/markdown-source";
+import {
+  extractNoteAliases,
+  normalizedNoteTitle,
+} from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
 import { Button } from "./ui/button";
 import { AuthScreen } from "./auth-screen";
@@ -90,6 +94,15 @@ type View =
   | "question";
 export function StudyApp() {
   const { data: session, isPending } = authClient.useSession();
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem("shiyi:theme");
+      if (cached === "light" || cached === "dark")
+        document.documentElement.dataset.theme = cached;
+    } catch {
+      /* Ignore storage access failures. */
+    }
+  }, []);
   if (isPending)
     return (
       <div className="app-loading">
@@ -134,6 +147,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const origin = useRef<{ view: View; deckId?: string | null }>({
     view: "library",
   });
+  const reviewOrigin = useRef<{
+    view: View;
+    deckId?: string | null;
+    questionId?: string | null;
+  }>({ view: "today" });
   const [catalog, setCatalog] = useState<CatalogDeck[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [pending, setPending] = useState(0);
@@ -205,7 +223,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         (q) =>
           !q.archived &&
           (normalizedNoteTitle(q.title) === normalized ||
-            normalizedNoteTitle(q.validation?.sourcePath ?? "") === normalized),
+            normalizedNoteTitle(q.validation?.sourcePath ?? "") === normalized ||
+            extractNoteAliases(q.answer).some(
+              (alias) => normalizedNoteTitle(alias) === normalized,
+            )),
       );
       const matches = exact.length
         ? exact
@@ -308,7 +329,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId, refresh, loadCatalog]);
   useEffect(() => {
-    if (data) document.documentElement.dataset.theme = data.settings.theme;
+    if (!data) return;
+    document.documentElement.dataset.theme = data.settings.theme;
+    try {
+      localStorage.setItem("shiyi:theme", data.settings.theme);
+    } catch {
+      /* Ignore storage access failures. */
+    }
   }, [data?.settings.theme]);
   useEffect(() => {
     function shortcuts(event: KeyboardEvent) {
@@ -415,6 +442,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (editingId.current && pendingCount.current) return;
     setEditQuestion(null);
     if (!data) return;
+    if (view === "review" && !targetDeck && !single && queue[reviewIndex]) {
+      setSidebarOpen(false);
+      return;
+    }
+    if (view !== "review")
+      reviewOrigin.current = { view, deckId, questionId };
     const active = data.questions.filter(
       (q) =>
         !q.archived &&
@@ -520,6 +553,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const queueQuestion = queue[reviewIndex];
   const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
   const libraryView = view === "question" ? origin.current.view : view;
+  const activeNavView = view === "question" ? origin.current.view : view;
+  const activeDeckId = view === "question" ? origin.current.deckId : deckId;
   const displayedView = isNavigating ? navigationTarget : view;
   const nav = [
     { id: "today" as const, label: "今日", icon: LayoutDashboard },
@@ -581,11 +616,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           {nav.map(({ id, label, icon: Icon, count }) => (
             <button
               key={id}
-              className={cn(
-                "nav-item",
-                (view === id || (id === "library" && view === "question")) &&
-                  "active",
-              )}
+              className={cn("nav-item", activeNavView === id && "active")}
               onClick={() => (id === "review" ? startReview() : navigate(id))}
             >
               <Icon size={18} strokeWidth={1.6} />
@@ -601,7 +632,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             { id: "history" as const, label: "回顾记录", icon: History },
           ].map(({ id, label, icon: Icon }) => (
             <button
-              className={cn("nav-item", view === id && "active")}
+              className={cn("nav-item", activeNavView === id && "active")}
               key={id}
               onClick={() => navigate(id)}
             >
@@ -629,7 +660,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             <button
               className={cn(
                 "sidebar-deck",
-                view === "library" && deckId === d.id && "selected",
+                activeNavView === "library" &&
+                  activeDeckId === d.id &&
+                  "selected",
               )}
               onClick={() => openDeck(d.id)}
               key={d.id}
@@ -639,6 +672,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               <small>{d.count}</small>
             </button>
           ))}
+          {data.decks.length > 5 && (
+            <button
+              className="sidebar-deck"
+              onClick={() => navigate("library")}
+            >
+              <Layers2 size={13} />
+              <span>查看全部（{data.decks.length}）</span>
+            </button>
+          )}
         </div>
         <div className="sidebar-bottom">
           <button className="user-button" onClick={() => setSettingsOpen(true)}>
@@ -667,21 +709,87 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               <Menu size={21} />
             </button>
             <span className="topbar-breadcrumb">
-              <strong>
-                {editQuestion
-                  ? "编辑题目"
-                  : {
-                      today: "今日",
-                      library: "我的题库",
-                      favorites: "我的收藏",
-                      inbox: "待整理",
-                      archived: "已归档",
-                      review: "答题",
-                      catalog: "发现题库",
-                      history: "回顾记录",
-                      question: "学习卡",
-                    }[displayedView]}
-              </strong>
+              {editQuestion ? (
+                <strong>编辑题目</strong>
+              ) : displayedView === "today" ? (
+                <strong>今日</strong>
+              ) : displayedView === "library" && activeDeckId !== undefined ? (
+                <>
+                  <button
+                    type="button"
+                    className="topbar-crumb-link"
+                    onClick={() => openDeck()}
+                  >
+                    我的题库
+                  </button>
+                  <span className="topbar-crumb-sep" aria-hidden="true">
+                    /
+                  </span>
+                  <strong>
+                    {activeDeckId === null
+                      ? "未分类"
+                      : (data.decks.find((d) => d.id === activeDeckId)?.title ??
+                        "题库")}
+                  </strong>
+                </>
+              ) : displayedView === "question" ? (
+                <>
+                  <button
+                    type="button"
+                    className="topbar-crumb-link"
+                    onClick={() =>
+                      changePage(origin.current.view, () =>
+                        setDeckId(origin.current.deckId),
+                      )
+                    }
+                  >
+                    {
+                      {
+                        today: "今日",
+                        library: "我的题库",
+                        favorites: "我的收藏",
+                        inbox: "待整理",
+                        archived: "已归档",
+                        history: "回顾记录",
+                        review: "答题",
+                        catalog: "发现题库",
+                        question: "我的题库",
+                      }[origin.current.view]
+                    }
+                  </button>
+                  <span className="topbar-crumb-sep" aria-hidden="true">
+                    /
+                  </span>
+                  <strong>{currentQuestion?.title ?? "学习卡"}</strong>
+                </>
+              ) : displayedView === "library" ? (
+                <strong>我的题库</strong>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="topbar-crumb-link"
+                    onClick={() => navigate("today")}
+                  >
+                    今日
+                  </button>
+                  <span className="topbar-crumb-sep" aria-hidden="true">
+                    /
+                  </span>
+                  <strong>
+                    {
+                      {
+                        favorites: "我的收藏",
+                        inbox: "待整理",
+                        archived: "已归档",
+                        review: "答题",
+                        catalog: "发现题库",
+                        history: "回顾记录",
+                      }[displayedView]
+                    }
+                  </strong>
+                </>
+              )}
             </span>
           </div>
           <div className="topbar-actions">
@@ -697,15 +805,21 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 {pending ? "正在同步" : syncError ? "连接中断" : "已同步"}
               </span>
             </span>
+            {!editQuestion &&
+              displayedView !== "today" &&
+              displayedView !== "library" && (
+                <button
+                  type="button"
+                  className="button button-ghost button-sm topbar-import-btn"
+                  aria-label="快速导入"
+                  title="导入题目"
+                  onClick={openImport}
+                >
+                  <Upload size={14} />
+                  <span>导入</span>
+                </button>
+              )}
             <span className="topbar-divider" />
-            <span className="topbar-date">
-              {new Intl.DateTimeFormat("zh-CN", {
-                timeZone: data.settings.timeZone,
-                month: "long",
-                day: "numeric",
-                weekday: "long",
-              }).format(new Date())}
-            </span>
             <button
               className="icon-button"
               aria-label="设置"
@@ -777,6 +891,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     setQuestionAction({ question: q, action: "move" })
                   }
                   onQuestion={openQuestion}
+                  onPractice={(question) => startReview(undefined, question)}
                   onDeck={openDeck}
                   onImport={openImport}
                   onCreate={() => setCreateOpen(true)}
@@ -861,7 +976,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 question={currentReview}
                 data={data}
                 review
-                onBack={() => navigate("today")}
+                onBack={() => {
+                  const back = reviewOrigin.current;
+                  if (back.view === "question" && back.questionId) {
+                    changePage("question", () => setQuestionId(back.questionId!));
+                  } else if (back.view === "library") {
+                    changePage("library", () => setDeckId(back.deckId));
+                  } else {
+                    navigate(back.view === "review" ? "today" : back.view);
+                  }
+                }}
                 onEdit={() => setEditQuestion(currentReview)}
                 onDelete={() =>
                   setQuestionAction({

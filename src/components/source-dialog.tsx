@@ -37,7 +37,7 @@ export function SourceDialog({
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = source.name || "导入原文.md";
+    link.download = source.name?.split(/[\\/]/).at(-1) || "导入原文.md";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }

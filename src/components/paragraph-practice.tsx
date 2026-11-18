@@ -70,7 +70,7 @@ export const ParagraphPractice = memo(function ParagraphPractice({
           <textarea
             ref={input}
             aria-label={`第 ${block.number} 段默写`}
-            placeholder="写下你记得的内容…"
+            placeholder="试着用自己的话把这段要点复述出来（Ctrl/⌘ + Enter 对照原文）…"
             value={draft}
             maxLength={20000}
             rows={Math.min(
@@ -91,16 +91,24 @@ export const ParagraphPractice = memo(function ParagraphPractice({
           />
           <div className="paragraph-actions">
             {showReference ? (
-              <button
-                className="text-button"
-                onClick={() => {
-                  update("");
-                  setShowReference(false);
-                  input.current?.focus();
-                }}
-              >
-                <RotateCcw size={13} /> 重写
-              </button>
+              <>
+                <button
+                  className="text-button"
+                  onClick={() => setShowReference(false)}
+                >
+                  <Eye size={13} /> 收起原文
+                </button>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    update("");
+                    setShowReference(false);
+                    input.current?.focus();
+                  }}
+                >
+                  <RotateCcw size={13} /> 重写
+                </button>
+              </>
             ) : (
               <Button
                 variant="secondary"
@@ -150,7 +158,13 @@ export function FollowupCards({
     setDraft(readPracticeDraft(key));
     setRevealed(false);
   }, [key]);
-  if (!current) return <div className="quiet-empty">这道题还没有追问。</div>;
+  if (!current)
+    return (
+      <div className="quiet-empty">
+        这道题还没有拆出面试追问。点击右上角「更多操作 → 编辑题目」，用「##
+        追问」与 Q：/ A： 写几道追问，这里会自动生成独立抽认卡。
+      </div>
+    );
   function select(next: number) {
     setIndex(next);
     setRevealed(false);
@@ -188,7 +202,7 @@ export function FollowupCards({
           </div>
           <textarea
             aria-label="追问作答"
-            placeholder="试着回答…"
+            placeholder="针对这道追问，写出你第一时间能想到的思路或关键踩坑…"
             rows={4}
             maxLength={20000}
             value={draft}

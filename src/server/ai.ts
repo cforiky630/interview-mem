@@ -100,6 +100,84 @@ export async function providerRequest(
   return response;
 }
 
+/** Query the configured OpenAI-compatible endpoint for available model IDs. */
+export async function providerModels(
+  connection: { baseUrl: string; key: string },
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const base = normalizeAiBaseUrl(connection.baseUrl);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${connection.key}`,
+    Accept: "application/json",
+  };
+  const candidates = [
+    `${base}/models`,
+    ...(base.endsWith("/v1") ? [] : [`${base}/v1/models`]),
+  ];
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(12_000)])
+    : AbortSignal.timeout(12_000);
+  let lastStatus = 0;
+  for (const rawUrl of candidates) {
+    let response: Response;
+    try {
+      response = await aiFetch(new URL(rawUrl), {
+        method: "GET",
+        headers,
+        signal: requestSignal,
+      });
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      if (signal?.aborted) throw new AppError(499, "请求已取消。");
+      if (requestSignal.aborted)
+        throw new AppError(504, "获取模型列表超时，请检查接口地址与网络。");
+      throw new AppError(502, "无法连接模型服务，请检查地址与网络。");
+    }
+    if (
+      response.status === 404 &&
+      rawUrl !== candidates[candidates.length - 1]
+    ) {
+      await response.body?.cancel();
+      lastStatus = 404;
+      continue;
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      lastStatus = response.status;
+      throw providerError(response.status);
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new AppError(502, "接口未返回有效的模型列表。");
+    }
+    const record = payload as {
+      data?: Array<{ id?: string; name?: string } | string>;
+      models?: Array<{ id?: string; name?: string } | string>;
+    };
+    const rawList = Array.isArray(record?.data)
+      ? record.data
+      : Array.isArray(record?.models)
+        ? record.models
+        : [];
+    return Array.from(
+      new Set(
+        rawList
+          .map((item) => {
+            if (typeof item === "string") return item.trim();
+            if (item && typeof item === "object") {
+              return String(item.id ?? item.name ?? "").trim();
+            }
+            return "";
+          })
+          .filter(Boolean),
+      ),
+    );
+  }
+  throw providerError(lastStatus || 404);
+}
+
 // Bound concurrent paid calls for a user; release in finally on every success/failure path.
 const state = globalThis as unknown as {
   interviewAiCalls?: Map<string, number>;

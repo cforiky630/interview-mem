@@ -1,5 +1,6 @@
 import type { ParsedQuestion } from "./importer";
 import { followupRegions } from "./followups";
+import { markdownDocument } from "./markdown-source";
 export type ImportMethod = "rules" | "ai" | "whole";
 export type ImportPreviewItem = ParsedQuestion & {
   key: string;
@@ -46,6 +47,7 @@ export function splitBySourceBoundaries(
   if (!boundaries.length || boundaries.length > 200)
     throw new Error("没有识别出有效题目。");
   const followups = questionsOnly ? [] : followupRegions(raw);
+  const docTags = markdownDocument(raw).tags;
   return boundaries.map((boundary, i) => {
     const { startLine, answerStartLine, title } = boundary;
     const end = (boundaries[i + 1]?.startLine ?? lines.length + 1) - 1;
@@ -74,6 +76,10 @@ export function splitBySourceBoundaries(
       )
     )
       throw new Error("模型把追问切成了主问题，请重新解析或使用自动切分。");
+    const sourceText = raw.slice(offsets[startLine - 1], offsets[end]);
+    const tags = Array.from(
+      new Set([...docTags, ...markdownDocument(sourceText).tags]),
+    ).slice(0, 12);
     const answer =
       questionsOnly || answerStartLine === null
         ? ""
@@ -81,9 +87,9 @@ export function splitBySourceBoundaries(
     return {
       title: title.trim(),
       answer,
-      tags: [],
+      tags,
       needsEditing: !answer.trim(),
-      sourceText: raw.slice(offsets[startLine - 1], offsets[end]),
+      sourceText,
     };
   });
 }

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/lib/client";
 import type { TrashedQuestion } from "@/lib/types";
 import type { Mutate } from "./dialogs";
@@ -46,7 +47,9 @@ export function LibraryTrash({
     );
   return (
     <div className="trash-list">
-      <p className="trash-hint">删除的题目保留 30 天，到期自动清理。</p>
+      <p className="trash-hint">
+        已删除的题目会在回收站保留 30 天（到期后自动彻底清除），恢复后将保留原题库归属、个人笔记与间隔复习记录。
+      </p>
       {items.length ? (
         items.map((question) => (
           <article className="trash-row" key={question.id}>
@@ -77,10 +80,12 @@ export function LibraryTrash({
                       action: "restore",
                       id: question.id,
                     })
-                  )
+                  ) {
                     setItems((previous) =>
                       previous.filter((d) => d.id !== question.id),
                     );
+                    toast.success("题目已恢复。");
+                  }
                 } finally {
                   setBusy(null);
                 }
@@ -95,6 +100,7 @@ export function LibraryTrash({
         <div className="empty-state">
           <Trash2 size={32} />
           <h3>回收站是空的</h3>
+          <p>删除题库或题目后，题目会暂存这里 30 天以防误删，随时可一键还原。</p>
         </div>
       )}
     </div>

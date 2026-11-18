@@ -22,6 +22,7 @@ const { getDb } = await import("../src/db");
 const { imports } = await import("../src/db/schema");
 const workspace = await import("../src/app/api/workspace/route");
 const preview = await import("../src/app/api/import/preview/route");
+const proofread = await import("../src/app/api/import/proofread/route");
 const commit = await import("../src/app/api/import/commit/route");
 const source = await import("../src/app/api/questions/source/route");
 const decks = await import("../src/app/api/decks/route");
@@ -72,6 +73,10 @@ async function state(account: Account): Promise<Workspace> {
   return (await workspace.GET(request(account, "/api/workspace"))).json();
 }
 async function register(name: string): Promise<Account> {
+  const clientAddress = createHash("sha256")
+    .update(name)
+    .digest("hex")
+    .slice(0, 24);
   const response = await (
     await getAuth()
   ).handler(
@@ -80,6 +85,7 @@ async function register(name: string): Promise<Account> {
       headers: {
         origin: "http://localhost:3000",
         "content-type": "application/json",
+        "x-forwarded-for": `2001:db8:${clientAddress.match(/.{4}/g)!.join(":")}`,
       },
       body: JSON.stringify({
         name,
@@ -101,6 +107,92 @@ async function register(name: string): Promise<Account> {
   account.deckId = (await state(account)).decks[0].id;
   return account;
 }
+
+test("batch import keeps distinct relative sources and commits selected files together", async () => {
+  const alice = await register("batch-alice");
+  const bob = await register("batch-bob");
+  const sources = [
+    {
+      batchId: randomUUID(),
+      sourceName: "资料/前端/基础.md",
+      raw: "\uFEFF## 什么是闭包？\r\n  第一份答案。  \r\n",
+    },
+    {
+      batchId: randomUUID(),
+      sourceName: "资料/数据库/基础.md",
+      raw: "## 为什么需要索引？\r\n第二份答案。\r\n",
+    },
+    {
+      batchId: randomUUID(),
+      sourceName: "重复.txt",
+      raw: "## 为什么需要索引？\r\n第二份答案。\r\n",
+    },
+  ];
+  const input = {
+    sources,
+    deckId: alice.deckId,
+    inputType: "qa",
+    method: "rules",
+  };
+  const invalidPath = await preview.POST(
+    request(alice, "/api/import/preview", {
+      ...input,
+      sources: [
+        { ...sources[0], sourceName: "../基础.md" },
+        ...sources.slice(1),
+      ],
+    }),
+  );
+  assert.equal(invalidPath.status, 400);
+  const parsed = await preview.POST(
+    request(alice, "/api/import/preview", input),
+  );
+  assert.equal(parsed.status, 200);
+  const { previews } = (await parsed.json()) as { previews: ImportPreview[] };
+  const batches = previews.map(({ batchId, questions }) => ({
+    batchId,
+    questions,
+  }));
+  assert.equal((await state(alice)).questions.length, 0);
+  assert.equal(
+    (await commit.POST(request(bob, "/api/import/commit", { batches }))).status,
+    404,
+  );
+  const invalid = await commit.POST(
+    request(alice, "/api/import/commit", {
+      batches: [
+        { ...batches[0], questions: batches[1].questions },
+        { ...batches[1], questions: batches[0].questions },
+      ],
+    }),
+  );
+  assert.equal(invalid.status, 409);
+  assert.equal((await state(alice)).questions.length, 0);
+
+  const responses = await Promise.all([
+    commit.POST(request(alice, "/api/import/commit", { batches })),
+    commit.POST(request(alice, "/api/import/commit", { batches })),
+  ]);
+  for (const response of responses) {
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { added: 2, duplicates: 1 });
+  }
+  const saved = (await state(alice)).questions;
+  assert.equal(saved.length, 2);
+  for (const [index, material] of sources.slice(0, 2).entries()) {
+    const card = saved.find(
+      (q) => q.title === previews[index].questions[0].title,
+    )!;
+    const path = `/api/questions/source?questionId=${card.id}`;
+    const original = await source.GET(request(alice, path));
+    assert.deepEqual(await original.json(), {
+      raw: material.raw,
+      name: material.sourceName,
+      sha256: createHash("sha256").update(material.raw).digest("hex"),
+    });
+    assert.equal((await source.GET(request(bob, path))).status, 404);
+  }
+});
 
 test("AI boundaries retain source bytes, nested headings and code; invalid boundaries never become cards", () => {
   const raw =
@@ -544,6 +636,105 @@ test("AI parsing uses the caller's connection, copies original answers and rejec
     );
     assert.equal((await state(account)).questions.length, 0);
     assert.equal(calls, 5);
+  } finally {
+    fetchMock.mock.restore();
+    dnsMock.mock.restore();
+  }
+});
+
+test("AI proofreading checks imported questions, filters hallucinations, and keeps source untouched", async () => {
+  const account = await register("ai-proofread");
+  assert.equal(
+    (
+      await settings.POST(
+        request(account, "/api/settings", {
+          action: "saveConnection",
+          baseUrl: "https://proofread.example/v1",
+          model: "proofread-model",
+          key: "fake-proofread-key",
+        }),
+      )
+    ).status,
+    200,
+  );
+  const dnsMock = mock.method(dns, "lookup", async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  const fetchMock = mock.method(
+    globalThis,
+    "fetch",
+    async (url: unknown, init?: RequestInit) => {
+      assert.equal(String(url), "https://proofread.example/v1/chat/completions");
+      assert.equal(
+        new Headers(init?.headers).get("authorization"),
+        "Bearer fake-proofread-key",
+      );
+      const body = JSON.parse(init!.body as string);
+      assert.ok(body.messages[0].content.includes("绝不是「润色」"));
+      return Response.json({
+        choices: [
+          {
+            finish_reason: "stop",
+            message: {
+              content: JSON.stringify({
+                items: [
+                  {
+                    key: "q-1",
+                    corrections: [
+                      {
+                        field: "title",
+                        category: "term",
+                        original: "Promsie",
+                        replacement: "Promise",
+                        reason: "术语拼写错误",
+                      },
+                      {
+                        field: "answer",
+                        category: "typo",
+                        original: "不存在这段文字",
+                        replacement: "改动文字",
+                        reason: "幻觉片段",
+                      },
+                    ],
+                  },
+                  {
+                    key: "q-2",
+                    corrections: [],
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      });
+    },
+  );
+  try {
+    const response = await proofread.POST(
+      request(account, "/api/import/proofread", {
+        questions: [
+          {
+            key: "q-1",
+            title: "什么是 Promsie 微任务？",
+            answer: "微任务在本轮同步代码后执行。",
+          },
+          {
+            key: "q-2",
+            title: "什么是闭包？",
+            answer: "函数和其词法环境的组合。",
+          },
+        ],
+      }),
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.items.length, 2);
+    assert.equal(data.items[0].key, "q-1");
+    assert.equal(data.items[0].corrections.length, 1);
+    assert.equal(data.items[0].corrections[0].original, "Promsie");
+    assert.equal(data.items[0].corrections[0].replacement, "Promise");
+    assert.equal(data.items[0].corrections[0].status, "pending");
+    assert.deepEqual(data.items[1], { key: "q-2", corrections: [] });
   } finally {
     fetchMock.mock.restore();
     dnsMock.mock.restore();
