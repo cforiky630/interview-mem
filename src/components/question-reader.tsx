@@ -26,7 +26,7 @@ import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
 import { api } from "@/lib/client";
 import { relativeDue } from "@/lib/utils";
-import { markdownDocument } from "@/lib/markdown-source";
+import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import {
   practiceDraftKey,
   readPracticeDraft,
@@ -145,7 +145,7 @@ export function QuestionReader({
     [question.answer],
   );
   const mergedTags = useMemo(
-    () => Array.from(new Set([...question.tags, ...noteMeta.tags])),
+    () => mergeQuestionTags(question.tags, noteMeta.tags),
     [question.tags, noteMeta.tags],
   );
   const documentView = useMemo(
@@ -500,18 +500,32 @@ export function QuestionReader({
               <span>{review ? "答题" : "学习卡"}</span>
             </div>
             <h1>{question.title}</h1>
-            <div className="question-card-foot">
-              <div className="question-tags">
-                {mergedTags.map((tag) => (
-                  <span key={tag}>{tag}</span>
-                ))}
+            {(mergedTags.length > 0 ||
+              (!review && !question.archived && !!question.answer.trim())) && (
+              <div className="question-card-foot">
+                {mergedTags.length > 0 && (
+                  <div className="question-tags">
+                    {mergedTags.map((tag) => (
+                      <span key={tag} title={`#${tag}`}>
+                        <span className="tag-hash" aria-hidden="true">
+                          #
+                        </span>
+                        <span className="tag-text">{tag}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {!review && !question.archived && !!question.answer.trim() && (
+                  <Button
+                    size="sm"
+                    className="reader-start-review"
+                    onClick={onSingleReview}
+                  >
+                    <PenLine size={15} /> 开始答题
+                  </Button>
+                )}
               </div>
-              {!review && !question.archived && !!question.answer.trim() && (
-                <Button size="sm" onClick={onSingleReview}>
-                  <PenLine size={15} /> 开始答题
-                </Button>
-              )}
-            </div>
+            )}
           </header>
           {question.archived && (
             <div className="inline-notice">
@@ -783,7 +797,8 @@ export function QuestionReader({
                       </span>
                     </div>
                     <p>
-                      根据每次自评结果结合 FSRS 算法估算遗忘曲线，只在快忘掉前提醒巩固。
+                      根据每次自评结果结合 FSRS
+                      算法估算遗忘曲线，只在快忘掉前提醒巩固。
                     </p>
                   </section>
                 )}
@@ -880,16 +895,10 @@ export function ReviewComplete({
         <Check size={42} strokeWidth={1.7} />
       </div>
       <h1>{count ? "本轮完成" : "暂时没有待复习的题"}</h1>
-      {!count && (
-        <p>
-          暂无到期或新增题目，可前往题库自由练习或导入新题。
-        </p>
-      )}
+      {!count && <p>暂无到期或新增题目，可前往题库自由练习或导入新题。</p>}
       {count > 0 && (
         <>
-          <p>
-            本轮已完成 {count} 题主动回忆，下次复习时间已自动安排。
-          </p>
+          <p>本轮已完成 {count} 题主动回忆，下次复习时间已自动安排。</p>
           <div className="completion-stats">
             {["忘了", "困难", "记得", "轻松"].map((label, i) => (
               <div key={label}>

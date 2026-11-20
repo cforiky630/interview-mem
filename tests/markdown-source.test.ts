@@ -7,6 +7,7 @@ import { Markdown } from "../src/components/markdown";
 import {
   extractNoteAliases,
   markdownDocument,
+  mergeQuestionTags,
   normalizedNoteTitle,
   parseTagListInput,
 } from "../src/lib/markdown-source";
@@ -40,9 +41,7 @@ test("source Markdown: Obsidian frontmatter parses inline tags, hash tags and no
   ]);
   assert.equal(parsed.body, "正文内容");
 
-  const stringTags = markdownDocument(
-    "---\ntag: #前端, React, Vue\n---\n题解",
-  );
+  const stringTags = markdownDocument("---\ntag: #前端, React, Vue\n---\n题解");
   assert.deepEqual(stringTags.tags, ["前端", "React", "Vue"]);
   assert.deepEqual(parseTagListInput("#React, 并发，异步 #高频"), [
     "React",
@@ -85,4 +84,15 @@ test("source Markdown: imported answers and AI text cannot enable HTML or truste
   assert.ok(!/<(?:script|iframe|img)\b/i.test(html));
   assert.ok(!/(?:href|src)=["'](?:javascript:|data:)/i.test(html));
   assert.ok(!html.includes('src="https://tracking.example'));
+});
+
+test("source Markdown: zero-indented YAML tags and mergeQuestionTags normalize leading hashes", () => {
+  const parsed = markdownDocument("---\ntags:\n- RAG\n- #面试\n---\n正文");
+  assert.deepEqual(parsed.tags, ["RAG", "面试"]);
+  assert.equal(parsed.body, "正文");
+
+  assert.deepEqual(
+    mergeQuestionTags(["#RAG", "面试", "  "], ["RAG", "大模型"]),
+    ["RAG", "面试", "大模型"],
+  );
 });

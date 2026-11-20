@@ -19,7 +19,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
-import { markdownDocument } from "@/lib/markdown-source";
+import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import { relativeDue } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { ActionMenu } from "./ui/action-menu";
@@ -71,10 +71,12 @@ export function Library({
   const [status, setStatus] = useState("all");
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [tagsExpanded, setTagsExpanded] = useState(false);
+  const [hasTagOverflow, setHasTagOverflow] = useState(false);
   const [section, setSection] = useState("decks");
   const [visibleCount, setVisibleCount] = useState(40);
   const more = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const tagChipsRef = useRef<HTMLDivElement>(null);
   const query = useDeferredValue(search.trim().toLowerCase());
   useEffect(() => {
     if (searchToken) {
@@ -136,7 +138,7 @@ export function Library({
         q.answer.startsWith("---") || q.answer.startsWith("\uFEFF---")
           ? markdownDocument(q.answer).tags
           : [];
-      map.set(q.id, Array.from(new Set([...q.tags, ...noteTags])));
+      map.set(q.id, mergeQuestionTags(q.tags, noteTags));
     }
     return map;
   }, [scopedQuestions]);
@@ -147,10 +149,44 @@ export function Library({
     }
     return Array.from(counts.entries())
       .map(([tag, count]) => ({ tag, count }))
-      .sort(
-        (a, b) => b.count - a.count || a.tag.localeCompare(b.tag, "zh-CN"),
-      );
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, "zh-CN"));
   }, [tagsByQuestionId]);
+  useEffect(() => {
+    if (!listVisible || !availableTags.length) {
+      setHasTagOverflow(false);
+      return;
+    }
+    const el = tagChipsRef.current;
+    if (!el) return;
+    const measure = () => {
+      if (!tagsExpanded) {
+        setHasTagOverflow(el.scrollWidth > el.clientWidth + 4);
+      }
+    };
+    measure();
+    const raf = requestAnimationFrame(measure);
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(measure)
+        : null;
+    ro?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [listVisible, availableTags, tagsExpanded, section, deckId, filter]);
+  useEffect(() => {
+    if (!selectedTag || tagsExpanded) return;
+    const el = tagChipsRef.current;
+    const active = el?.querySelector<HTMLElement>('[data-active-tag="true"]');
+    active?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+      behavior: "smooth",
+    });
+  }, [selectedTag, tagsExpanded]);
   const filtered = useMemo(
     () =>
       scopedQuestions.filter((q) => {
@@ -342,136 +378,168 @@ export function Library({
       )}
       {(!root || (section !== "decks" && section !== "trash")) && (
         <div className="question-list-panel">
-          <div className="list-toolbar">
-            <div className={`search-field ${search ? "has-query" : ""}`}>
-              <Search size={17} />
-              <input
-                ref={searchInputRef}
-                aria-label="搜索题目"
-                placeholder="搜索题目标题、答案关键词或 #标签…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {search ? (
-                <button
-                  type="button"
-                  className="search-clear"
-                  aria-label="清空搜索"
-                  onClick={() => {
-                    setSearch("");
-                    searchInputRef.current?.focus();
-                  }}
-                >
-                  <X size={14} />
-                </button>
-              ) : (
-                <kbd>/</kbd>
-              )}
-            </div>
-            {!archived && (
-              <select
-                aria-label="筛选学习状态"
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-              >
-                <option value="all">全部状态</option>
-                <option value="due">待复习</option>
-                <option value="new">未学习</option>
-              </select>
-            )}
-            <span className="list-count">{filtered.length} 道题</span>
-            {deck && filter !== "archived" && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => onReview(deck.id)}
-              >
-                复习题库
-                <ArrowRightIcon />
-              </Button>
-            )}
-          </div>
-          {availableTags.length > 0 && (
-            <div
-              className={`library-tag-bar ${tagsExpanded ? "is-expanded" : ""}`}
-              role="region"
-              aria-label="按标签筛选"
-            >
-              <span className="tag-bar-label" aria-hidden="true">
-                <Tags size={14} />
-              </span>
-              <div className="tag-bar-chips">
-                <button
-                  type="button"
-                  className={`tag-filter-pill ${selectedTag === null ? "is-active" : ""}`}
-                  aria-pressed={selectedTag === null}
-                  onClick={() => setSelectedTag(null)}
-                >
-                  全部标签
-                </button>
-                {availableTags.map(({ tag, count }) => (
+          <div className="library-filter-dock">
+            <div className="list-toolbar">
+              <div className={`search-field ${search ? "has-query" : ""}`}>
+                <Search size={17} />
+                <input
+                  ref={searchInputRef}
+                  aria-label="搜索题目"
+                  placeholder="搜索题目标题、答案关键词或 #标签…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                {search ? (
                   <button
                     type="button"
-                    key={tag}
-                    className={`tag-filter-pill ${selectedTag === tag ? "is-active" : ""}`}
-                    aria-pressed={selectedTag === tag}
-                    onClick={() =>
-                      setSelectedTag((current) =>
-                        current === tag ? null : tag,
-                      )
-                    }
+                    className="search-clear"
+                    aria-label="清空搜索"
+                    onClick={() => {
+                      setSearch("");
+                      searchInputRef.current?.focus();
+                    }}
                   >
-                    <span>#{tag}</span>
-                    <small>{count}</small>
+                    <X size={14} />
                   </button>
-                ))}
+                ) : (
+                  <kbd>/</kbd>
+                )}
               </div>
-              {availableTags.length > 6 && (
-                <button
-                  type="button"
-                  className="tag-bar-toggle"
-                  aria-expanded={tagsExpanded}
-                  onClick={() => setTagsExpanded((open) => !open)}
+              {!archived && (
+                <select
+                  aria-label="筛选学习状态"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
                 >
-                  {tagsExpanded ? "收起" : `展开 (${availableTags.length})`}
-                  <ChevronDown size={14} />
-                </button>
+                  <option value="all">全部状态</option>
+                  <option value="due">待复习</option>
+                  <option value="new">未学习</option>
+                </select>
+              )}
+              <span className="list-count">{filtered.length} 道题</span>
+              {deck && filter !== "archived" && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => onReview(deck.id)}
+                >
+                  复习题库
+                  <ArrowRightIcon />
+                </Button>
               )}
             </div>
-          )}
+            {availableTags.length > 0 && (
+              <div
+                className={`library-tag-bar ${tagsExpanded ? "is-expanded" : ""} ${hasTagOverflow && !tagsExpanded ? "has-overflow" : ""}`}
+                role="region"
+                aria-label="按标签筛选"
+              >
+                <span className="tag-bar-label" aria-hidden="true">
+                  <Tags size={14} />
+                </span>
+                <div className="tag-bar-chips" ref={tagChipsRef}>
+                  <button
+                    type="button"
+                    className={`tag-filter-pill ${selectedTag === null ? "is-active" : ""}`}
+                    aria-pressed={selectedTag === null}
+                    onClick={() => setSelectedTag(null)}
+                  >
+                    全部标签
+                  </button>
+                  {availableTags.map(({ tag, count }) => (
+                    <button
+                      type="button"
+                      key={tag}
+                      data-active-tag={selectedTag === tag ? "true" : undefined}
+                      className={`tag-filter-pill ${selectedTag === tag ? "is-active" : ""}`}
+                      aria-pressed={selectedTag === tag}
+                      title={`#${tag} (${count})`}
+                      onClick={() =>
+                        setSelectedTag((current) =>
+                          current === tag ? null : tag,
+                        )
+                      }
+                    >
+                      <span className="tag-pill-label">
+                        <span className="tag-hash" aria-hidden="true">
+                          #
+                        </span>
+                        {tag}
+                      </span>
+                      <small>{count}</small>
+                    </button>
+                  ))}
+                </div>
+                {(hasTagOverflow || tagsExpanded) && (
+                  <button
+                    type="button"
+                    className="tag-bar-toggle"
+                    aria-expanded={tagsExpanded}
+                    onClick={() => setTagsExpanded((open) => !open)}
+                  >
+                    {tagsExpanded ? "收起" : `展开 (${availableTags.length})`}
+                    <ChevronDown size={14} />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
           {filtered.length ? (
             <div className="question-list">
               {filtered.slice(0, visibleCount).map((q, i) => {
-                const questionTags = tagsByQuestionId.get(q.id) ?? q.tags;
-                const hasMeta =
-                  !deckId ||
-                  q.needsEditing ||
-                  (q.majorRevision > q.reviewedRevision && q.fsrs);
+                const questionTags = tagsByQuestionId.get(q.id) ?? [];
                 return (
                   <div className="question-row" key={q.id}>
-                    <span className="row-index">
-                      {String(i + 1).padStart(2, "0")}
-                    </span>
+                    <div className="question-row-head">
+                      <div className="question-row-head-left">
+                        <span className="row-index">
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                        {!deckId && (
+                          <span className="question-deck-name">
+                            {q.deckTitle}
+                          </span>
+                        )}
+                        {q.needsEditing && (
+                          <span className="tag tag-warn">待整理</span>
+                        )}
+                        {q.majorRevision > q.reviewedRevision && q.fsrs && (
+                          <span className="tag tag-warn">内容已更新</span>
+                        )}
+                      </div>
+                      <div className="question-row-tools">
+                        <button
+                          className={`icon-button favorite-button ${q.favorite ? "is-favorite" : ""}`}
+                          aria-label={q.favorite ? "取消收藏" : "收藏题目"}
+                          onClick={() => onFavorite(q)}
+                        >
+                          <Star
+                            size={17}
+                            fill={q.favorite ? "currentColor" : "none"}
+                          />
+                        </button>
+                        {q.isOwner && (
+                          <ActionMenu label={`更多题目操作：${q.title}`}>
+                            <button onClick={() => onMoveQuestion(q)}>
+                              <FolderInput size={15} />
+                              移动到题库
+                            </button>
+                            <button
+                              className="danger-text"
+                              onClick={() => onDeleteQuestion(q)}
+                            >
+                              <Trash2 size={15} />
+                              删除题目
+                            </button>
+                          </ActionMenu>
+                        )}
+                      </div>
+                    </div>
                     <button
                       className="question-row-main"
                       onClick={() => onQuestion(q)}
                     >
                       <strong>{q.title}</strong>
-                      {hasMeta && (
-                        <div className="question-row-meta">
-                          {!deckId && (
-                            <span className="question-deck-name">
-                              {q.deckTitle}
-                            </span>
-                          )}
-                          {q.needsEditing && (
-                            <span className="tag tag-warn">待整理</span>
-                          )}
-                          {q.majorRevision > q.reviewedRevision && q.fsrs && (
-                            <span className="tag tag-warn">内容已更新</span>
-                          )}
-                        </div>
-                      )}
                     </button>
                     {questionTags.length > 0 && (
                       <div className="question-row-tags" aria-label="题目标签">
@@ -479,6 +547,7 @@ export function Library({
                           <button
                             type="button"
                             key={tag}
+                            title={`#${tag}`}
                             className={`tag tag-interactive ${selectedTag === tag ? "tag-active" : ""}`}
                             aria-pressed={selectedTag === tag}
                             onClick={() =>
@@ -487,74 +556,65 @@ export function Library({
                               )
                             }
                           >
-                            #{tag}
+                            <span className="tag-hash" aria-hidden="true">
+                              #
+                            </span>
+                            <span className="tag-text">{tag}</span>
                           </button>
                         ))}
+                        {questionTags.length > 4 && (
+                          <span
+                            className="tag tag-more"
+                            title={questionTags
+                              .slice(4)
+                              .map((t) => `#${t}`)
+                              .join(" ")}
+                          >
+                            +{questionTags.length - 4}
+                          </span>
+                        )}
                       </div>
                     )}
-                    {q.isOwner && !q.archived && !q.answer.trim() ? (
-                      <Button
-                        className="row-generate-answer"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onGenerateAnswer(q)}
-                        aria-label={`AI 写答案：${q.title}`}
-                      >
-                        <Sparkles size={15} />
-                        <span>AI 写答案</span>
-                      </Button>
-                    ) : (
-                      <span
-                        className={`row-study-status ${!q.fsrs ? "is-new" : new Date(q.fsrs.due).getTime() <= Date.now() ? "is-due" : ""}`}
-                      >
-                        <span />
-                        {q.archived ? "已归档" : relativeDue(q.fsrs?.due)}
-                      </span>
-                    )}
-                    <div className="question-row-tools">
-                      <button
-                        className={`icon-button favorite-button ${q.favorite ? "is-favorite" : ""}`}
-                        aria-label={q.favorite ? "取消收藏" : "收藏题目"}
-                        onClick={() => onFavorite(q)}
-                      >
-                        <Star
-                          size={17}
-                          fill={q.favorite ? "currentColor" : "none"}
-                        />
-                      </button>
-                      {q.isOwner && (
-                        <ActionMenu label={`更多题目操作：${q.title}`}>
-                          <button onClick={() => onMoveQuestion(q)}>
-                            <FolderInput size={15} />
-                            移动到题库
-                          </button>
-                          <button
-                            className="danger-text"
-                            onClick={() => onDeleteQuestion(q)}
-                          >
-                            <Trash2 size={15} />
-                            删除题目
-                          </button>
-                        </ActionMenu>
+                    <div className="question-row-foot">
+                      {q.isOwner && !q.archived && !q.answer.trim() ? (
+                        <Button
+                          className="row-generate-answer"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onGenerateAnswer(q)}
+                          aria-label={`AI 写答案：${q.title}`}
+                        >
+                          <Sparkles size={15} />
+                          <span>AI 写答案</span>
+                        </Button>
+                      ) : (
+                        <span
+                          className={`row-study-status ${!q.fsrs ? "is-new" : new Date(q.fsrs.due).getTime() <= Date.now() ? "is-due" : ""}`}
+                        >
+                          <span />
+                          {q.archived ? "已归档" : relativeDue(q.fsrs?.due)}
+                        </span>
+                      )}
+                      {!q.archived && q.answer.trim() && onPractice ? (
+                        <button
+                          type="button"
+                          className="button button-ghost button-sm row-action-btn"
+                          onClick={() => onPractice(q)}
+                        >
+                          <PenLine size={13} /> 答题
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="button button-ghost button-sm row-action-btn"
+                          onClick={() => onQuestion(q)}
+                        >
+                          {!q.archived && !q.answer.trim()
+                            ? "补全答案"
+                            : "查看"}
+                        </button>
                       )}
                     </div>
-                    {!q.archived && q.answer.trim() && onPractice ? (
-                      <button
-                        type="button"
-                        className="button button-ghost button-sm row-action-btn"
-                        onClick={() => onPractice(q)}
-                      >
-                        <PenLine size={13} /> 答题
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="button button-ghost button-sm row-action-btn"
-                        onClick={() => onQuestion(q)}
-                      >
-                        {!q.archived && !q.answer.trim() ? "补全答案" : "查看"}
-                      </button>
-                    )}
                   </div>
                 );
               })}
@@ -655,7 +715,9 @@ export function Catalog({
           刷新题库
         </Button>
       </div>
-      <div className={`search-field catalog-search ${search ? "has-query" : ""}`}>
+      <div
+        className={`search-field catalog-search ${search ? "has-query" : ""}`}
+      >
         <Search size={17} />
         <input
           aria-label="搜索公开题库"

@@ -20,7 +20,11 @@ import {
   type ProofreadCorrection,
 } from "@/lib/ai-proofread";
 import type { ImportPreviewItem } from "@/lib/import-preview";
-import { markdownDocument, parseTagListInput } from "@/lib/markdown-source";
+import {
+  markdownDocument,
+  mergeQuestionTags,
+  parseTagListInput,
+} from "@/lib/markdown-source";
 import { studyDocument } from "@/lib/study-document";
 import { ActionMenu } from "./ui/action-menu";
 import { Button } from "./ui/button";
@@ -63,6 +67,7 @@ export function ImportPreviewCard({
   const [fullBody, setFullBody] = useState(false);
   const [openFollowup, setOpenFollowup] = useState<string | null>(null);
   const noteMeta = useMemo(() => markdownDocument(item.answer), [item.answer]);
+  const displayTags = useMemo(() => mergeQuestionTags(item.tags), [item.tags]);
   const corrections = item.corrections ?? [];
   const pendingCorrections = corrections.filter((c) => c.status === "pending");
   const appliedCorrections = corrections.filter((c) => c.status === "applied");
@@ -226,7 +231,8 @@ export function ImportPreviewCard({
                     pendingCorrections.length === 0 &&
                     appliedCorrections.length > 0 && (
                       <span className="import-card-proofread-ok">
-                        <BadgeCheck size={12} /> 已采纳 {appliedCorrections.length} 处修正
+                        <BadgeCheck size={12} /> 已采纳{" "}
+                        {appliedCorrections.length} 处修正
                       </span>
                     )}
                   {item.proofreadStatus === "clean" &&
@@ -244,14 +250,27 @@ export function ImportPreviewCard({
                       {noteMeta.properties.length} 项笔记属性
                     </span>
                   )}
-                  {item.tags.slice(0, 4).map((tag) => (
-                    <span className="import-card-tag" key={tag}>
-                      #{tag}
+                  {displayTags.slice(0, 4).map((tag) => (
+                    <span
+                      className="import-card-tag"
+                      key={tag}
+                      title={`#${tag}`}
+                    >
+                      <span className="tag-hash" aria-hidden="true">
+                        #
+                      </span>
+                      {tag}
                     </span>
                   ))}
-                  {item.tags.length > 4 && (
-                    <span className="import-card-tag">
-                      +{item.tags.length - 4}
+                  {displayTags.length > 4 && (
+                    <span
+                      className="import-card-tag"
+                      title={displayTags
+                        .slice(4)
+                        .map((t) => `#${t}`)
+                        .join(" ")}
+                    >
+                      +{displayTags.length - 4}
                     </span>
                   )}
                 </span>
@@ -285,7 +304,8 @@ export function ImportPreviewCard({
       <div id={detailsId} hidden={!expanded}>
         {expanded && (
           <div className="import-card-details">
-            {(item.proofreadStatus === "checking" || corrections.length > 0) && (
+            {(item.proofreadStatus === "checking" ||
+              corrections.length > 0) && (
               <section
                 className="import-proofread-panel"
                 aria-label={`第 ${position} 题的 AI 纠错建议`}
@@ -551,7 +571,9 @@ export function ImportPreviewCard({
                   <ObsidianProperties
                     source={item.answer}
                     extraTags={item.tags}
-                    includeTags={item.tags.length > 0 || noteMeta.tags.length > 0}
+                    includeTags={
+                      item.tags.length > 0 || noteMeta.tags.length > 0
+                    }
                     defaultExpanded={false}
                   />
                 )}
@@ -559,88 +581,88 @@ export function ImportPreviewCard({
                   className="import-card-columns"
                   data-has-followups={followups.length > 0}
                 >
-                <section className="import-body-preview">
-                  <div className="import-card-toolbar">
-                    <h4>
-                      <BookOpen size={15} /> 正文
-                    </h4>
-                    {editButton}
-                  </div>
-                  {(view?.unresolvedFollowups ?? 0) > 0 && (
-                    <p className="import-card-notice">
-                      有追问未能拆分，已留在正文。
-                    </p>
-                  )}
-                  {bodyPreview ? (
-                    <Markdown interactiveLinks={false}>
-                      {bodyPreview + references}
-                    </Markdown>
-                  ) : !compact ? (
-                    <p className="import-empty-answer">
-                      {followups.length ? "待补主答案" : "待补答案"}
-                    </p>
-                  ) : null}
-                  {longBody && (
-                    <button
-                      type="button"
-                      className="text-button import-expand-body"
-                      aria-expanded={fullBody}
-                      onClick={() => setFullBody(!fullBody)}
-                    >
-                      {fullBody ? "收起正文" : "展开正文"}
-                      <ChevronDown size={14} />
-                    </button>
-                  )}
-                </section>
-                {followups.length > 0 && (
-                  <section
-                    className="import-followup-preview"
-                    aria-label="识别到的追问"
-                  >
-                    <h4>
-                      <MessageSquare size={15} /> 追问{" "}
-                      <span>{followups.length}</span>
-                    </h4>
-                    <ul>
-                      {followups.map((followup, i) => {
-                        const open = openFollowup === followup.id;
-                        const answerId = `${detailsId}-followup-${i}`;
-                        return (
-                          <li key={followup.id}>
-                            <div className="import-followup-question">
-                              <Markdown interactiveLinks={false}>
-                                {followup.question + references}
-                              </Markdown>
-                              <button
-                                type="button"
-                                aria-expanded={open}
-                                aria-controls={answerId}
-                                aria-label={`${open ? "收起" : "查看"}第 ${i + 1} 道追问的答案`}
-                                onClick={() =>
-                                  setOpenFollowup(open ? null : followup.id)
-                                }
-                              >
-                                <ChevronDown size={15} />
-                              </button>
-                            </div>
-                            <div
-                              id={answerId}
-                              hidden={!open}
-                              className="import-followup-answer"
-                            >
-                              {open && (
-                                <Markdown interactiveLinks={false}>
-                                  {followup.answer + references}
-                                </Markdown>
-                              )}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                  <section className="import-body-preview">
+                    <div className="import-card-toolbar">
+                      <h4>
+                        <BookOpen size={15} /> 正文
+                      </h4>
+                      {editButton}
+                    </div>
+                    {(view?.unresolvedFollowups ?? 0) > 0 && (
+                      <p className="import-card-notice">
+                        有追问未能拆分，已留在正文。
+                      </p>
+                    )}
+                    {bodyPreview ? (
+                      <Markdown interactiveLinks={false}>
+                        {bodyPreview + references}
+                      </Markdown>
+                    ) : !compact ? (
+                      <p className="import-empty-answer">
+                        {followups.length ? "待补主答案" : "待补答案"}
+                      </p>
+                    ) : null}
+                    {longBody && (
+                      <button
+                        type="button"
+                        className="text-button import-expand-body"
+                        aria-expanded={fullBody}
+                        onClick={() => setFullBody(!fullBody)}
+                      >
+                        {fullBody ? "收起正文" : "展开正文"}
+                        <ChevronDown size={14} />
+                      </button>
+                    )}
                   </section>
-                )}
-              </div>
+                  {followups.length > 0 && (
+                    <section
+                      className="import-followup-preview"
+                      aria-label="识别到的追问"
+                    >
+                      <h4>
+                        <MessageSquare size={15} /> 追问{" "}
+                        <span>{followups.length}</span>
+                      </h4>
+                      <ul>
+                        {followups.map((followup, i) => {
+                          const open = openFollowup === followup.id;
+                          const answerId = `${detailsId}-followup-${i}`;
+                          return (
+                            <li key={followup.id}>
+                              <div className="import-followup-question">
+                                <Markdown interactiveLinks={false}>
+                                  {followup.question + references}
+                                </Markdown>
+                                <button
+                                  type="button"
+                                  aria-expanded={open}
+                                  aria-controls={answerId}
+                                  aria-label={`${open ? "收起" : "查看"}第 ${i + 1} 道追问的答案`}
+                                  onClick={() =>
+                                    setOpenFollowup(open ? null : followup.id)
+                                  }
+                                >
+                                  <ChevronDown size={15} />
+                                </button>
+                              </div>
+                              <div
+                                id={answerId}
+                                hidden={!open}
+                                className="import-followup-answer"
+                              >
+                                {open && (
+                                  <Markdown interactiveLinks={false}>
+                                    {followup.answer + references}
+                                  </Markdown>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
+                  )}
+                </div>
               </>
             )}
           </div>

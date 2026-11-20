@@ -174,9 +174,7 @@ export function PublishDialog({
       <div className="dialog-form">
         <div className="publish-notice">
           <Rss size={23} />
-          <p>
-            发布只读快照供他人订阅；个人笔记与复习进度始终私有。
-          </p>
+          <p>发布只读快照供他人订阅；个人笔记与复习进度始终私有。</p>
         </div>
         <label className="field">
           谁可以找到这个题库
@@ -242,27 +240,36 @@ export function SettingsDialog({
   onClose,
   data,
   mutate,
+  palette = "forest",
+  onPaletteChange,
 }: {
   open: boolean;
   onClose: () => void;
   data: Workspace;
   mutate: Mutate;
+  palette?: "forest" | "lavender";
+  onPaletteChange?: (palette: "forest" | "lavender") => void;
 }) {
   const [tab, setTab] = useState("ai");
   const [goal, setGoal] = useState(data.settings.dailyGoal);
   const [newLimit, setNewLimit] = useState(data.settings.dailyNewLimit);
   const [busy, setBusy] = useState(false);
   const [theme, setTheme] = useState(data.settings.theme);
+  const [draftPalette, setDraftPalette] = useState<"forest" | "lavender">(
+    palette,
+  );
   useEffect(() => {
     if (open) {
       setGoal(data.settings.dailyGoal);
       setNewLimit(data.settings.dailyNewLimit);
       setTheme(data.settings.theme);
+      setDraftPalette(palette);
     }
-  }, [open]);
+  }, [open, palette]);
   async function savePreferences() {
     setBusy(true);
     try {
+      onPaletteChange?.(draftPalette);
       const result = await mutate("/api/settings", {
         action: "preferences",
         dailyGoal: Number(goal),
@@ -301,6 +308,7 @@ export function SettingsDialog({
   }
   function close() {
     document.documentElement.dataset.theme = data.settings.theme;
+    document.documentElement.dataset.palette = palette;
     onClose();
   }
   return (
@@ -373,24 +381,93 @@ export function SettingsDialog({
               <small>优先复习旧题；设为 0 可暂停新题。</small>
             </label>
             <div className="field">
-              界面主题
+              主题色系
+              <div className="palette-options">
+                <button
+                  type="button"
+                  className={draftPalette === "forest" ? "selected" : ""}
+                  aria-pressed={draftPalette === "forest"}
+                  onClick={() => {
+                    setDraftPalette("forest");
+                    document.documentElement.dataset.palette = "forest";
+                  }}
+                >
+                  {draftPalette === "forest" && (
+                    <span className="option-check" aria-hidden="true">
+                      <Check size={12} />
+                    </span>
+                  )}
+                  <span className="palette-swatches" aria-hidden="true">
+                    <i style={{ background: "#133327" }} />
+                    <i style={{ background: "#1B4D3A" }} />
+                    <i style={{ background: "#5FA083" }} />
+                    <i style={{ background: "#F4F5F6" }} />
+                  </span>
+                  <span className="palette-card-text">
+                    <strong>墨绿 · 松烟</strong>
+                    <small>深墨绿与纯白</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={draftPalette === "lavender" ? "selected" : ""}
+                  aria-pressed={draftPalette === "lavender"}
+                  onClick={() => {
+                    setDraftPalette("lavender");
+                    document.documentElement.dataset.palette = "lavender";
+                  }}
+                >
+                  {draftPalette === "lavender" && (
+                    <span className="option-check" aria-hidden="true">
+                      <Check size={12} />
+                    </span>
+                  )}
+                  <span className="palette-swatches" aria-hidden="true">
+                    <i style={{ background: "#5C5082" }} />
+                    <i style={{ background: "#B9AFD8" }} />
+                    <i style={{ background: "#D7D1DC" }} />
+                    <i style={{ background: "#F2EEEA" }} />
+                  </span>
+                  <span className="palette-card-text">
+                    <strong>熏衣 · 雾紫</strong>
+                    <small>月砂与奶霜</small>
+                  </span>
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              明暗模式
               <div className="theme-options">
                 <button
+                  type="button"
                   className={theme === "light" ? "selected" : ""}
+                  aria-pressed={theme === "light"}
                   onClick={() => {
                     setTheme("light");
                     document.documentElement.dataset.theme = "light";
                   }}
                 >
+                  {theme === "light" && (
+                    <span className="option-check" aria-hidden="true">
+                      <Check size={12} />
+                    </span>
+                  )}
                   <Sun size={22} /> 清晨 · 浅色
                 </button>
                 <button
+                  type="button"
                   className={theme === "dark" ? "selected" : ""}
+                  aria-pressed={theme === "dark"}
                   onClick={() => {
                     setTheme("dark");
                     document.documentElement.dataset.theme = "dark";
                   }}
                 >
+                  {theme === "dark" && (
+                    <span className="option-check" aria-hidden="true">
+                      <Check size={12} />
+                    </span>
+                  )}
                   <Moon size={22} /> 夜读 · 深色
                 </button>
               </div>
@@ -411,7 +488,8 @@ export function SettingsDialog({
             </div>
             <h3>你的积累，随时带走。</h3>
             <p className="muted">
-              导出题库、笔记、复习记录、原文与 AI 对话的 JSON 备份（不含 API Key）。
+              导出题库、笔记、复习记录、原文与 AI 对话的 JSON 备份（不含 API
+              Key）。
             </p>
             <Button
               variant="outline"
@@ -420,7 +498,9 @@ export function SettingsDialog({
             >
               <Download size={16} /> 导出我的数据
             </Button>
-            <p className="muted small">当前支持导出备份文件，暂不支持导入恢复。</p>
+            <p className="muted small">
+              当前支持导出备份文件，暂不支持导入恢复。
+            </p>
           </>
         )}
       </div>

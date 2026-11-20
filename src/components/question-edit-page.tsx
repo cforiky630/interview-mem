@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { QuestionView } from "@/lib/types";
 import { parseQuestions } from "@/lib/importer";
-import { markdownDocument } from "@/lib/markdown-source";
+import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import { studyDocument } from "@/lib/study-document";
 import { readPracticeDraft, savePracticeDraft } from "@/lib/drafts";
 import {
@@ -653,8 +653,8 @@ export function QuestionEditPage({
               ))
             ) : (
               <p className="quiet-empty">
-                尚未识别到面试追问。点击上方「插入追问」快速添加问答模板，或在原文中选中一段 Q/A
-                后点击「指定追问」。
+                尚未识别到面试追问。点击上方「插入追问」快速添加问答模板，或在原文中选中一段
+                Q/A 后点击「指定追问」。
               </p>
             )}
           </div>
@@ -704,8 +704,9 @@ export function QuestionEditPage({
               className="text-button"
               disabled={busy}
               onClick={() => {
-                const merged = Array.from(
-                  new Set([...tags, ...unsyncedFrontmatterTags]),
+                const merged = mergeQuestionTags(
+                  tags,
+                  unsyncedFrontmatterTags,
                 ).slice(0, 12);
                 patch({ tags: merged.join(", ") });
               }}

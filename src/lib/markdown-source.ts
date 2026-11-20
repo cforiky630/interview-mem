@@ -7,11 +7,29 @@ const MAX_NOTE_TAGS = 12;
 const MAX_TAG_LENGTH = 30;
 
 function stripWrappingQuotes(value: string) {
-  return value.trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+  return value
+    .trim()
+    .replace(/^(["'])(.*)\1$/, "$2")
+    .trim();
 }
 
-function normalizeTagValue(value: string) {
+export function normalizeTagValue(value: string) {
   return stripWrappingQuotes(value).replace(/^#+/, "").trim();
+}
+
+/** Merge and deduplicate tag lists while stripping any leading `#`. */
+export function mergeQuestionTags(
+  ...lists: (readonly string[] | undefined)[]
+): string[] {
+  const result: string[] = [];
+  for (const list of lists) {
+    if (!list) continue;
+    for (const raw of list) {
+      const tag = normalizeTagValue(raw);
+      if (tag && !result.includes(tag)) result.push(tag);
+    }
+  }
+  return result;
 }
 
 /** Parse Obsidian-style tag formats: YAML lists, inline arrays, comma/space lists, or `#tag`. */
@@ -49,7 +67,7 @@ export function markdownDocument(source: string): {
     };
     for (const line of metadata.split(/\r?\n/)) {
       if (!line.trim() || /^\s*#/.test(line)) continue;
-      const listMatch = line.match(/^[ \t]+-\s*(.*?)\s*$/);
+      const listMatch = line.match(/^[ \t]*-\s*(.*?)\s*$/);
       if (listMatch && currentKey && currentList) {
         const item = stripWrappingQuotes(listMatch[1]);
         if (item) currentList.push(item);
@@ -84,7 +102,12 @@ export function markdownDocument(source: string): {
   const tags: string[] = [];
   const pushTag = (raw: string) => {
     const tag = normalizeTagValue(raw);
-    if (tag && tag.length <= MAX_TAG_LENGTH && !tags.includes(tag) && tags.length < MAX_NOTE_TAGS) {
+    if (
+      tag &&
+      tag.length <= MAX_TAG_LENGTH &&
+      !tags.includes(tag) &&
+      tags.length < MAX_NOTE_TAGS
+    ) {
       tags.push(tag);
     }
   };
@@ -105,7 +128,11 @@ export function markdownDocument(source: string): {
           ? entry.rawValue
           : entry.rawValue.split(/[,，]/)
       )
-        .map((item) => stripWrappingQuotes(item).replace(/^\[\[|\]\]$/g, "").trim())
+        .map((item) =>
+          stripWrappingQuotes(item)
+            .replace(/^\[\[|\]\]$/g, "")
+            .trim(),
+        )
         .filter(Boolean);
       if (aliases.length) properties.push({ key: entry.key, value: aliases });
       continue;

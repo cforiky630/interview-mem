@@ -5,7 +5,11 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { ChevronDown, SlidersHorizontal, Tags } from "lucide-react";
-import { markdownDocument, remarkObsidian } from "@/lib/markdown-source";
+import {
+  markdownDocument,
+  mergeQuestionTags,
+  remarkObsidian,
+} from "@/lib/markdown-source";
 const plainPlugins = [remarkGfm, remarkObsidian];
 const mathPlugins = [remarkGfm, remarkMath, remarkObsidian];
 const mathRehype: PluggableList = [
@@ -105,7 +109,7 @@ export function ObsidianProperties({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const doc = useMemo(() => markdownDocument(source), [source]);
   const mergedTags = useMemo(
-    () => Array.from(new Set([...(extraTags ?? []), ...doc.tags])),
+    () => mergeQuestionTags(extraTags, doc.tags),
     [extraTags, doc.tags],
   );
   if (!doc.properties.length && !(includeTags && mergedTags.length))
@@ -130,7 +134,9 @@ export function ObsidianProperties({
           {doc.properties.length > 0 && includeTags && mergedTags.length > 0
             ? " · "
             : ""}
-          {includeTags && mergedTags.length > 0 && `${mergedTags.length} 个标签`}
+          {includeTags &&
+            mergedTags.length > 0 &&
+            `${mergedTags.length} 个标签`}
         </span>
         <ChevronDown size={15} aria-hidden="true" />
       </button>
@@ -151,11 +157,17 @@ export function ObsidianProperties({
                       className="obsidian-prop-tag"
                       onClick={() => onTagClick(tag)}
                     >
-                      #{tag}
+                      <span className="tag-hash" aria-hidden="true">
+                        #
+                      </span>
+                      {tag}
                     </button>
                   ) : (
                     <span key={tag} className="obsidian-prop-tag">
-                      #{tag}
+                      <span className="tag-hash" aria-hidden="true">
+                        #
+                      </span>
+                      {tag}
                     </span>
                   ),
                 )}
@@ -163,8 +175,7 @@ export function ObsidianProperties({
             </div>
           )}
           {doc.properties.map((prop) => {
-            const label =
-              PROPERTY_LABELS[prop.key.toLowerCase()] ?? prop.key;
+            const label = PROPERTY_LABELS[prop.key.toLowerCase()] ?? prop.key;
             return (
               <div className="obsidian-prop-row" key={prop.key}>
                 <dt title={prop.key}>{label}</dt>

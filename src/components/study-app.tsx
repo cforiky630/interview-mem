@@ -20,16 +20,15 @@ import {
   RefreshCw,
   Upload,
   WifiOff,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { api, RequestError } from "@/lib/client";
 import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  extractNoteAliases,
-  normalizedNoteTitle,
-} from "@/lib/markdown-source";
+import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
 import { Button } from "./ui/button";
 import { AuthScreen } from "./auth-screen";
@@ -92,6 +91,8 @@ type View =
   | "catalog"
   | "history"
   | "question";
+export type Palette = "forest" | "lavender";
+
 export function StudyApp() {
   const { data: session, isPending } = authClient.useSession();
   useEffect(() => {
@@ -99,6 +100,9 @@ export function StudyApp() {
       const cached = localStorage.getItem("shiyi:theme");
       if (cached === "light" || cached === "dark")
         document.documentElement.dataset.theme = cached;
+      const savedPalette = localStorage.getItem("shiyi:palette");
+      document.documentElement.dataset.palette =
+        savedPalette === "lavender" ? "lavender" : "forest";
     } catch {
       /* Ignore storage access failures. */
     }
@@ -132,6 +136,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const importCommitted = useRef<(() => void) | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [palette, setPalette] = useState<Palette>("forest");
+  const [themeOverride, setThemeOverride] = useState<"light" | "dark" | null>(
+    null,
+  );
   const [editQuestion, setEditQuestion] = useState<QuestionView | null>(null);
   const editingId = useRef<string | null>(null);
   editingId.current = editQuestion?.id ?? null;
@@ -223,7 +231,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         (q) =>
           !q.archived &&
           (normalizedNoteTitle(q.title) === normalized ||
-            normalizedNoteTitle(q.validation?.sourcePath ?? "") === normalized ||
+            normalizedNoteTitle(q.validation?.sourcePath ?? "") ===
+              normalized ||
             extractNoteAliases(q.answer).some(
               (alias) => normalizedNoteTitle(alias) === normalized,
             )),
@@ -329,7 +338,29 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId, refresh, loadCatalog]);
   useEffect(() => {
+    try {
+      const savedPalette =
+        localStorage.getItem("shiyi:palette") === "lavender"
+          ? "lavender"
+          : "forest";
+      setPalette(savedPalette);
+      document.documentElement.dataset.palette = savedPalette;
+    } catch {
+      document.documentElement.dataset.palette = "forest";
+    }
+  }, []);
+  const applyPalette = useCallback((next: Palette) => {
+    setPalette(next);
+    document.documentElement.dataset.palette = next;
+    try {
+      localStorage.setItem("shiyi:palette", next);
+    } catch {
+      /* Ignore storage access failures. */
+    }
+  }, []);
+  useEffect(() => {
     if (!data) return;
+    setThemeOverride(null);
     document.documentElement.dataset.theme = data.settings.theme;
     try {
       localStorage.setItem("shiyi:theme", data.settings.theme);
@@ -446,8 +477,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setSidebarOpen(false);
       return;
     }
-    if (view !== "review")
-      reviewOrigin.current = { view, deckId, questionId };
+    if (view !== "review") reviewOrigin.current = { view, deckId, questionId };
     const active = data.questions.filter(
       (q) =>
         !q.archived &&
@@ -549,6 +579,25 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         )}
       </div>
     );
+  const activeTheme = themeOverride ?? data.settings.theme;
+  function toggleTheme() {
+    if (!data) return;
+    const next: "light" | "dark" = activeTheme === "dark" ? "light" : "dark";
+    setThemeOverride(next);
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem("shiyi:theme", next);
+    } catch {
+      /* Ignore storage access failures. */
+    }
+    void mutate("/api/settings", {
+      action: "preferences",
+      dailyGoal: data.settings.dailyGoal,
+      dailyNewLimit: data.settings.dailyNewLimit,
+      theme: next,
+      timeZone: data.settings.timeZone,
+    });
+  }
   const currentQuestion = data.questions.find((q) => q.id === questionId);
   const queueQuestion = queue[reviewIndex];
   const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
@@ -820,6 +869,54 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 </button>
               )}
             <span className="topbar-divider" />
+            <div className="topbar-cluster" role="group" aria-label="外观切换">
+              <button
+                type="button"
+                className="palette-quick-btn"
+                onClick={() =>
+                  applyPalette(palette === "forest" ? "lavender" : "forest")
+                }
+                aria-label={
+                  palette === "forest"
+                    ? "切换至熏衣紫主题色"
+                    : "切换至墨绿主题色"
+                }
+                title={
+                  palette === "forest"
+                    ? "当前：墨绿（点击切换熏衣紫）"
+                    : "当前：熏衣紫（点击切换墨绿）"
+                }
+              >
+                <span className="palette-quick-dots" aria-hidden="true">
+                  <i
+                    style={{
+                      background: palette === "forest" ? "#163F30" : "#5C5082",
+                    }}
+                  />
+                  <i
+                    style={{
+                      background: palette === "forest" ? "#5FA083" : "#B9AFD8",
+                    }}
+                  />
+                </span>
+                <span>{palette === "forest" ? "墨绿" : "熏衣"}</span>
+              </button>
+              <button
+                type="button"
+                className="topbar-theme-btn"
+                onClick={toggleTheme}
+                aria-label={
+                  activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"
+                }
+                title={activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"}
+              >
+                {activeTheme === "dark" ? (
+                  <Sun size={15} />
+                ) : (
+                  <Moon size={15} />
+                )}
+              </button>
+            </div>
             <button
               className="icon-button"
               aria-label="设置"
@@ -979,7 +1076,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 onBack={() => {
                   const back = reviewOrigin.current;
                   if (back.view === "question" && back.questionId) {
-                    changePage("question", () => setQuestionId(back.questionId!));
+                    changePage("question", () =>
+                      setQuestionId(back.questionId!),
+                    );
                   } else if (back.view === "library") {
                     changePage("library", () => setDeckId(back.deckId));
                   } else {
@@ -1145,6 +1244,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           onClose={() => setSettingsOpen(false)}
           data={data}
           mutate={mutate}
+          palette={palette}
+          onPaletteChange={applyPalette}
         />
       )}
       {publishId && (

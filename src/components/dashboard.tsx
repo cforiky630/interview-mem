@@ -4,6 +4,8 @@ import {
   ArrowRight,
   ArrowUpRight,
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
   Plus,
   PenLine,
   Sprout,
@@ -12,7 +14,6 @@ import type { QuestionView, Workspace } from "@/lib/types";
 import { dateKey } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { NotebookSketch } from "./sketch";
-import { CarouselArrows } from "./ui/carousel-arrows";
 
 export function Activity({
   data,
@@ -141,22 +142,39 @@ export function Dashboard({
               <h2>今日练习</h2>
               {cards.length > 0 && (
                 <div className="carousel-controls">
+                  {cards.length > 1 && (
+                    <button
+                      type="button"
+                      className="carousel-step-btn"
+                      aria-label="上一张题目卡片"
+                      onClick={() =>
+                        setIndex(
+                          (selectedIndex - 1 + cards.length) % cards.length,
+                        )
+                      }
+                    >
+                      <ChevronLeft size={15} />
+                    </button>
+                  )}
                   <span aria-live="polite">
                     {selectedIndex + 1} / {cards.length}
                   </span>
+                  {cards.length > 1 && (
+                    <button
+                      type="button"
+                      className="carousel-step-btn"
+                      aria-label="下一张题目卡片"
+                      onClick={() =>
+                        setIndex((selectedIndex + 1) % cards.length)
+                      }
+                    >
+                      <ChevronRight size={15} />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
             <div className={`focus-stack ${question ? "has-cards" : ""}`}>
-              <CarouselArrows
-                count={cards.length}
-                previousLabel="上一张题目卡片"
-                nextLabel="下一张题目卡片"
-                onPrevious={() =>
-                  setIndex((selectedIndex - 1 + cards.length) % cards.length)
-                }
-                onNext={() => setIndex((selectedIndex + 1) % cards.length)}
-              />
               {question ? (
                 <article
                   className="focus-card"
@@ -186,7 +204,7 @@ export function Dashboard({
                     </Button>
                   </div>
                   <span className="card-corner" aria-hidden="true">
-                    ✳
+                    <Sprout size={54} strokeWidth={1.1} />
                   </span>
                 </article>
               ) : (
@@ -297,29 +315,49 @@ export function Dashboard({
                 ↗
               </span>
             </div>
-            <div className="plan-count">
-              <strong>{data.stats.reviewedToday}</strong>
-              <span>/ {data.settings.dailyGoal} 道</span>
+            <div className="plan-hero">
+              <div className="plan-count">
+                <strong>{data.stats.reviewedToday}</strong>
+                <span>/ {data.settings.dailyGoal} 道</span>
+              </div>
+              <div
+                className="plan-ring"
+                role="progressbar"
+                aria-label="今日目标"
+                aria-valuenow={Math.round(percent)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <svg
+                  viewBox="0 0 54 54"
+                  width="54"
+                  height="54"
+                  aria-hidden="true"
+                >
+                  <circle className="plan-ring-track" cx="27" cy="27" r="22" />
+                  <circle
+                    className="plan-ring-fill"
+                    cx="27"
+                    cy="27"
+                    r="22"
+                    strokeDasharray="138.23"
+                    strokeDashoffset={138.23 * (1 - percent / 100)}
+                  />
+                </svg>
+                <span>{Math.round(percent)}%</span>
+              </div>
             </div>
-            <div
-              className="plan-progress"
-              role="progressbar"
-              aria-label="今日目标"
-              aria-valuenow={Math.round(percent)}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <i style={{ width: `${percent}%` }} />
-            </div>
-            <div className="plan-item">
-              <span>待复习</span>
-              <strong>{data.stats.due}</strong>
-            </div>
-            <div className="plan-item">
-              <span>今日新学</span>
-              <strong>
-                {data.stats.newLearnedToday} / {data.settings.dailyNewLimit}
-              </strong>
+            <div className="plan-stats-grid">
+              <div className="plan-stat-tile">
+                <span>待复习</span>
+                <strong>{data.stats.due}</strong>
+              </div>
+              <div className="plan-stat-tile">
+                <span>今日新学</span>
+                <strong>
+                  {data.stats.newLearnedToday} / {data.settings.dailyNewLimit}
+                </strong>
+              </div>
             </div>
             {missing > 0 && (
               <button
