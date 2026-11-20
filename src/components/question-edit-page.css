@@ -66,7 +66,8 @@
 
 .editor-title-field > textarea:focus {
   background: var(--focus-surface);
-  border-color: var(--border-accent);
+  border-color: transparent;
+  box-shadow: inset 0 -1px 0 var(--border-accent);
 }
 
 .editor-view-controls {
@@ -155,7 +156,16 @@
 
 .question-editor-writing:focus-within {
   border-color: var(--border-accent);
-  box-shadow: var(--shadow-card-hover);
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 4px var(--focus-tint);
+}
+
+.question-editor-writing > textarea:focus,
+.question-editor-writing > textarea:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  background: transparent;
 }
 
 .question-editor-writing > textarea {

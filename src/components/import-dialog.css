@@ -367,7 +367,8 @@
 
 .import-paste-panel:focus-within {
   background: var(--focus-surface);
-  border-color: var(--accent);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
 }
 
 .import-paste-panel > .import-source-heading {
@@ -391,6 +392,8 @@
 .import-paste-panel > textarea:focus,
 .import-paste-panel > textarea:focus-visible {
   background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .import-drop {

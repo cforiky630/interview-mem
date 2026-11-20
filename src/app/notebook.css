@@ -159,6 +159,7 @@
 .answer-composer-editor:focus {
   background: var(--focus-surface);
   border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
 }
 
 .answer-composer-skeleton {
@@ -934,8 +935,7 @@
 }
 
 .list-toolbar:has(.search-field input:focus) {
-  border-color: var(--border-accent);
-  box-shadow: var(--shadow-card-hover);
+  box-shadow: var(--shadow-card);
 }
 
 .library-filter-dock .list-toolbar:has(.search-field input:focus) {
@@ -950,7 +950,7 @@
 .library-filter-dock .search-field:has(input:focus) {
   border-color: transparent;
   background-color: var(--surface);
-  box-shadow: var(--shadow-control);
+  box-shadow: 0 0 0 4px var(--focus-tint);
 }
 
 .library-filter-dock .library-tag-bar {
@@ -987,9 +987,7 @@
 }
 
 .list-toolbar .search-field:hover,
-.list-toolbar .search-field:focus-within,
 .list-toolbar .search-field.has-query,
-.list-toolbar .search-field:has(input:focus),
 .list-toolbar .search-field:has(input:not(:placeholder-shown)) {
   flex: 1 1 440px;
   max-width: 520px;
@@ -997,10 +995,27 @@
   box-shadow: var(--shadow-control);
 }
 
+.list-toolbar .search-field:focus-within,
+.list-toolbar .search-field:has(input:focus) {
+  flex: 1 1 440px;
+  max-width: 520px;
+  border-color: var(--border-accent);
+  background-color: var(--focus-surface);
+  box-shadow: var(--shadow-focus);
+}
+
+.library-filter-dock .list-toolbar .search-field:focus-within,
+.library-filter-dock .list-toolbar .search-field:has(input:focus) {
+  border-color: transparent;
+  background-color: var(--surface);
+  box-shadow: 0 0 0 4px var(--focus-tint);
+}
+
 .search-field:focus-within,
 .search-field:has(input:focus) {
   background-color: var(--focus-surface);
-  border-color: var(--accent);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
 }
 
 .search-field > svg {
@@ -1059,13 +1074,19 @@
 }
 
 .catalog-search:hover,
-.catalog-search:focus-within,
 .catalog-search.has-query,
-.catalog-search:has(input:focus),
 .catalog-search:has(input:not(:placeholder-shown)) {
   max-width: 520px;
   border-color: var(--border-accent);
   box-shadow: var(--shadow-control);
+}
+
+.catalog-search:focus-within,
+.catalog-search:has(input:focus) {
+  max-width: 520px;
+  border-color: var(--border-accent);
+  background-color: var(--focus-surface);
+  box-shadow: var(--shadow-focus);
 }
 
 .list-toolbar select {
@@ -1973,7 +1994,8 @@ button.obsidian-prop-tag:hover {
 .answer-draft textarea:focus,
 .followup-card textarea:focus {
   background-color: var(--focus-surface);
-  border-color: var(--accent);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
 }
 
 .paragraph-actions {
