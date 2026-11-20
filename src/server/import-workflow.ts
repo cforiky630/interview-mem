@@ -18,6 +18,7 @@ import {
 import { contentHash } from "./crypto";
 import { ownedDeck } from "./workspace";
 import { acquireAi, aiCredential, providerRequest } from "./ai";
+import { deckIdSchema } from "./resource-ids";
 import { AppError } from "./errors";
 
 const previewSource = z.object({
@@ -35,7 +36,7 @@ const previewSource = z.object({
     .optional(),
 });
 const previewOptions = {
-  deckId: z.string().uuid().nullable().default(null),
+  deckId: deckIdSchema.nullable().default(null),
   inputType: z.enum(["qa", "questions"]),
 };
 export const previewSchema = previewSource.extend({

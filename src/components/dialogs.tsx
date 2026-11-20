@@ -155,7 +155,9 @@ export function PublishDialog({
         summary,
       });
       if (result) {
-        setLink(`${window.location.origin}/?subscribe=${deck.id}`);
+        const share = new URL("/", window.location.origin);
+        share.searchParams.set("subscribe", deck.id);
+        setLink(share.href);
         toast.success(`已发布 v${result.version}，订阅者将自动收到新版本。`);
       }
     } finally {

@@ -323,6 +323,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     const shared = new URL(window.location.href).searchParams.get("subscribe");
     if (shared) {
       setView("catalog");
+      setNavigationTarget("catalog");
       void loadCatalog(shared);
     }
     function sync() {
@@ -474,6 +475,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     setEditQuestion(null);
     if (!data) return;
     if (view === "review" && !targetDeck && !single && queue[reviewIndex]) {
+      if (navigationTarget !== "review") changePage("review");
       setSidebarOpen(false);
       return;
     }
@@ -605,6 +607,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const activeNavView = view === "question" ? origin.current.view : view;
   const activeDeckId = view === "question" ? origin.current.deckId : deckId;
   const displayedView = isNavigating ? navigationTarget : view;
+  const mobileView = ["question", "favorites", "inbox", "archived"].includes(
+    navigationTarget,
+  )
+    ? "library"
+    : navigationTarget;
   const nav = [
     { id: "today" as const, label: "今日", icon: LayoutDashboard },
     { id: "library" as const, label: "我的题库", icon: Layers2 },
@@ -931,7 +938,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 if (editingId.current && pendingCount.current) return;
                 if (confirm("退出当前账号？")) {
                   void authClient.signOut();
-                  setView("today");
+                  changePage("today");
                 }
               }}
             >
@@ -1021,7 +1028,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             )}
           {view === "question" && currentQuestion && (
             <QuestionReader
-              key={`${currentQuestion.id}:${currentQuestion.revision}`}
+              key={currentQuestion.id}
               question={currentQuestion}
               data={data}
               onBack={() => {
@@ -1173,24 +1180,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         {nav.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
-            className={
-              displayedView === id ||
-              (id === "library" &&
-                ["question", "favorites", "inbox", "archived"].includes(
-                  displayedView,
-                ))
-                ? "active"
-                : ""
-            }
-            aria-current={
-              displayedView === id ||
-              (id === "library" &&
-                ["question", "favorites", "inbox", "archived"].includes(
-                  displayedView,
-                ))
-                ? "page"
-                : undefined
-            }
+            className={mobileView === id ? "active" : ""}
+            aria-current={mobileView === id ? "page" : undefined}
             onClick={() => (id === "review" ? startReview() : navigate(id))}
           >
             <Icon size={20} />
@@ -1268,9 +1259,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               view === "question" &&
               questionId === questionAction.question.id
             ) {
-              setQuestionId(null);
-              setView(origin.current.view);
-              setDeckId(origin.current.deckId);
+              changePage(origin.current.view, () => {
+                setQuestionId(null);
+                setDeckId(origin.current.deckId);
+              });
             }
           }}
         />

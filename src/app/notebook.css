@@ -2923,10 +2923,49 @@ button.obsidian-prop-tag:hover {
 
 .action-menu > div {
   box-shadow: var(--shadow-popover);
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--text);
+}
+
+.action-menu > div:popover-open {
+  position: fixed;
+  inset: auto;
+  margin: 0;
 }
 
 .action-menu .danger-text {
   color: var(--danger-text);
+}
+
+.chat-edit-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.chat-edit-card > p {
+  white-space: pre-wrap;
+}
+
+.chat-edit-card > p > span {
+  color: var(--muted);
+  margin-inline-end: 8px;
+}
+
+.chat-edit-card > .button {
+  justify-self: start;
+}
+
+.chat-edit-answer > summary {
+  cursor: pointer;
+  color: var(--accent-dark);
 }
 
 .library-sections {

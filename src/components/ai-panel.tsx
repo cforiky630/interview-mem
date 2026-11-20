@@ -15,11 +15,13 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import type {
+  ChatEdit,
   ChatMessage,
   Conversation,
   QuestionView,
   Workspace,
 } from "@/lib/types";
+import { ChatEditCard, chatEditState } from "./chat-edit-card";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
 import type { Mutate } from "./dialogs";
@@ -50,6 +52,8 @@ export function AiPanel({
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [applying, setApplying] = useState<string | null>(null);
+  const editInFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -214,14 +218,53 @@ export function AiPanel({
     }
   }
   const active = threads.find((t) => t.id === activeId);
+  const ownedDeck = data.decks.find((d) => d.id === question.deckId && d.isOwner);
+
+  async function applyEdit(edit: ChatEdit, key: string) {
+    if (
+      inFlight.current ||
+      editInFlight.current ||
+      chatEditState(edit, question, ownedDeck) !== "ready"
+    )
+      return;
+    editInFlight.current = true;
+    setApplying(key);
+    try {
+      if (edit.target === "question") {
+        const result = await mutate("/api/questions", {
+          action: "edit",
+          id: edit.id,
+          expectedRevision: edit.revision,
+          title: question.title,
+          answer: question.answer,
+          tags: question.tags,
+          ...edit.fields,
+        });
+        if (result) toast.success("题目修改已保存。");
+      } else {
+        const result = await mutate("/api/decks", {
+          action: "edit",
+          deckId: edit.id,
+          expected: edit.expected,
+          ...edit.expected,
+          ...edit.fields,
+        });
+        if (result) toast.success("题库修改已保存。");
+      }
+    } finally {
+      editInFlight.current = false;
+      setApplying(null);
+    }
+  }
+
   return (
-    <aside className="ai-panel" aria-label="AI 助教">
+    <aside className="ai-panel" aria-label="AI 助手">
       <div className="ai-panel-heading">
         <div>
           <span className="ai-avatar">
             <Sparkles size={18} />
           </span>
-          <strong>随文助教</strong>
+          <strong>AI 助手</strong>
           <span className="ai-live-dot" />
         </div>
         <div>
@@ -244,7 +287,7 @@ export function AiPanel({
           <Button
             variant="ghost"
             size="icon"
-            aria-label="关闭 AI 助教"
+            aria-label="关闭 AI 助手"
             onClick={onClose}
           >
             <X size={17} />
@@ -311,7 +354,11 @@ export function AiPanel({
             </span>
             <h3>哪里没想明白？</h3>
             <p>
-              结合本题与参考答案拆解疑问，划选正文即可追问。
+              {question.isOwner
+                ? ownedDeck
+                  ? "可以围绕本题提问，也可以请我修改本题或所属题库。"
+                  : "可以围绕本题提问，也可以请我修改本题。"
+                : "结合本题与参考答案拆解疑问，划选正文即可追问。"}
             </p>
             {data.settings.hasKey ? (
               <div className="prompt-suggestions">
@@ -343,7 +390,7 @@ export function AiPanel({
           <div key={message.id} className={`chat-message role-${message.role}`}>
             {message.role === "assistant" && (
               <div className="message-author">
-                <Sparkles size={13} /> 拾忆助教
+                <Sparkles size={13} /> AI 助手
               </div>
             )}
             {message.content ? (
@@ -355,7 +402,21 @@ export function AiPanel({
             ) : (
               <span className="muted small">已停止回答</span>
             )}
-            {message.role === "assistant" && message.content && !busy && (
+            {message.edits?.map((edit) => {
+              const key = `${message.id}:${edit.target}`;
+              return (
+                <ChatEditCard
+                  key={key}
+                  edit={edit}
+                  question={question}
+                  deck={ownedDeck}
+                  busy={busy || applying !== null}
+                  applying={applying === key}
+                  onApply={() => void applyEdit(edit, key)}
+                />
+              );
+            })}
+            {message.role === "assistant" && message.content && !message.edits?.length && !busy && (
               <div className="message-actions">
                 <button
                   onClick={() =>
@@ -406,10 +467,12 @@ export function AiPanel({
         <div className="ai-composer-box">
           <textarea
             ref={composerRef}
-            aria-label="向 AI 提问"
+            aria-label="给 AI 助手发消息"
             placeholder={
               data.settings.hasKey
-                ? "围绕当前题目或选中段落追问（Enter 发送，Shift + Enter 换行）…"
+                ? question.isOwner
+                  ? "输入问题或修改要求（Enter 发送，Shift + Enter 换行）…"
+                  : "围绕当前题目或选中段落追问（Enter 发送，Shift + Enter 换行）…"
                 : "请先配置模型 API Key 后提问"
             }
             value={input}

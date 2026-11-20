@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { deckIdSchema } from "@/server/resource-ids";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { imports, questions, decks } from "@/db/schema";
@@ -12,7 +13,7 @@ import { AppError } from "@/server/errors";
 
 const schema = z.object({
   batchId: z.string().uuid(),
-  deckId: z.string().uuid(),
+  deckId: deckIdSchema,
   raw: z.string().trim().min(1).max(100_000),
   inputType: z.enum(["qa", "questions"]).default("qa"),
   mode: z.enum(["rules", "ai"]).default("rules"),

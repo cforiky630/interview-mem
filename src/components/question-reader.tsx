@@ -410,7 +410,7 @@ export function QuestionReader({
                 size="sm"
                 onClick={() => setChatOpen(!chatOpen)}
               >
-                <Sparkles size={15} /> AI
+                <Sparkles size={15} /> AI 助手
               </Button>
             )}
             {(question.isOwner || !!question.validation || !review) && (

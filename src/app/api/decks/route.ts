@@ -6,27 +6,35 @@ import { decks, questions, releases, subscriptions } from "@/db/schema";
 import { body, route } from "@/server/api";
 import { ownedDeck, publishedQuestion } from "@/server/workspace";
 import { AppError } from "@/server/errors";
+import { deckIdSchema } from "@/server/resource-ids";
+import { deckFields } from "@/server/content-fields";
 
 const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
-    title: z.string().trim().min(1).max(80),
-    description: z.string().max(500).default(""),
+    ...deckFields,
+    description: deckFields.description.default(""),
     color: z.enum(["sage", "blue", "sand", "rose"]).default("sage"),
   }),
   z.object({
+    action: z.literal("edit"),
+    deckId: deckIdSchema,
+    expected: z.object({ title: z.string(), description: z.string() }),
+    ...deckFields,
+  }),
+  z.object({
     action: z.literal("publish"),
-    deckId: z.string().uuid(),
+    deckId: deckIdSchema,
     expectedVersion: z.number().int().nonnegative(),
     visibility: z.enum(["public", "unlisted"]),
     summary: z.string().max(1000).default(""),
   }),
-  z.object({ action: z.literal("subscribe"), deckId: z.string().uuid() }),
-  z.object({ action: z.literal("unsubscribe"), deckId: z.string().uuid() }),
-  z.object({ action: z.literal("delete"), deckId: z.string().uuid() }),
+  z.object({ action: z.literal("subscribe"), deckId: deckIdSchema }),
+  z.object({ action: z.literal("unsubscribe"), deckId: deckIdSchema }),
+  z.object({ action: z.literal("delete"), deckId: deckIdSchema }),
   z.object({
     action: z.literal("acknowledge"),
-    deckId: z.string().uuid(),
+    deckId: deckIdSchema,
     version: z.number().int().nonnegative(),
   }),
 ]);
@@ -93,6 +101,34 @@ export const POST = route(async (request, user) => {
       })
       .returning();
     return NextResponse.json({ deck });
+  }
+  if (data.action === "edit") {
+    const [changed] = await db
+      .update(decks)
+      .set({
+        title: data.title,
+        description: data.description,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(decks.id, data.deckId),
+          eq(decks.ownerId, user.id),
+          isNull(decks.deletedAt),
+          eq(decks.title, data.expected.title),
+          eq(decks.description, data.expected.description),
+        ),
+      )
+      .returning({ id: decks.id });
+    if (!changed) {
+      await ownedDeck(user.id, data.deckId);
+      throw new AppError(
+        409,
+        "题库信息已更新，请重新生成修改建议。",
+        "CONFLICT",
+      );
+    }
+    return Response.json({ ok: true });
   }
   if (data.action === "publish") {
     await ownedDeck(user.id, data.deckId);

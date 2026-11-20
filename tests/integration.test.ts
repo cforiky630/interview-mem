@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import dns from "node:dns/promises";
+import type { Conversation, Workspace } from "../src/lib/types";
 
 Object.assign(process.env, { NODE_ENV: "test" });
 process.env.LOCAL_DATABASE_PATH = ":memory:";
@@ -14,10 +15,11 @@ process.env.BETTER_AUTH_URL = "http://localhost:3000";
 
 const { getAuth } = await import("../src/server/auth");
 const { getDb } = await import("../src/db");
-const { credentials, reviewEvents } = await import("../src/db/schema");
+const { credentials, decks, reviewEvents } = await import("../src/db/schema");
 const workspace = await import("../src/app/api/workspace/route");
 const importer = await import("../src/app/api/import/route");
 const deckRoute = await import("../src/app/api/decks/route");
+const catalog = await import("../src/app/api/catalog/route");
 const questionRoute = await import("../src/app/api/questions/route");
 const reviewRoute = await import("../src/app/api/reviews/route");
 const settings = await import("../src/app/api/settings/route");
@@ -25,7 +27,7 @@ const chat = await import("../src/app/api/chat/route");
 const aiAnswer = await import("../src/app/api/questions/answer/route");
 const exporter = await import("../src/app/api/export/route");
 type UserContext = { cookie: string; id: string };
-async function register(name: string): Promise<UserContext> {
+async function register(name: string, address?: string): Promise<UserContext> {
   const auth = await getAuth();
   const response = await auth.handler(
     new Request("http://localhost:3000/api/auth/sign-up/email", {
@@ -33,6 +35,7 @@ async function register(name: string): Promise<UserContext> {
       headers: {
         "content-type": "application/json",
         origin: "http://localhost:3000",
+        ...(address ? { "x-forwarded-for": address } : {}),
       },
       body: JSON.stringify({
         name,
@@ -1129,6 +1132,264 @@ test("AI answer drafts: deny foreign questions, subscribers, stale revisions and
     fetchMock.mock.restore();
     dnsMock.mock.restore();
   }
+});
+
+test("legacy text deck IDs can publish, share a link and receive subscriptions", async () => {
+  const owner = await register("legacy-publish-owner", "203.0.113.10");
+  const subscriber = await register(
+    "legacy-publish-subscriber",
+    "203.0.113.11",
+  );
+  const id = "legacy/RAG+面试题";
+  const db = await getDb();
+  await db
+    .insert(decks)
+    .values({ id, ownerId: owner.id, title: "导入的旧题库" });
+  const imported = await importer.POST(
+    request(owner, "/api/import", {
+      batchId: randomUUID(),
+      deckId: id,
+      raw: "## 如何发布旧题库？\n保留原标识。",
+    }),
+  );
+  assert.equal(imported.status, 200, await imported.clone().text());
+  const publish = {
+    action: "publish",
+    deckId: id,
+    expectedVersion: 0,
+    visibility: "unlisted",
+  };
+  assert.equal(
+    (await deckRoute.POST(request(subscriber, "/api/decks", publish))).status,
+    404,
+  );
+  const released = await deckRoute.POST(request(owner, "/api/decks", publish));
+  assert.equal(released.status, 200, await released.clone().text());
+  assert.deepEqual(await released.json(), { version: 1 });
+  const link = `/api/catalog?id=${encodeURIComponent(id)}`;
+  const shared = await catalog.GET(request(subscriber, link));
+  assert.equal(shared.status, 200);
+  assert.equal((await shared.json())[0].id, id);
+  const subscribed = await deckRoute.POST(
+    request(subscriber, "/api/decks", { action: "subscribe", deckId: id }),
+  );
+  assert.equal(subscribed.status, 200);
+  const state: Workspace = await snapshot(subscriber);
+  assert.equal(
+    state.questions.find((q) => q.deckId === id)?.answer,
+    "保留原标识。",
+  );
+});
+
+test("knowledge chat proposes edits for owned content, and applying them respects revisions and published snapshots", async () => {
+  const owner = await register("knowledge-chat-owner", "203.0.113.12");
+  const subscriber = await register(
+    "knowledge-chat-subscriber",
+    "203.0.113.13",
+  );
+  const created = await deckRoute.POST(
+    request(owner, "/api/decks", {
+      action: "create",
+      title: "缓存练习",
+      description: "原题库简介",
+    }),
+  );
+  assert.equal(created.status, 200);
+  const { deck } = await created.json();
+  const imported = await importer.POST(
+    request(owner, "/api/import", {
+      batchId: randomUUID(),
+      deckId: deck.id,
+      raw: "## 如何使用缓存？\n原参考答案。",
+    }),
+  );
+  assert.equal(imported.status, 200);
+  const original: Workspace = await snapshot(owner);
+  const question = original.questions.find((q) => q.deckId === deck.id);
+  assert.ok(question);
+  const publish = {
+    action: "publish",
+    deckId: deck.id,
+    expectedVersion: 0,
+    visibility: "unlisted",
+  };
+  assert.equal(
+    (await deckRoute.POST(request(owner, "/api/decks", publish))).status,
+    200,
+  );
+  assert.equal(
+    (
+      await deckRoute.POST(
+        request(subscriber, "/api/decks", {
+          action: "subscribe",
+          deckId: deck.id,
+        }),
+      )
+    ).status,
+    200,
+  );
+  for (const account of [owner, subscriber]) {
+    const saved = await settings.POST(
+      request(account, "/api/settings", {
+        action: "saveKey",
+        key: "mock-knowledge-chat-key",
+        model: "deepseek-chat",
+      }),
+    );
+    assert.equal(saved.status, 200);
+  }
+  const suggestion = {
+    question: {
+      title: "如何设计缓存？",
+      answer: "## 缓存策略\n解释命中与失效。",
+      tags: ["缓存"],
+    },
+    deck: { title: "缓存专题", description: "围绕缓存策略复习" },
+  };
+  const replies = [
+    { canEdit: true, edits: suggestion, finish: "stop" },
+    {
+      canEdit: true,
+      edits: { question: { id: randomUUID(), title: "越出当前题目的建议" } },
+      finish: "stop",
+    },
+    { canEdit: true, edits: suggestion, finish: "length" },
+    { canEdit: false, edits: null, finish: "stop" },
+  ];
+  const dnsMock = mock.method(dns, "lookup", async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  const fetchMock = mock.method(
+    globalThis,
+    "fetch",
+    async (_url: URL, init?: RequestInit) => {
+      const reply = replies.shift();
+      assert.ok(reply);
+      const { messages } = JSON.parse(String(init?.body));
+      assert.equal(
+        messages[0].content.includes("<shiyi-edits>"),
+        reply.canEdit,
+      );
+      const chunks = reply.edits
+        ? ["  <shiyi-", `edits>${JSON.stringify(reply.edits)}</shiyi-edits>`]
+        : ["缓存能", "减少重复计算。"];
+      return new Response(
+        [
+          ...chunks.map(
+            (content) =>
+              `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+          ),
+          `data: ${JSON.stringify({ choices: [{ finish_reason: reply.finish }] })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""),
+      );
+    },
+  );
+  try {
+    for (const account of [owner, owner, owner, subscriber]) {
+      const response = await chat.POST(
+        request(account, "/api/chat", {
+          questionId: question.id,
+          message: "修改当前题目和所属题库",
+        }),
+      );
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.match(text, /event: done/);
+      assert.doesNotMatch(text, /shiyi-edits/);
+    }
+    assert.equal(replies.length, 0);
+  } finally {
+    fetchMock.mock.restore();
+    dnsMock.mock.restore();
+  }
+  const chatUrl = `/api/chat?questionId=${question.id}`;
+  const threads: Conversation[] = await (
+    await chat.GET(request(owner, chatUrl))
+  ).json();
+  const proposals = threads.flatMap((t) =>
+    t.messages.flatMap((m) => m.edits ?? []),
+  );
+  assert.equal(proposals.length, 2);
+  const readOnly: Conversation[] = await (
+    await chat.GET(request(subscriber, chatUrl))
+  ).json();
+  assert.equal(readOnly[0].messages.at(-1)?.content, "缓存能减少重复计算。");
+  assert.ok(readOnly[0].messages.every((m) => !m.edits?.length));
+  const draft: Workspace = await snapshot(owner);
+  assert.equal(draft.decks.find((d) => d.id === deck.id)?.title, deck.title);
+  assert.equal(
+    draft.questions.find((q) => q.id === question.id)?.title,
+    question.title,
+  );
+
+  const deckEdit = proposals.find((edit) => edit.target === "deck");
+  const questionEdit = proposals.find((edit) => edit.target === "question");
+  assert.ok(deckEdit && questionEdit);
+  const deckPayload = {
+    action: "edit",
+    deckId: deckEdit.id,
+    expected: deckEdit.expected,
+    ...deckEdit.expected,
+    ...deckEdit.fields,
+  };
+  const questionPayload = {
+    action: "edit",
+    id: questionEdit.id,
+    expectedRevision: questionEdit.revision,
+    title: question.title,
+    answer: question.answer,
+    tags: question.tags,
+    ...questionEdit.fields,
+  };
+  assert.equal(
+    (await deckRoute.POST(request(subscriber, "/api/decks", deckPayload)))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await questionRoute.POST(
+        request(subscriber, "/api/questions", questionPayload),
+      )
+    ).status,
+    403,
+  );
+  const concurrent = await Promise.all(
+    [1, 2].map(() => deckRoute.POST(request(owner, "/api/decks", deckPayload))),
+  );
+  assert.deepEqual(concurrent.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(
+    (
+      await questionRoute.POST(
+        request(owner, "/api/questions", questionPayload),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await questionRoute.POST(
+        request(owner, "/api/questions", questionPayload),
+      )
+    ).status,
+    409,
+  );
+  const updated: Workspace = await snapshot(owner);
+  const revised = updated.questions.find((q) => q.id === question.id);
+  assert.equal(
+    updated.decks.find((d) => d.id === deck.id)?.description,
+    suggestion.deck.description,
+  );
+  assert.equal(revised?.title, suggestion.question.title);
+  assert.equal(revised?.answer, suggestion.question.answer);
+  assert.deepEqual(revised?.tags, suggestion.question.tags);
+  const released: Workspace = await snapshot(subscriber);
+  assert.equal(released.decks.find((d) => d.id === deck.id)?.title, deck.title);
+  assert.equal(
+    released.questions.find((q) => q.id === question.id)?.answer,
+    question.answer,
+  );
 });
 
 test("registration: the approved eight-character minimum is enforced", async () => {

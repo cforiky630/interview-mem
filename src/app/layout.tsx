@@ -17,7 +17,7 @@ export const viewport: Viewport = {
 };
 export const metadata: Metadata = {
   title: "拾忆 · 把知识变成自己的表达",
-  description: "面试题知识库、间隔复习与随文 AI 助教。每天一点，记得更久。",
+  description: "面试题知识库、间隔复习与 AI 助手。每天一点，记得更久。",
 };
 const THEME_INIT_SCRIPT = `(function(){try{var d=document.documentElement.dataset;var t=localStorage.getItem("shiyi:theme");if(t==="light"||t==="dark")d.theme=t;var p=localStorage.getItem("shiyi:palette");d.palette=p==="lavender"?"lavender":"forest";}catch(e){}})();`;
 export default function RootLayout({

@@ -111,10 +111,25 @@ export type Workspace = {
     timeZone: string;
   };
 };
+type DeckDetails = Pick<DeckView, "title" | "description">;
+export type ChatEdit =
+  | {
+      target: "question";
+      id: string;
+      revision: number;
+      fields: Partial<Pick<QuestionView, "title" | "answer" | "tags">>;
+    }
+  | {
+      target: "deck";
+      id: string;
+      expected: DeckDetails;
+      fields: Partial<DeckDetails>;
+    };
 export type ChatMessage = {
   id: string;
   role: string;
   content: string;
+  edits?: ChatEdit[] | null;
   createdAt: string;
 };
 export type Conversation = {

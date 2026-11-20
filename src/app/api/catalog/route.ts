@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
-import { z } from "zod";
 import { route } from "@/server/api";
+import { deckIdSchema } from "@/server/resource-ids";
 import { getDb } from "@/db";
 import { decks, releases, subscriptions, user as users } from "@/db/schema";
 export const GET = route(async (request, user) => {
   const db = await getDb();
   const shared = new URL(request.url).searchParams.get("id");
-  if (shared) z.string().uuid().parse(shared);
+  if (shared) deckIdSchema.parse(shared);
   const rows = await db
     .select({ deck: decks, release: releases, ownerName: users.name })
     .from(decks)

@@ -7,6 +7,8 @@ import { body, route } from "@/server/api";
 import { accessibleQuestion, ownedDeck } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { AppError } from "@/server/errors";
+import { deckIdSchema } from "@/server/resource-ids";
+import { questionFields } from "@/server/content-fields";
 import {
   deleteQuestion,
   restoreQuestion,
@@ -20,15 +22,13 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("move"),
     id: z.string().uuid(),
-    deckId: z.string().uuid().nullable(),
+    deckId: deckIdSchema.nullable(),
   }),
   z.object({
     action: z.literal("edit"),
     id: z.string().uuid(),
     expectedRevision: z.number().int().positive(),
-    title: z.string().trim().min(1).max(200),
-    answer: z.string().max(100_000),
-    tags: z.array(z.string().trim().min(1).max(30)).max(12),
+    ...questionFields,
     major: z.boolean().default(false),
   }),
   z.object({
@@ -50,7 +50,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("copy"),
     id: z.string().uuid(),
-    deckId: z.string().uuid().nullable().default(null),
+    deckId: deckIdSchema.nullable().default(null),
     title: z.string().trim().min(1).max(200).optional(),
     answer: z.string().max(100_000).optional(),
   }),
