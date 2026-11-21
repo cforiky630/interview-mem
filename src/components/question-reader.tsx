@@ -15,7 +15,11 @@ import {
   Check,
   Loader2,
   RotateCcw,
+  ChevronLeft,
   ChevronRight,
+  Clock,
+  Play,
+  Pause,
   BookOpen,
   Mic,
   PenLine,
@@ -41,7 +45,6 @@ import { Dialog } from "./ui/dialog";
 import { Markdown, ObsidianProperties } from "./markdown";
 import { ParagraphPractice, FollowupCards } from "./paragraph-practice";
 import { ContentValidationPanel } from "./content-validation";
-import { AiPanel, type AiTrigger } from "./ai-panel";
 import type { Mutate } from "./dialogs";
 
 type Insight = {
@@ -114,17 +117,23 @@ export function QuestionReader({
   onEdit,
   onDelete,
   onMove,
-  onSettings,
   onGenerateAnswer,
   onFavorite,
   mutate,
   review,
+  cram,
+  cramLabel,
   onGrade,
   busy,
   progress,
+  prevNext,
   onSingleReview,
   activeTheme,
   onToggleTheme,
+  aiOpen = false,
+  onToggleAi,
+  onAskAi,
+  onRevealedChange,
 }: {
   question: QuestionView;
   data: Workspace;
@@ -133,17 +142,36 @@ export function QuestionReader({
   onEdit: () => void;
   onDelete: () => void;
   onMove: () => void;
-  onSettings: () => void;
   onGenerateAnswer: (q: QuestionView) => void;
   onFavorite: () => void;
   mutate: Mutate;
   review?: boolean;
+  cram?: boolean;
+  cramLabel?: string;
   onGrade?: (rating: number, answer: string) => void;
   busy?: boolean;
   progress?: { current: number; total: number };
+  prevNext?: {
+    index: number;
+    total: number;
+    hasPrev: boolean;
+    hasNext: boolean;
+    prevTitle?: string;
+    nextTitle?: string;
+    onPrev: () => void;
+    onNext: () => void;
+  };
   onSingleReview?: () => void;
   activeTheme?: "light" | "dark";
   onToggleTheme?: () => void;
+  aiOpen?: boolean;
+  onToggleAi?: (open?: boolean) => void;
+  onAskAi?: (request: {
+    quote: string;
+    prompt: string;
+    attempt?: string;
+  }) => void;
+  onRevealedChange?: (revealed: boolean) => void;
 }) {
   const [revealed, setRevealed] = useState(!review);
   const noteMeta = useMemo(
@@ -161,11 +189,11 @@ export function QuestionReader({
   const [tab, setTab] = useState<ReaderTab>("answer");
   const [inputMode, setInputMode] = useState<"written" | "oral">("written");
   const [answer, setAnswer] = useState("");
+  const [oralSeconds, setOralSeconds] = useState(0);
+  const [oralRunning, setOralRunning] = useState(false);
   const [hideAll, setHideAll] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
   const [validationOpen, setValidationOpen] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
-  const [trigger, setTrigger] = useState<AiTrigger | null>(null);
   const [selection, setSelection] = useState<{
     text: string;
     x: number;
@@ -179,6 +207,29 @@ export function QuestionReader({
   const insightVersion = useRef("");
   const answerRef = useRef<HTMLDivElement>(null);
   const draftKey = `shiyi:note:${data.user.id}:${question.id}`;
+  useEffect(() => {
+    onRevealedChange?.(revealed);
+  }, [revealed, onRevealedChange]);
+  useEffect(() => {
+    function onNoteUpdated(event: Event) {
+      const detail = (
+        event as CustomEvent<{
+          questionId: string;
+          note: string;
+          version: number;
+          switchToNotes?: boolean;
+        }>
+      ).detail;
+      if (!detail || detail.questionId !== question.id) return;
+      setNote(detail.note);
+      setNoteBase(detail.version);
+      setNoteDirty(false);
+      if (detail.switchToNotes) setTab("notes");
+    }
+    window.addEventListener("shiyi:note-updated", onNoteUpdated);
+    return () =>
+      window.removeEventListener("shiyi:note-updated", onNoteUpdated);
+  }, [question.id]);
   const answerKey = practiceDraftKey(
     data.user.id,
     question.id,
@@ -215,8 +266,8 @@ export function QuestionReader({
     }
   }, [question.note, question.noteVersion, noteDirty, draftKey]);
   useEffect(() => {
-    // 普通阅读不抢发曲线请求；答题或打开“记忆”时才读取，同版本复用结果。
-    if (!review && tab !== "memory") return;
+    // 普通阅读与突击模式不抢发曲线请求；仅正常 FSRS 答题或打开“记忆”时读取。
+    if ((!review || cram) && tab !== "memory") return;
     const version = `${question.id}:${question.studyVersion}`;
     if (insightVersion.current === version) return;
     const controller = new AbortController();
@@ -238,7 +289,59 @@ export function QuestionReader({
       cancelled = true;
       controller.abort();
     };
-  }, [question.id, question.studyVersion, review, tab]);
+  }, [question.id, question.studyVersion, review, cram, tab]);
+  useEffect(() => {
+    if (!oralRunning || revealed || inputMode !== "oral") return;
+    const timer = window.setInterval(() => {
+      setOralSeconds((seconds) => seconds + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [oralRunning, revealed, inputMode]);
+  useEffect(() => {
+    if (revealed) setOralRunning(false);
+  }, [revealed]);
+  useEffect(() => {
+    if (review || !prevNext || prevNext.total <= 1) return;
+    function stepKeys(event: KeyboardEvent) {
+      if (
+        (event.target as HTMLElement).closest(
+          "input,textarea,select,[contenteditable='true'],[role='dialog']:not([hidden]),button",
+        ) ||
+        globalThis.document.querySelector("[role='dialog']:not([hidden])") ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        aiOpen ||
+        event.isComposing
+      )
+        return;
+      if (event.key === "[") {
+        if (prevNext?.hasPrev) {
+          event.preventDefault();
+          prevNext.onPrev();
+        }
+      } else if (event.key === "]") {
+        if (prevNext?.hasNext) {
+          event.preventDefault();
+          prevNext.onNext();
+        }
+      } else if (
+        (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+        !(event.target as HTMLElement).closest("[role='tablist']") &&
+        !window.getSelection()?.toString()
+      ) {
+        if (event.key === "ArrowLeft" && prevNext?.hasPrev) {
+          event.preventDefault();
+          prevNext.onPrev();
+        } else if (event.key === "ArrowRight" && prevNext?.hasNext) {
+          event.preventDefault();
+          prevNext.onNext();
+        }
+      }
+    }
+    window.addEventListener("keydown", stepKeys);
+    return () => window.removeEventListener("keydown", stepKeys);
+  }, [review, prevNext, aiOpen]);
   useEffect(() => {
     function detect() {
       const selected = window.getSelection();
@@ -286,7 +389,7 @@ export function QuestionReader({
     function clear(event: Event) {
       if (
         event.target instanceof Element &&
-        event.target.closest(".ai-panel, .table-scroll, pre")
+        event.target.closest(".ai-island-panel, .table-scroll, pre")
       )
         return;
       setSelection(null);
@@ -303,13 +406,13 @@ export function QuestionReader({
     function keys(event: KeyboardEvent) {
       if (
         (event.target as HTMLElement).closest(
-          "input,textarea,select,[contenteditable='true'],[role='dialog'],button",
+          "input,textarea,select,[contenteditable='true'],[role='dialog']:not([hidden]),button",
         ) ||
-        globalThis.document.querySelector("[role='dialog']") ||
+        globalThis.document.querySelector("[role='dialog']:not([hidden])") ||
         event.ctrlKey ||
         event.metaKey ||
         event.altKey ||
-        chatOpen ||
+        aiOpen ||
         event.isComposing
       )
         return;
@@ -327,10 +430,9 @@ export function QuestionReader({
     }
     window.addEventListener("keydown", keys);
     return () => window.removeEventListener("keydown", keys);
-  }, [review, revealed, busy, chatOpen, onGrade, answer, inputMode]);
-  function ask(prompt: string, quote = selection?.text ?? "") {
-    setChatOpen(true);
-    setTrigger({ quote, prompt, nonce: Date.now() });
+  }, [review, revealed, busy, aiOpen, onGrade, answer, inputMode]);
+  function ask(prompt: string, quote = selection?.text ?? "", attemptText?: string) {
+    onAskAi?.({ quote, prompt, attempt: attemptText });
     setSelection(null);
     window.getSelection()?.removeAllRanges();
   }
@@ -352,23 +454,14 @@ export function QuestionReader({
       setNoteBusy(false);
     }
   }
-  async function appendNote(content: string) {
-    const value = note + content;
-    setNote(value);
-    setNoteDirty(true);
-    localStorage.setItem(
-      draftKey,
-      JSON.stringify({ content: value, version: noteBase }),
-    );
-    await saveNote(value);
-    setTab("notes");
-  }
   const ratings = [
-    { rating: 1, label: "忘了", className: "again" },
-    { rating: 2, label: "困难", className: "hard" },
-    { rating: 3, label: "记得", className: "good" },
-    { rating: 4, label: "轻松", className: "easy" },
+    { rating: 1, label: "忘了", cramHint: "再巩固", className: "again" },
+    { rating: 2, label: "困难", cramHint: "有卡顿", className: "hard" },
+    { rating: 3, label: "记得", cramHint: "已掌握", className: "good" },
+    { rating: 4, label: "轻松", cramHint: "很流畅", className: "easy" },
   ];
+  const formatTimer = (total: number) =>
+    `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
   const tabs: { id: ReaderTab; label: string }[] = [
     { id: "answer", label: "正文" },
     { id: "followups", label: "追问" },
@@ -376,15 +469,40 @@ export function QuestionReader({
     { id: "memory", label: "记忆" },
   ];
   return (
-    <div
-      className={`reader-layout notebook-reader ${chatOpen ? "with-chat" : ""}`}
-    >
+    <div className="reader-layout notebook-reader">
       <div className="reader-body">
         <div className="reader-toolbar">
           <button className="back-link" onClick={onBack}>
             <ArrowLeft size={16} />
-            {review ? "结束答题" : backLabel}
+            {review ? (cram ? "结束突击" : "结束答题") : backLabel}
           </button>
+          {!review && prevNext && prevNext.total > 1 && (
+            <div className="reader-step-nav" role="group" aria-label="切换上下题">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="上一题"
+                title="上一题 ([)"
+                disabled={!prevNext.hasPrev}
+                onClick={prevNext.onPrev}
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <span>
+                {prevNext.index + 1} / {prevNext.total}
+              </span>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="下一题"
+                title="下一题 (])"
+                disabled={!prevNext.hasNext}
+                onClick={prevNext.onNext}
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
           {review && progress && (
             <div className="review-position">
               <span>
@@ -413,12 +531,22 @@ export function QuestionReader({
             {(!review || revealed) && (
               <Button
                 className="reader-desktop-tool"
-                variant={chatOpen ? "secondary" : "outline"}
+                variant={aiOpen ? "secondary" : "outline"}
                 size="sm"
-                onClick={() => setChatOpen(!chatOpen)}
+                onClick={() => onToggleAi?.(!aiOpen)}
               >
                 <Sparkles size={15} /> AI 助手
               </Button>
+            )}
+            {review && revealed && (
+              <button
+                type="button"
+                className={`icon-button reader-mobile-ai-btn ${aiOpen ? "is-active" : ""}`}
+                aria-label={aiOpen ? "收起 AI 助手" : "打开 AI 助手"}
+                onClick={() => onToggleAi?.(!aiOpen)}
+              >
+                <Sparkles size={17} />
+              </button>
             )}
             {onToggleTheme && (
               <button
@@ -516,7 +644,12 @@ export function QuestionReader({
             <div className="question-breadcrumb">
               <span>{question.deckTitle}</span>
               <ChevronRight size={12} />
-              <span>{review ? "答题" : "学习卡"}</span>
+              <span>{review ? (cram ? "突击练习" : "答题") : "学习卡"}</span>
+              {review && cram && (
+                <span className="cram-badge">
+                  {cramLabel || "专题突击"} · 不影响记忆曲线
+                </span>
+              )}
             </div>
             <h1>{question.title}</h1>
             {(mergedTags.length > 0 ||
@@ -565,7 +698,10 @@ export function QuestionReader({
                   <button
                     aria-pressed={inputMode === "written"}
                     disabled={revealed}
-                    onClick={() => setInputMode("written")}
+                    onClick={() => {
+                      setOralRunning(false);
+                      setInputMode("written");
+                    }}
                   >
                     <PenLine size={14} /> 默写
                   </button>
@@ -606,26 +742,82 @@ export function QuestionReader({
                 <div className="oral-recall">
                   <Mic size={26} strokeWidth={1.3} />
                   <p>试着脱稿大声说一遍：先抛结论，再讲机制与取舍。</p>
+                  <div
+                    className={`oral-timer ${oralSeconds > 120 ? "is-overtime" : ""}`}
+                  >
+                    <Clock size={14} />
+                    <span>{formatTimer(oralSeconds)} / 02:00</span>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={revealed}
+                      onClick={() => setOralRunning((r) => !r)}
+                    >
+                      {oralRunning ? <Pause size={13} /> : <Play size={13} />}
+                      {oralRunning
+                        ? "暂停"
+                        : oralSeconds > 0
+                          ? "继续"
+                          : "开始计时"}
+                    </button>
+                    {oralSeconds > 0 && !revealed && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          setOralRunning(false);
+                          setOralSeconds(0);
+                        }}
+                      >
+                        重置
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
               <div
                 className={`answer-submit-row ${!revealed ? "is-pre-reveal" : ""}`}
               >
                 {!revealed ? (
-                  <Button onClick={() => setRevealed(true)}>
+                  <Button
+                    onClick={() => {
+                      setOralRunning(false);
+                      setRevealed(true);
+                    }}
+                  >
                     <Eye size={15} /> 对照答案
                   </Button>
                 ) : (
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      setRevealed(false);
-                      setChatOpen(false);
-                      setTab("answer");
-                    }}
-                  >
-                    <RotateCcw size={14} /> 再想一遍
-                  </button>
+                  <>
+                    {inputMode === "written" && answer.trim() && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="ai-critique-btn"
+                        onClick={() =>
+                          ask(
+                            "请从面试官视角点评我的本次作答。",
+                            "",
+                            answer.trim(),
+                          )
+                        }
+                      >
+                        <Sparkles size={14} /> AI 点评作答
+                      </Button>
+                    )}
+                    <button
+                      className="text-button"
+                      onClick={() => {
+                        setOralRunning(false);
+                        setRevealed(false);
+                        onToggleAi?.(false);
+                        setTab("answer");
+                      }}
+                    >
+                      <RotateCcw size={14} /> 再想一遍
+                    </button>
+                  </>
                 )}
               </div>
             </section>
@@ -844,14 +1036,48 @@ export function QuestionReader({
                     <span className="rating-key">{item.rating}</span>
                     <strong>{item.label}</strong>
                     <small>
-                      {insight?.previews.find(
-                        (preview) => preview.rating === item.rating,
-                      )?.interval ?? "…"}
+                      {cram
+                        ? item.cramHint
+                        : (insight?.previews.find(
+                            (preview) => preview.rating === item.rating,
+                          )?.interval ?? "…")}
                     </small>
                   </button>
                 ))}
               </div>
             </section>
+          )}
+          {!review && prevNext && prevNext.total > 1 && (
+            <nav className="reader-foot-pager" aria-label="题目连续阅读">
+              {prevNext.hasPrev ? (
+                <button
+                  type="button"
+                  className="reader-pager-btn"
+                  onClick={prevNext.onPrev}
+                >
+                  <span>
+                    <ChevronLeft size={14} /> 上一题
+                  </span>
+                  {prevNext.prevTitle && <strong>{prevNext.prevTitle}</strong>}
+                </button>
+              ) : (
+                <div className="reader-pager-placeholder" aria-hidden="true" />
+              )}
+              {prevNext.hasNext ? (
+                <button
+                  type="button"
+                  className="reader-pager-btn is-next"
+                  onClick={prevNext.onNext}
+                >
+                  <span>
+                    下一题 <ChevronRight size={14} />
+                  </span>
+                  {prevNext.nextTitle && <strong>{prevNext.nextTitle}</strong>}
+                </button>
+              ) : (
+                <div className="reader-pager-placeholder" aria-hidden="true" />
+              )}
+            </nav>
           )}
         </article>
       </div>
@@ -878,8 +1104,8 @@ export function QuestionReader({
           )}
           <button
             type="button"
-            className={`mobile-dock-btn ${chatOpen ? "is-active" : ""}`}
-            onClick={() => setChatOpen(!chatOpen)}
+            className={`mobile-dock-btn ${aiOpen ? "is-active" : ""}`}
+            onClick={() => onToggleAi?.(!aiOpen)}
           >
             <Sparkles size={17} />
             <span>AI</span>
@@ -913,7 +1139,10 @@ export function QuestionReader({
             <button
               type="button"
               aria-pressed={inputMode === "written"}
-              onClick={() => setInputMode("written")}
+              onClick={() => {
+                setOralRunning(false);
+                setInputMode("written");
+              }}
             >
               <PenLine size={14} /> 默写
             </button>
@@ -927,30 +1156,14 @@ export function QuestionReader({
           </div>
           <Button
             className="mobile-dock-primary"
-            onClick={() => setRevealed(true)}
+            onClick={() => {
+              setOralRunning(false);
+              setRevealed(true);
+            }}
           >
             <Eye size={16} /> 对照答案
           </Button>
         </div>
-      )}
-      {chatOpen && (
-        <>
-          <button
-            type="button"
-            className="ai-sheet-backdrop"
-            aria-label="关闭 AI 助手"
-            onClick={() => setChatOpen(false)}
-          />
-          <AiPanel
-            question={question}
-            data={data}
-            trigger={trigger}
-            onClose={() => setChatOpen(false)}
-            onSettings={onSettings}
-            onAppendNote={appendNote}
-            mutate={mutate}
-          />
-        </>
       )}
       {selection && (
         <div
@@ -988,11 +1201,19 @@ export function QuestionReader({
 export function ReviewComplete({
   count,
   ratings,
+  cram,
+  cramLabel,
+  weakCount = 0,
+  onDrillWeak,
   onBack,
   onLibrary,
 }: {
   count: number;
   ratings: number[];
+  cram?: boolean;
+  cramLabel?: string;
+  weakCount?: number;
+  onDrillWeak?: () => void;
   onBack: () => void;
   onLibrary: () => void;
 }) {
@@ -1001,11 +1222,29 @@ export function ReviewComplete({
       <div className="completion-art">
         <Check size={42} strokeWidth={1.7} />
       </div>
-      <h1>{count ? "本轮完成" : "暂时没有待复习的题"}</h1>
-      {!count && <p>暂无到期或新增题目，可前往题库自由练习或导入新题。</p>}
+      <h1>
+        {cram
+          ? count
+            ? "本轮突击完成"
+            : "没有可突击的题目"
+          : count
+            ? "本轮完成"
+            : "暂时没有待复习的题"}
+      </h1>
+      {!count && (
+        <p>
+          {cram
+            ? "当前筛选范围暂无含参考答案的题目，返回题库调整条件即可。"
+            : "暂无到期或新增题目，可前往题库自由练习或导入新题。"}
+        </p>
+      )}
       {count > 0 && (
         <>
-          <p>本轮已完成 {count} 题主动回忆，下次复习时间已自动安排。</p>
+          <p>
+            {cram
+              ? `已完成 ${count} 题专题突击（${cramLabel || "自由练习"}），原有间隔复习排期未受影响。`
+              : `本轮已完成 ${count} 题主动回忆，下次复习时间已自动安排。`}
+          </p>
           <div className="completion-stats">
             {["忘了", "困难", "记得", "轻松"].map((label, i) => (
               <div key={label}>
@@ -1019,6 +1258,11 @@ export function ReviewComplete({
         </>
       )}
       <div className="completion-actions">
+        {weakCount > 0 && onDrillWeak && (
+          <Button variant="secondary" onClick={onDrillWeak}>
+            <RotateCcw size={15} /> 重练本轮薄弱题（{weakCount}）
+          </Button>
+        )}
         <Button variant="outline" onClick={onLibrary}>
           <BookOpen size={15} /> 我的题库
         </Button>

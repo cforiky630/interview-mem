@@ -278,7 +278,7 @@
   min-width: 140px;
   min-height: 38px;
   font-size: 0.85rem;
-  background-color: var(--surface-glass);
+  background-color: var(--surface-recessed);
   padding: 6px 32px 6px 12px;
 }
 
@@ -1290,6 +1290,17 @@
 .import-workflow .import-paste-panel > textarea:focus-visible,
 .import-workflow .import-drop-picker:focus-visible {
   background-color: transparent;
+}
+
+@media (max-width: 900px) {
+  .import-material {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .import-card-columns[data-has-followups="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
 }
 
 @media (max-width: 760px) {

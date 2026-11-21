@@ -23,6 +23,11 @@ export function chatEditState(
       ? "ready"
       : "stale";
   }
+  if (edit.target === "note") {
+    if (question.id !== edit.id) return "unavailable";
+    if (edit.fields.note === question.note) return "matched";
+    return question.noteVersion === edit.expectedVersion ? "ready" : "stale";
+  }
   if (question.id !== edit.id) return "unavailable";
   const { title, answer, tags } = edit.fields;
   if (
@@ -51,18 +56,34 @@ export function ChatEditCard({
   onApply: () => void;
 }) {
   const state = chatEditState(edit, question, deck);
-  const target = edit.target === "deck" ? "题库" : "题目";
+  const target =
+    edit.target === "deck"
+      ? "题库"
+      : edit.target === "note"
+        ? "个人笔记"
+        : "题目";
+  const applyTarget = edit.target === "note" ? "笔记" : target;
   const rows =
     edit.target === "deck"
       ? [
           ["名称", edit.fields.title],
           ["简介", edit.fields.description],
         ]
-      : [
-          ["标题", edit.fields.title],
-          ["标签", edit.fields.tags?.join("、")],
-        ];
-  const answer = edit.target === "question" ? edit.fields.answer : undefined;
+      : edit.target === "question"
+        ? [
+            ["标题", edit.fields.title],
+            ["标签", edit.fields.tags?.join("、")],
+          ]
+        : [];
+  const detailContent =
+    edit.target === "question"
+      ? edit.fields.answer
+      : edit.target === "note"
+        ? edit.fields.note
+        : undefined;
+  const detailSummary =
+    edit.target === "note" ? "查看建议笔记" : "查看建议答案";
+  const detailEmpty = edit.target === "note" ? "清空个人笔记" : "清空答案";
   return (
     <div className="chat-edit-card">
       <strong>{target}修改建议</strong>
@@ -75,16 +96,20 @@ export function ChatEditCard({
             </p>
           ),
       )}
-      {answer !== undefined && (
+      {detailContent !== undefined && (
         <details className="chat-edit-answer">
-          <summary>查看建议答案</summary>
-          {answer.trim() ? <Markdown>{answer}</Markdown> : <p>清空答案</p>}
+          <summary>{detailSummary}</summary>
+          {detailContent.trim() ? (
+            <Markdown>{detailContent}</Markdown>
+          ) : (
+            <p>{detailEmpty}</p>
+          )}
         </details>
       )}
       {state === "ready" ? (
         <Button size="sm" variant="outline" disabled={busy} onClick={onApply}>
           {applying && <Loader2 size={14} className="spin" />}
-          应用到{target}
+          应用到{applyTarget}
         </Button>
       ) : (
         <small className="muted" role="status">

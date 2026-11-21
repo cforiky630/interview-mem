@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "attempt" text DEFAULT '' NOT NULL;

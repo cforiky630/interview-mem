@@ -24,6 +24,7 @@ import {
 import type { Mutate } from "./dialogs";
 import type { ImportSeed } from "./import-dialog";
 import { Button } from "./ui/button";
+import { ConfirmDialog } from "./ui/confirm-dialog";
 import { Markdown, ObsidianProperties } from "./markdown";
 import "./question-edit-page.css";
 
@@ -74,6 +75,7 @@ export function QuestionEditPage({
   const [restored, setRestored] = useState(false);
   const [storageError, setStorageError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"document" | "source">(
     needsSource(question.answer) ? "source" : "document",
@@ -213,12 +215,10 @@ export function QuestionEditPage({
   }, [dirty, storageError, busy]);
   function leave() {
     if (busy) return;
-    if (
-      storageError &&
-      dirty &&
-      !confirm("草稿未能保存在浏览器，离开会丢失未保存的修改。仍要离开？")
-    )
+    if (storageError && dirty) {
+      setConfirmLeave(true);
       return;
+    }
     onBack();
   }
   function wholePaste(value: string) {
@@ -735,6 +735,18 @@ export function QuestionEditPage({
           重要修正，提醒重新复习
         </label>
       </details>
+      <ConfirmDialog
+        open={confirmLeave}
+        onOpenChange={setConfirmLeave}
+        title="确认离开编辑器"
+        description="草稿未能保存在浏览器，离开会丢失未保存的修改。仍要离开？"
+        confirmLabel="仍要离开"
+        variant="danger"
+        onConfirm={() => {
+          setConfirmLeave(false);
+          onBack();
+        }}
+      />
     </div>
   );
 }

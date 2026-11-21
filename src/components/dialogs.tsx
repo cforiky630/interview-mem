@@ -4,24 +4,78 @@ import {
   Check,
   Loader2,
   Plus,
-  Sparkles,
-  Download,
-  Sun,
-  Moon,
   Rss,
   Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Workspace, DeckView } from "@/lib/types";
-import { api } from "@/lib/client";
+import { normalizeTagValue } from "@/lib/markdown-source";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
-import { AiConnectionForm } from "./ai-connection-form";
 
 export type Mutate = (
   url: string,
   data: unknown,
 ) => Promise<Record<string, unknown> | null>;
+
+function submitOnEnter(
+  event: React.KeyboardEvent<HTMLInputElement>,
+  canSubmit: boolean,
+  submit: () => void | Promise<void>,
+) {
+  if (event.key === "Enter" && !event.nativeEvent.isComposing && canSubmit) {
+    event.preventDefault();
+    void submit();
+  }
+}
+
+function submitOnCtrlEnter(
+  event: React.KeyboardEvent<HTMLTextAreaElement>,
+  canSubmit: boolean,
+  submit: () => void | Promise<void>,
+) {
+  if (
+    event.key === "Enter" &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.nativeEvent.isComposing &&
+    canSubmit
+  ) {
+    event.preventDefault();
+    void submit();
+  }
+}
+
+const DECK_COLORS = [
+  { id: "sage", label: "鼠尾草绿" },
+  { id: "blue", label: "雾蓝" },
+  { id: "sand", label: "暖沙" },
+  { id: "rose", label: "浅玫瑰" },
+] as const;
+
+function DeckColorSwatches({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (color: string) => void;
+}) {
+  return (
+    <div className="color-options">
+      {DECK_COLORS.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          className={`color-swatch color-${c.id} ${value === c.id ? "selected" : ""}`}
+          aria-label={c.label}
+          aria-pressed={value === c.id}
+          onClick={() => onChange(c.id)}
+        >
+          {value === c.id && <Check size={18} />}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function CreateDeckDialog({
   open,
@@ -74,6 +128,9 @@ export function CreateDeckDialog({
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) =>
+              submitOnEnter(e, !busy && !!title.trim(), create)
+            }
             maxLength={80}
             placeholder="例如：前端工程化、MySQL 索引与锁、高并发系统设计"
             autoFocus
@@ -84,6 +141,9 @@ export function CreateDeckDialog({
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) =>
+              submitOnCtrlEnter(e, !busy && !!title.trim(), create)
+            }
             maxLength={500}
             rows={3}
             placeholder="写一句话备注题库范围、目标岗位或当前复习重心（可选）…"
@@ -91,25 +151,7 @@ export function CreateDeckDialog({
         </label>
         <div className="field">
           主题颜色
-          <div className="color-options">
-            {["sage", "blue", "sand", "rose"].map((c) => (
-              <button
-                key={c}
-                className={`color-swatch color-${c} ${color === c ? "selected" : ""}`}
-                aria-label={
-                  {
-                    sage: "鼠尾草绿",
-                    blue: "雾蓝",
-                    sand: "暖沙",
-                    rose: "浅玫瑰",
-                  }[c]
-                }
-                onClick={() => setColor(c)}
-              >
-                {color === c && <Check size={18} />}
-              </button>
-            ))}
-          </div>
+          <DeckColorSwatches value={color} onChange={setColor} />
         </div>
       </div>
       <div className="dialog-footer">
@@ -117,6 +159,269 @@ export function CreateDeckDialog({
         <Button disabled={busy || !title.trim()} onClick={() => void create()}>
           {busy ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}{" "}
           创建题库
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+export function EditDeckDialog({
+  deck,
+  onClose,
+  mutate,
+}: {
+  deck: DeckView | null;
+  onClose: () => void;
+  mutate: Mutate;
+}) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState("sage");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (deck) {
+      setTitle(deck.title);
+      setDescription(deck.description);
+      setColor(deck.color || "sage");
+    }
+  }, [deck]);
+  const validColor = DECK_COLORS.some((c) => c.id === deck?.color)
+    ? deck?.color
+    : undefined;
+  const dirty =
+    !!deck &&
+    (title.trim() !== deck.title ||
+      description !== deck.description ||
+      color !== (deck.color || "sage"));
+  async function save() {
+    if (!deck || !title.trim() || busy) return;
+    setBusy(true);
+    try {
+      const result = await mutate("/api/decks", {
+        action: "edit",
+        deckId: deck.id,
+        expected: {
+          title: deck.title,
+          description: deck.description,
+          ...(validColor ? { color: validColor } : {}),
+        },
+        title: title.trim(),
+        description,
+        color,
+      });
+      if (result) {
+        toast.success("题库信息已更新。");
+        onClose();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog
+      open={!!deck}
+      onOpenChange={(v) => {
+        if (!v && !busy) onClose();
+      }}
+      title="编辑题库"
+      description="修改题库名称、简介或标识色。"
+    >
+      <div className="dialog-form">
+        <label className="field">
+          题库名称
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) =>
+              submitOnEnter(e, !busy && !!title.trim() && dirty, save)
+            }
+            maxLength={80}
+            disabled={busy}
+            placeholder="输入题库名称"
+            autoFocus
+          />
+        </label>
+        <label className="field">
+          简单介绍
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) =>
+              submitOnCtrlEnter(e, !busy && !!title.trim() && dirty, save)
+            }
+            maxLength={500}
+            rows={3}
+            disabled={busy}
+            placeholder="题库范围、目标岗位或复习重心（可选）…"
+          />
+        </label>
+        <div className="field">
+          主题颜色
+          <DeckColorSwatches value={color} onChange={setColor} />
+        </div>
+      </div>
+      <div className="dialog-footer">
+        <Button variant="ghost" disabled={busy} onClick={onClose}>
+          取消
+        </Button>
+        <Button
+          disabled={busy || !title.trim() || !dirty}
+          onClick={() => void save()}
+        >
+          {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}{" "}
+          保存修改
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+export function CreateQuestionDialog({
+  open,
+  defaultDeckId,
+  data,
+  mutate,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  defaultDeckId?: string | null;
+  data: Workspace;
+  mutate: Mutate;
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [deckId, setDeckId] = useState("");
+  const [tagsInput, setTagsInput] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ownedDecks = data.decks.filter((d) => d.isOwner);
+  useEffect(() => {
+    if (!open) return;
+    const preferred =
+      defaultDeckId && ownedDecks.some((d) => d.id === defaultDeckId)
+        ? defaultDeckId
+        : "";
+    setDeckId(preferred);
+  }, [open, defaultDeckId]);
+  const parsedTags = [
+    ...new Set(
+      tagsInput
+        .split(/[,，]/)
+        .map(normalizeTagValue)
+        .filter(Boolean),
+    ),
+  ];
+  const tagsTooMany = parsedTags.length > 12;
+  const tagTooLong = parsedTags.some((t) => t.length > 30);
+  const invalid =
+    !title.trim() ||
+    title.trim().length > 200 ||
+    answer.length > 100_000 ||
+    tagsTooMany ||
+    tagTooLong;
+  async function create() {
+    if (invalid || busy) return;
+    setBusy(true);
+    try {
+      const result = await mutate("/api/questions", {
+        action: "create",
+        deckId: deckId || null,
+        title: title.trim(),
+        answer,
+        tags: parsedTags,
+      });
+      if (result?.id) {
+        setTitle("");
+        setTagsInput("");
+        setAnswer("");
+        onClose();
+        toast.success("题目已保存到题库。");
+        onCreated(String(result.id));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        if (!v && !busy) onClose();
+      }}
+      title="新建单题"
+      description="随手记录刚遇到的一道面试题，答案可先留空稍后整理。"
+    >
+      <div className="dialog-form">
+        <label className="field">
+          题干
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => submitOnEnter(e, !busy && !invalid, create)}
+            maxLength={200}
+            disabled={busy}
+            placeholder="例如：MySQL 事务隔离级别与 MVCC 是如何配合的？"
+            autoFocus
+          />
+        </label>
+        <label className="field">
+          所属题库
+          <select
+            aria-label="所属题库"
+            value={deckId}
+            disabled={busy}
+            onChange={(e) => setDeckId(e.target.value)}
+          >
+            <option value="">未分类</option>
+            {ownedDecks.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          标签（逗号分隔，最多 12 个）
+          <input
+            value={tagsInput}
+            onChange={(e) => setTagsInput(e.target.value)}
+            onKeyDown={(e) => submitOnEnter(e, !busy && !invalid, create)}
+            disabled={busy}
+            placeholder="例如：MySQL, 索引, 高频追问"
+          />
+          {(tagsTooMany || tagTooLong) && (
+            <small className="danger-text">
+              {tagsTooMany ? "最多填写 12 个标签。" : "单个标签不超过 30 个字。"}
+            </small>
+          )}
+        </label>
+        <label className="field">
+          参考答案（可选，支持 Markdown）
+          <textarea
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            onKeyDown={(e) => submitOnCtrlEnter(e, !busy && !invalid, create)}
+            rows={6}
+            maxLength={100_000}
+            disabled={busy}
+            placeholder="写下要点、代码块或追问；暂时留空将自动归入「待整理」…"
+          />
+        </label>
+      </div>
+      <div className="dialog-footer">
+        <span className="muted small">
+          {answer.trim()
+            ? `已填 ${answer.trim().length} 字（Ctrl/⌘+Enter 保存）`
+            : "答案留空将自动进入待整理"}
+        </span>
+        <Button variant="ghost" disabled={busy} onClick={onClose}>
+          取消
+        </Button>
+        <Button disabled={busy || invalid} onClick={() => void create()}>
+          {busy ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}{" "}
+          保存题目
         </Button>
       </div>
     </Dialog>
@@ -231,279 +536,6 @@ export function PublishDialog({
             {busy ? <Loader2 size={16} className="spin" /> : <Rss size={16} />}{" "}
             发布版本
           </Button>
-        )}
-      </div>
-    </Dialog>
-  );
-}
-
-export function SettingsDialog({
-  open,
-  onClose,
-  data,
-  mutate,
-  palette = "forest",
-  onPaletteChange,
-}: {
-  open: boolean;
-  onClose: () => void;
-  data: Workspace;
-  mutate: Mutate;
-  palette?: "forest" | "lavender";
-  onPaletteChange?: (palette: "forest" | "lavender") => void;
-}) {
-  const [tab, setTab] = useState("ai");
-  const [goal, setGoal] = useState(data.settings.dailyGoal);
-  const [newLimit, setNewLimit] = useState(data.settings.dailyNewLimit);
-  const [busy, setBusy] = useState(false);
-  const [theme, setTheme] = useState(data.settings.theme);
-  const [draftPalette, setDraftPalette] = useState<"forest" | "lavender">(
-    palette,
-  );
-  useEffect(() => {
-    if (open) {
-      setGoal(data.settings.dailyGoal);
-      setNewLimit(data.settings.dailyNewLimit);
-      setTheme(data.settings.theme);
-      setDraftPalette(palette);
-    }
-  }, [open, palette]);
-  async function savePreferences() {
-    setBusy(true);
-    try {
-      onPaletteChange?.(draftPalette);
-      const result = await mutate("/api/settings", {
-        action: "preferences",
-        dailyGoal: Number(goal),
-        dailyNewLimit: Number(newLimit),
-        theme,
-        timeZone: data.settings.timeZone,
-      });
-      if (result) toast.success("学习偏好已保存。");
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function exportData() {
-    setBusy(true);
-    try {
-      const result = await api("/api/export", undefined, {
-        userId: data.user.id,
-      });
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(result, null, 2)], {
-          type: "application/json",
-        }),
-      );
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `shiyi-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "导出失败，请重试。",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-  function close() {
-    document.documentElement.dataset.theme = data.settings.theme;
-    document.documentElement.dataset.palette = palette;
-    onClose();
-  }
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) close();
-      }}
-      title="让拾忆更适合你"
-      description="管理 AI 连接、学习偏好与数据备份。"
-      className="settings-dialog"
-    >
-      <div className="settings-tabs">
-        <button
-          className={tab === "ai" ? "selected" : ""}
-          onClick={() => setTab("ai")}
-        >
-          <Sparkles size={15} /> AI 连接
-        </button>
-        <button
-          className={tab === "study" ? "selected" : ""}
-          onClick={() => setTab("study")}
-        >
-          学习偏好
-        </button>
-        <button
-          className={tab === "data" ? "selected" : ""}
-          onClick={() => setTab("data")}
-        >
-          数据导出
-        </button>
-      </div>
-      <div className="dialog-form">
-        {tab === "ai" ? (
-          <AiConnectionForm
-            userId={data.user.id}
-            settings={data.settings}
-            mutate={mutate}
-          />
-        ) : tab === "study" ? (
-          <>
-            <label className="field">
-              每日学习目标
-              <div className="goal-input">
-                <input
-                  type="number"
-                  aria-label="每日学习目标"
-                  min={1}
-                  max={200}
-                  value={goal}
-                  onChange={(e) => setGoal(Number(e.target.value))}
-                />
-                <span>道 / 天</span>
-              </div>
-              <small>同一道题当天只计一次；到期复习仍完整显示。</small>
-            </label>
-            <label className="field">
-              每日新题上限
-              <div className="goal-input">
-                <input
-                  aria-label="每日新题上限"
-                  type="number"
-                  min={0}
-                  max={50}
-                  value={newLimit}
-                  onChange={(e) => setNewLimit(Number(e.target.value))}
-                />
-                <span>道 / 天</span>
-              </div>
-              <small>优先复习旧题；设为 0 可暂停新题。</small>
-            </label>
-            <div className="field">
-              主题色系
-              <div className="palette-options">
-                <button
-                  type="button"
-                  className={draftPalette === "forest" ? "selected" : ""}
-                  aria-pressed={draftPalette === "forest"}
-                  onClick={() => {
-                    setDraftPalette("forest");
-                    document.documentElement.dataset.palette = "forest";
-                  }}
-                >
-                  {draftPalette === "forest" && (
-                    <span className="option-check" aria-hidden="true">
-                      <Check size={12} />
-                    </span>
-                  )}
-                  <span className="palette-swatches" aria-hidden="true">
-                    <i style={{ background: "#1A6347" }} />
-                    <i style={{ background: "#4EC496" }} />
-                    <i style={{ background: "#EFF3F1" }} />
-                    <i style={{ background: "#0C0F0E" }} />
-                  </span>
-                  <span className="palette-card-text">
-                    <strong>青瓷 · 松影</strong>
-                    <small>晨光白与玄玉夜</small>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className={draftPalette === "lavender" ? "selected" : ""}
-                  aria-pressed={draftPalette === "lavender"}
-                  onClick={() => {
-                    setDraftPalette("lavender");
-                    document.documentElement.dataset.palette = "lavender";
-                  }}
-                >
-                  {draftPalette === "lavender" && (
-                    <span className="option-check" aria-hidden="true">
-                      <Check size={12} />
-                    </span>
-                  )}
-                  <span className="palette-swatches" aria-hidden="true">
-                    <i style={{ background: "#5D4B99" }} />
-                    <i style={{ background: "#A796F0" }} />
-                    <i style={{ background: "#F0ECF5" }} />
-                    <i style={{ background: "#0D0C13" }} />
-                  </span>
-                  <span className="palette-card-text">
-                    <strong>雾紫 · 星鸢</strong>
-                    <small>月霜白与星夜紫</small>
-                  </span>
-                </button>
-              </div>
-            </div>
-            <div className="field">
-              明暗模式
-              <div className="theme-options">
-                <button
-                  type="button"
-                  className={theme === "light" ? "selected" : ""}
-                  aria-pressed={theme === "light"}
-                  onClick={() => {
-                    setTheme("light");
-                    document.documentElement.dataset.theme = "light";
-                  }}
-                >
-                  {theme === "light" && (
-                    <span className="option-check" aria-hidden="true">
-                      <Check size={12} />
-                    </span>
-                  )}
-                  <Sun size={22} /> 清晨 · 浅色
-                </button>
-                <button
-                  type="button"
-                  className={theme === "dark" ? "selected" : ""}
-                  aria-pressed={theme === "dark"}
-                  onClick={() => {
-                    setTheme("dark");
-                    document.documentElement.dataset.theme = "dark";
-                  }}
-                >
-                  {theme === "dark" && (
-                    <span className="option-check" aria-hidden="true">
-                      <Check size={12} />
-                    </span>
-                  )}
-                  <Moon size={22} /> 夜读 · 深色
-                </button>
-              </div>
-            </div>
-            <Button
-              disabled={
-                busy || goal < 1 || goal > 200 || newLimit < 0 || newLimit > 50
-              }
-              onClick={() => void savePreferences()}
-            >
-              保存学习偏好
-            </Button>
-          </>
-        ) : (
-          <>
-            <div className="export-illustration">
-              <Download size={32} />
-            </div>
-            <h3>你的积累，随时带走。</h3>
-            <p className="muted">
-              导出题库、笔记、复习记录、原文与 AI 对话的 JSON 备份（不含 API
-              Key）。
-            </p>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => void exportData()}
-            >
-              <Download size={16} /> 导出我的数据
-            </Button>
-            <p className="muted small">
-              当前支持导出备份文件，暂不支持导入恢复。
-            </p>
-          </>
         )}
       </div>
     </Dialog>

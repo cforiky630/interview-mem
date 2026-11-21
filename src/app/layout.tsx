@@ -18,6 +18,11 @@ export const viewport: Viewport = {
 export const metadata: Metadata = {
   title: "拾忆 · 把知识变成自己的表达",
   description: "面试题知识库、间隔复习与 AI 助手。每天一点，记得更久。",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "拾忆",
+  },
 };
 const THEME_INIT_SCRIPT = `(function(){try{var d=document.documentElement.dataset;var t=localStorage.getItem("shiyi:theme");if(t!=="light"&&t!=="dark"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}d.theme=t;var p=localStorage.getItem("shiyi:palette")==="lavender"?"lavender":"forest";d.palette=p;var c=p==="lavender"?(t==="dark"?"#0D0C13":"#F6F4F8"):(t==="dark"?"#0C0F0E":"#F5F7F6");var ms=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<ms.length;i++)ms[i].setAttribute("content",c);}catch(e){}})();`;
 export default function RootLayout({

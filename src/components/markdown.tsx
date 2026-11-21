@@ -1,10 +1,11 @@
-import { memo, useMemo, useState } from "react";
+"use client";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PluggableList } from "unified";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { ChevronDown, SlidersHorizontal, Tags } from "lucide-react";
+import { Check, ChevronDown, Copy, SlidersHorizontal, Tags } from "lucide-react";
 import {
   markdownDocument,
   mergeQuestionTags,
@@ -15,6 +16,47 @@ const mathPlugins = [remarkGfm, remarkMath, remarkObsidian];
 const mathRehype: PluggableList = [
   [rehypeKatex, { strict: "ignore", throwOnError: false, trust: false }],
 ];
+
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  async function handleCopy() {
+    const text = preRef.current?.textContent ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* Clipboard permission unavailable */
+    }
+  }
+
+  return (
+    <div className="code-block-wrap">
+      <button
+        type="button"
+        className={`code-copy-btn ${copied ? "is-copied" : ""}`}
+        aria-label={copied ? "已复制代码" : "复制代码"}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={() => void handleCopy()}
+      >
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+        <span>{copied ? "已复制" : "复制"}</span>
+      </button>
+      <pre ref={preRef}>{children}</pre>
+    </div>
+  );
+}
 // 选文、同步状态、AI 面板变化时，原文不变就不重复解析 Markdown。
 export const Markdown = memo(function Markdown({
   children,
@@ -71,6 +113,12 @@ export const Markdown = memo(function Markdown({
               <table>{children}</table>
             </div>
           ),
+          pre: ({ children }) =>
+            interactiveLinks ? (
+              <CodeBlock>{children}</CodeBlock>
+            ) : (
+              <pre>{children}</pre>
+            ),
         }}
       >
         {markdownDocument(children).body}

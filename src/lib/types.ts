@@ -124,6 +124,12 @@ export type ChatEdit =
       id: string;
       expected: DeckDetails;
       fields: Partial<DeckDetails>;
+    }
+  | {
+      target: "note";
+      id: string;
+      expectedVersion: number;
+      fields: { note: string };
     };
 export type ChatMessage = {
   id: string;
@@ -136,6 +142,7 @@ export type Conversation = {
   id: string;
   questionId: string;
   quote: string;
+  attempt: string;
   questionTitle: string;
   answerSnapshot: string;
   questionRevision: number;

@@ -281,6 +281,7 @@ export const conversations = pgTable(
       .notNull()
       .references(() => questions.id),
     quote: text("quote").notNull().default(""),
+    attempt: text("attempt").notNull().default(""),
     questionTitle: text("question_title").notNull(),
     answerSnapshot: text("answer_snapshot").notNull(),
     questionRevision: integer("question_revision").notNull(),

@@ -31,6 +31,7 @@ export function AiConnectionForm({
     text: string;
   } | null>(null);
   const [busy, setBusy] = useState<"save" | "test" | "delete" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [tested, setTested] = useState(false);
   const modelRequest = useRef<AbortController | null>(null);
   const presetId = aiPresetFor(baseUrl);
@@ -267,12 +268,12 @@ export function AiConnectionForm({
             setTested(false);
           }}
         >
-          <option value="">
+          <option value="" disabled hidden={modelOptions.length > 0 && !!model}>
             {loadingModels
               ? "正在获取模型列表…"
               : modelOptions.length
                 ? `请选择模型（共 ${modelOptions.length} 个）`
-                : "请先填写地址与 Key 后点击「获取模型」"}
+                : "请先获取模型列表"}
           </option>
           {modelOptions.map((item) => (
             <option key={item} value={item}>
@@ -313,33 +314,56 @@ export function AiConnectionForm({
           {busy === "test" && <Loader2 size={15} className="spin" />}
           {tested ? "连接正常" : "测试连接"}
         </Button>
-        {settings.hasKey && (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="删除 API Key"
-            disabled={!!busy}
-            onClick={async () => {
-              if (!confirm("删除保存的 API Key？")) return;
-              setBusy("delete");
-              try {
-                const result = await mutate("/api/settings", {
-                  action: "deleteKey",
-                });
-                if (result) {
-                  setKey("");
-                  setModels([]);
-                  setTested(false);
-                  setModelFeedback(null);
-                }
-              } finally {
-                setBusy(null);
-              }
-            }}
-          >
-            <Trash2 size={16} />
-          </Button>
-        )}
+        {settings.hasKey &&
+          (confirmDelete ? (
+            <div className="ai-delete-confirm" role="group" aria-label="确认删除 API Key">
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                disabled={!!busy}
+                onClick={async () => {
+                  setBusy("delete");
+                  try {
+                    const result = await mutate("/api/settings", {
+                      action: "deleteKey",
+                    });
+                    if (result) {
+                      setKey("");
+                      setModels([]);
+                      setTested(false);
+                      setModelFeedback(null);
+                      setConfirmDelete(false);
+                    }
+                  } finally {
+                    setBusy(null);
+                  }
+                }}
+              >
+                {busy === "delete" && <Loader2 size={14} className="spin" />}
+                确认删除
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!!busy}
+                onClick={() => setConfirmDelete(false)}
+              >
+                取消
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="删除 API Key"
+              disabled={!!busy}
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 size={16} />
+            </Button>
+          ))}
       </div>
       <p className="muted small">
         Key 仅加密保存在服务端；「测试连接」会发送极短探测请求以验证可用性。

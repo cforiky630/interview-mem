@@ -14,17 +14,28 @@ import {
   Trash2,
   FolderInput,
   PenLine,
+  PencilLine,
   Tags,
   X,
   ChevronDown,
+  Archive,
+  ArchiveRestore,
+  CheckSquare,
+  Square,
+  Flame,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import { relativeDue } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { ActionMenu } from "./ui/action-menu";
+import { Dialog } from "./ui/dialog";
 import { LibraryTrash } from "./library-trash";
 import type { Mutate } from "./dialogs";
+
+type SortKey = "default" | "due" | "lapses" | "updated";
 
 export function Library({
   data,
@@ -32,9 +43,12 @@ export function Library({
   filter,
   onQuestion,
   onPractice,
+  onCram,
   onDeck,
   onImport,
+  onCreateQuestion,
   onCreate,
+  onEditDeck,
   onReview,
   onPublish,
   onFavorite,
@@ -50,11 +64,14 @@ export function Library({
   data: Workspace;
   deckId?: string | null;
   filter?: string;
-  onQuestion: (q: QuestionView) => void;
+  onQuestion: (q: QuestionView, orderedIds?: string[]) => void;
   onPractice?: (q: QuestionView) => void;
+  onCram: (questions: QuestionView[], label: string) => void;
   onDeck: (id?: string | null) => void;
   onImport: () => void;
+  onCreateQuestion: () => void;
   onCreate: () => void;
+  onEditDeck: (deck: Workspace["decks"][number]) => void;
   onReview: (deckId?: string) => void;
   onPublish: (id: string) => void;
   onFavorite: (q: QuestionView) => void;
@@ -69,11 +86,17 @@ export function Library({
 }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [sortBy, setSortBy] = useState<SortKey>("default");
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [tagsExpanded, setTagsExpanded] = useState(false);
   const [hasTagOverflow, setHasTagOverflow] = useState(false);
   const [section, setSection] = useState("decks");
   const [visibleCount, setVisibleCount] = useState(40);
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchDialog, setBatchDialog] = useState<"move" | "delete" | null>(null);
+  const [batchTargetDeckId, setBatchTargetDeckId] = useState("");
+  const [batchBusy, setBatchBusy] = useState(false);
   const more = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const tagChipsRef = useRef<HTMLDivElement>(null);
@@ -107,9 +130,9 @@ export function Library({
       const target = event.target as HTMLElement | null;
       if (
         target?.closest(
-          "input, textarea, select, [contenteditable='true'], [role='dialog']",
+          "input, textarea, select, [contenteditable='true'], [role='dialog']:not([hidden])",
         ) ||
-        document.querySelector("[role='dialog']")
+        document.querySelector("[role='dialog']:not([hidden])")
       )
         return;
       event.preventDefault();
@@ -206,13 +229,75 @@ export function Library({
       }),
     [scopedQuestions, tagsByQuestionId, selectedTag, status, query],
   );
+  const sorted = useMemo(() => {
+    if (sortBy === "default") return filtered;
+    const now = Date.now();
+    const copy = [...filtered];
+    if (sortBy === "due") {
+      const bucket = (q: QuestionView) => {
+        if (!q.fsrs) return 1;
+        return new Date(q.fsrs.due).getTime() <= now ? 0 : 2;
+      };
+      copy.sort((a, b) => {
+        const ba = bucket(a);
+        const bb = bucket(b);
+        if (ba !== bb) return ba - bb;
+        if (a.fsrs && b.fsrs) {
+          return new Date(a.fsrs.due).getTime() - new Date(b.fsrs.due).getTime();
+        }
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+    } else if (sortBy === "lapses") {
+      copy.sort((a, b) => {
+        const diff = (b.fsrs?.lapses ?? 0) - (a.fsrs?.lapses ?? 0);
+        if (diff !== 0) return diff;
+        if (a.fsrs && b.fsrs) {
+          return new Date(a.fsrs.due).getTime() - new Date(b.fsrs.due).getTime();
+        }
+        return a.fsrs ? -1 : b.fsrs ? 1 : 0;
+      });
+    } else if (sortBy === "updated") {
+      copy.sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      );
+    }
+    return copy;
+  }, [filtered, sortBy]);
+  const orderedIds = useMemo(() => sorted.map((item) => item.id), [sorted]);
+  const cramEligible = useMemo(
+    () => sorted.filter((q) => !q.archived && q.answer.trim()),
+    [sorted],
+  );
+  const ownedFiltered = useMemo(
+    () => sorted.filter((q) => q.isOwner),
+    [sorted],
+  );
+  const ownedVisibleIds = useMemo(
+    () => ownedFiltered.map((q) => q.id),
+    [ownedFiltered],
+  );
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const activeSelectedIds = useMemo(
+    () => ownedVisibleIds.filter((id) => selectedSet.has(id)),
+    [ownedVisibleIds, selectedSet],
+  );
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  }
+  useEffect(() => {
+    setBatchMode(false);
+    setSelectedIds([]);
+  }, [deckId, filter, section]);
   useEffect(
     () => setVisibleCount(40),
-    [deckId, filter, status, selectedTag, query, section],
+    [deckId, filter, status, sortBy, selectedTag, query, section],
   );
   useEffect(() => {
     const button = more.current;
-    if (!button || visibleCount >= filtered.length) return;
+    if (!button || visibleCount >= sorted.length) return;
     // 长题库逐步展开，保留已展开的条目以便返回时恢复滚动。
     const observer = new IntersectionObserver(
       (entries) => {
@@ -223,7 +308,7 @@ export function Library({
     );
     observer.observe(button);
     return () => observer.disconnect();
-  }, [visibleCount, filtered.length, section, deckId, filter]);
+  }, [visibleCount, sorted.length, section, deckId, filter]);
   const heading =
     (deckId === null ? "未分类" : deck?.title) ??
     (filter === "favorites"
@@ -233,6 +318,64 @@ export function Library({
         : filter === "archived"
           ? "已归档"
           : "我的题库");
+  const missingDeck = typeof deckId === "string" && !deck;
+  const cramLabel = selectedTag
+    ? `#${selectedTag}`
+    : query
+      ? `搜索：${search.trim().slice(0, 12)}`
+      : heading;
+  const ownedDecks = data.decks.filter((d) => d.isOwner);
+  async function runBatch(
+    operation: "move" | "archive" | "unarchive" | "delete",
+    targetDeckId?: string | null,
+  ) {
+    if (!activeSelectedIds.length || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const result = await mutate("/api/questions", {
+        action: "batch",
+        ids: activeSelectedIds,
+        operation,
+        ...(operation === "move" ? { deckId: targetDeckId ?? null } : {}),
+      });
+      if (result) {
+        const updated = Number(result.updated ?? 0);
+        const skipped = Number(result.skipped ?? 0);
+        if (operation === "move") {
+          toast.success(
+            skipped > 0
+              ? `已移动 ${updated} 题，跳过 ${skipped} 题（已在目标题库或内容重复）。`
+              : `已移动 ${updated} 道题目。`,
+          );
+        } else if (operation === "archive") {
+          toast.success(`已归档 ${updated} 道题目。`);
+        } else if (operation === "unarchive") {
+          toast.success(`已恢复 ${updated} 道题目。`);
+        } else {
+          toast.success(`已将 ${updated} 道题目移入回收站。`);
+        }
+        setBatchDialog(null);
+        setSelectedIds([]);
+        setBatchMode(false);
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+  if (missingDeck) {
+    return (
+      <div className="page library-page">
+        <div className="empty-state">
+          <BookOpen size={34} />
+          <h3>题库不存在或已删除</h3>
+          <p>该题库可能已被移除，原收录的题目已安全保留在「未分类」中。</p>
+          <Button variant="outline" onClick={() => onDeck()}>
+            返回我的题库
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="page library-page">
       <div className="page-heading">
@@ -247,6 +390,10 @@ export function Library({
         <div className="heading-actions">
           {deck?.isOwner && (
             <ActionMenu label="管理当前题库">
+              <button onClick={() => onEditDeck(deck)}>
+                <PencilLine size={15} />
+                编辑题库
+              </button>
               <button onClick={() => onPublish(deck.id)}>
                 <Rss size={15} />
                 {deck.publishedVersion ? "发布更新" : "发布题库"}
@@ -260,6 +407,11 @@ export function Library({
           {root && (
             <Button variant="outline" onClick={onCreate}>
               <Plus size={16} /> 新建题库
+            </Button>
+          )}
+          {(!deck || deck.isOwner) && filter !== "archived" && (
+            <Button variant="outline" onClick={onCreateQuestion}>
+              <PenLine size={15} /> 新建单题
             </Button>
           )}
           <Button onClick={onImport}>
@@ -352,6 +504,10 @@ export function Library({
               <ActionMenu label={`管理题库：${d.title}`}>
                 {d.isOwner ? (
                   <>
+                    <button onClick={() => onEditDeck(d)}>
+                      <PencilLine size={15} />
+                      编辑题库
+                    </button>
                     <button onClick={() => onPublish(d.id)}>
                       <Rss size={15} />
                       {d.publishedVersion ? "发布更新" : "发布题库"}
@@ -444,8 +600,29 @@ export function Library({
                   </div>
                 </>
               )}
-              <span className="list-count">{filtered.length} 道题</span>
-              {deck && filter !== "archived" && (
+              <select
+                className="library-sort-select"
+                aria-label="排序方式"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortKey)}
+              >
+                <option value="default">默认排序</option>
+                <option value="due">到期优先</option>
+                <option value="lapses">易忘优先</option>
+                <option value="updated">最近更新</option>
+              </select>
+              <span className="list-count">{sorted.length} 道题</span>
+              {!archived && cramEligible.length > 0 && !batchMode && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cram-trigger-btn"
+                  onClick={() => onCram(cramEligible, cramLabel)}
+                >
+                  <Flame size={14} /> 突击当前 ({cramEligible.length})
+                </Button>
+              )}
+              {deck && filter !== "archived" && !batchMode && (
                 <Button
                   variant="secondary"
                   size="sm"
@@ -453,6 +630,24 @@ export function Library({
                 >
                   复习题库
                   <ArrowRightIcon />
+                </Button>
+              )}
+              {ownedFiltered.length > 0 && (
+                <Button
+                  variant={batchMode ? "secondary" : "ghost"}
+                  size="sm"
+                  className="batch-toggle-btn"
+                  onClick={() => {
+                    if (batchMode) {
+                      setBatchMode(false);
+                      setSelectedIds([]);
+                    } else {
+                      setBatchMode(true);
+                    }
+                  }}
+                >
+                  <CheckSquare size={14} />
+                  {batchMode ? "退出整理" : "批量整理"}
                 </Button>
               )}
             </div>
@@ -512,20 +707,60 @@ export function Library({
               </div>
             )}
           </div>
-          {filtered.length ? (
+          {sorted.length ? (
             <div className="question-list">
-              {filtered.slice(0, visibleCount).map((q, i) => {
+              {sorted.slice(0, visibleCount).map((q, i) => {
                 const questionTags = tagsByQuestionId.get(q.id) ?? [];
+                const batchSelectable = batchMode && q.isOwner;
+                const isSelected = batchSelectable && selectedSet.has(q.id);
                 return (
-                  <div className="question-row" key={q.id}>
+                  <div
+                    className={`question-row ${batchMode ? "is-batch-mode" : ""} ${batchSelectable ? "is-selectable" : ""} ${isSelected ? "is-selected" : ""}`}
+                    key={q.id}
+                    onClick={
+                      batchSelectable ? () => toggleSelect(q.id) : undefined
+                    }
+                  >
                     <div className="question-row-head">
                       <div className="question-row-head-left">
+                        {batchMode &&
+                          (q.isOwner ? (
+                            <button
+                              type="button"
+                              className={`batch-check-btn ${isSelected ? "is-checked" : ""}`}
+                              aria-label={
+                                isSelected
+                                  ? `取消选中：${q.title}`
+                                  : `选中：${q.title}`
+                              }
+                              aria-pressed={isSelected}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelect(q.id);
+                              }}
+                            >
+                              {isSelected ? (
+                                <CheckSquare size={18} />
+                              ) : (
+                                <Square size={18} />
+                              )}
+                            </button>
+                          ) : (
+                            <span className="tag">订阅题</span>
+                          ))}
                         <span className="row-index">
                           {String(i + 1).padStart(2, "0")}
                         </span>
                         {!deckId && (
                           <span className="question-deck-name">
                             {q.deckTitle}
+                          </span>
+                        )}
+                        {q.fsrs && q.fsrs.lapses > 0 && (
+                          <span
+                            className={`tag ${q.fsrs.lapses >= 2 ? "tag-warn" : "tag-lapses"}`}
+                          >
+                            易忘 {q.fsrs.lapses} 次
                           </span>
                         )}
                         {q.needsEditing && (
@@ -535,61 +770,84 @@ export function Library({
                           <span className="tag tag-warn">内容已更新</span>
                         )}
                       </div>
-                      <div className="question-row-tools">
-                        <button
-                          className={`icon-button favorite-button ${q.favorite ? "is-favorite" : ""}`}
-                          aria-label={q.favorite ? "取消收藏" : "收藏题目"}
-                          onClick={() => onFavorite(q)}
-                        >
-                          <Star
-                            size={17}
-                            fill={q.favorite ? "currentColor" : "none"}
-                          />
-                        </button>
-                        {q.isOwner && (
-                          <ActionMenu label={`更多题目操作：${q.title}`}>
-                            <button onClick={() => onMoveQuestion(q)}>
-                              <FolderInput size={15} />
-                              移动到题库
-                            </button>
-                            <button
-                              className="danger-text"
-                              onClick={() => onDeleteQuestion(q)}
-                            >
-                              <Trash2 size={15} />
-                              删除题目
-                            </button>
-                          </ActionMenu>
-                        )}
-                      </div>
+                      {!batchMode && (
+                        <div className="question-row-tools">
+                          <button
+                            className={`icon-button favorite-button ${q.favorite ? "is-favorite" : ""}`}
+                            aria-label={q.favorite ? "取消收藏" : "收藏题目"}
+                            onClick={() => onFavorite(q)}
+                          >
+                            <Star
+                              size={17}
+                              fill={q.favorite ? "currentColor" : "none"}
+                            />
+                          </button>
+                          {q.isOwner && (
+                            <ActionMenu label={`更多题目操作：${q.title}`}>
+                              <button onClick={() => onMoveQuestion(q)}>
+                                <FolderInput size={15} />
+                                移动到题库
+                              </button>
+                              <button
+                                className="danger-text"
+                                onClick={() => onDeleteQuestion(q)}
+                              >
+                                <Trash2 size={15} />
+                                删除题目
+                              </button>
+                            </ActionMenu>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <button
+                      type="button"
                       className="question-row-main"
-                      onClick={() => onQuestion(q)}
+                      onClick={(e) => {
+                        if (batchSelectable) {
+                          e.stopPropagation();
+                          toggleSelect(q.id);
+                        } else if (!batchMode) {
+                          onQuestion(q, orderedIds);
+                        }
+                      }}
                     >
                       <strong>{q.title}</strong>
                     </button>
                     {questionTags.length > 0 && (
                       <div className="question-row-tags" aria-label="题目标签">
-                        {questionTags.slice(0, 4).map((tag) => (
-                          <button
-                            type="button"
-                            key={tag}
-                            title={`#${tag}`}
-                            className={`tag tag-interactive ${selectedTag === tag ? "tag-active" : ""}`}
-                            aria-pressed={selectedTag === tag}
-                            onClick={() =>
-                              setSelectedTag((current) =>
-                                current === tag ? null : tag,
-                              )
-                            }
-                          >
-                            <span className="tag-hash" aria-hidden="true">
-                              #
+                        {questionTags.slice(0, 4).map((tag) =>
+                          batchMode ? (
+                            <span
+                              key={tag}
+                              title={`#${tag}`}
+                              className={`tag ${selectedTag === tag ? "tag-active" : ""}`}
+                            >
+                              <span className="tag-hash" aria-hidden="true">
+                                #
+                              </span>
+                              <span className="tag-text">{tag}</span>
                             </span>
-                            <span className="tag-text">{tag}</span>
-                          </button>
-                        ))}
+                          ) : (
+                            <button
+                              type="button"
+                              key={tag}
+                              title={`#${tag}`}
+                              className={`tag tag-interactive ${selectedTag === tag ? "tag-active" : ""}`}
+                              aria-pressed={selectedTag === tag}
+                              onClick={() =>
+                                setSelectedTag((current) =>
+                                  current === tag ? null : tag,
+                                )
+                              }
+                            >
+                              <span className="tag-hash" aria-hidden="true">
+                                #
+                              </span>
+                              <span className="tag-text">{tag}</span>
+                            </button>
+                          ),
+                        )}
                         {questionTags.length > 4 && (
                           <span
                             className="tag tag-more"
@@ -604,7 +862,7 @@ export function Library({
                       </div>
                     )}
                     <div className="question-row-foot">
-                      {q.isOwner && !q.archived && !q.answer.trim() ? (
+                      {!batchMode && q.isOwner && !q.archived && !q.answer.trim() ? (
                         <Button
                           className="row-generate-answer"
                           variant="ghost"
@@ -620,33 +878,38 @@ export function Library({
                           className={`row-study-status ${!q.fsrs ? "is-new" : new Date(q.fsrs.due).getTime() <= Date.now() ? "is-due" : ""}`}
                         >
                           <span />
-                          {q.archived ? "已归档" : relativeDue(q.fsrs?.due)}
+                          {q.archived
+                            ? "已归档"
+                            : !q.answer.trim()
+                              ? "待补答案"
+                              : relativeDue(q.fsrs?.due)}
                         </span>
                       )}
-                      {!q.archived && q.answer.trim() && onPractice ? (
-                        <button
-                          type="button"
-                          className="button button-ghost button-sm row-action-btn"
-                          onClick={() => onPractice(q)}
-                        >
-                          <PenLine size={13} /> 答题
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="button button-ghost button-sm row-action-btn"
-                          onClick={() => onQuestion(q)}
-                        >
-                          {!q.archived && !q.answer.trim()
-                            ? "补全答案"
-                            : "查看"}
-                        </button>
-                      )}
+                      {!batchMode &&
+                        (!q.archived && q.answer.trim() && onPractice ? (
+                          <button
+                            type="button"
+                            className="button button-ghost button-sm row-action-btn"
+                            onClick={() => onPractice(q)}
+                          >
+                            <PenLine size={13} /> 答题
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="button button-ghost button-sm row-action-btn"
+                            onClick={() => onQuestion(q, orderedIds)}
+                          >
+                            {!q.archived && !q.answer.trim()
+                              ? "补全答案"
+                              : "查看"}
+                          </button>
+                        ))}
                     </div>
                   </div>
                 );
               })}
-              {visibleCount < filtered.length && (
+              {visibleCount < sorted.length && (
                 <button
                   ref={more}
                   className="load-more-questions"
@@ -700,6 +963,145 @@ export function Library({
           )}
         </div>
       )}
+      {batchMode && (
+        <div
+          className="batch-action-bar"
+          role="region"
+          aria-label="批量整理操作栏"
+        >
+          <div className="batch-bar-meta">
+            <strong>
+              已选 {activeSelectedIds.length} / {ownedVisibleIds.length}
+            </strong>
+            <button
+              type="button"
+              className="text-button"
+              disabled={batchBusy || ownedVisibleIds.length === 0}
+              onClick={() =>
+                setSelectedIds(
+                  activeSelectedIds.length === ownedVisibleIds.length
+                    ? []
+                    : ownedVisibleIds,
+                )
+              }
+            >
+              {activeSelectedIds.length === ownedVisibleIds.length
+                ? "清空"
+                : "全选"}
+            </button>
+          </div>
+          <div className="batch-bar-actions">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!activeSelectedIds.length || batchBusy}
+              onClick={() => {
+                const candidate = ownedDecks.find((d) => d.id !== deckId);
+                setBatchTargetDeckId(candidate?.id ?? "");
+                setBatchDialog("move");
+              }}
+            >
+              <FolderInput size={14} /> 移动
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!activeSelectedIds.length || batchBusy}
+              onClick={() =>
+                void runBatch(archived ? "unarchive" : "archive")
+              }
+            >
+              {archived ? (
+                <ArchiveRestore size={14} />
+              ) : (
+                <Archive size={14} />
+              )}{" "}
+              {archived ? "恢复" : "归档"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="danger-text"
+              disabled={!activeSelectedIds.length || batchBusy}
+              onClick={() => setBatchDialog("delete")}
+            >
+              <Trash2 size={14} /> 删除
+            </Button>
+            <Button
+              size="sm"
+              disabled={batchBusy}
+              onClick={() => {
+                setBatchMode(false);
+                setSelectedIds([]);
+              }}
+            >
+              完成
+            </Button>
+          </div>
+        </div>
+      )}
+      <Dialog
+        open={batchDialog !== null}
+        onOpenChange={(open) => {
+          if (!open && !batchBusy) setBatchDialog(null);
+        }}
+        title={batchDialog === "delete" ? "批量删除题目" : "批量移动题目"}
+        description={`已选择 ${activeSelectedIds.length} 道自有题目`}
+      >
+        <div className="dialog-form">
+          {batchDialog === "delete" ? (
+            <p className="muted">
+              选中的 {activeSelectedIds.length}{" "}
+              道题目将移入回收站保留 30 天，到期前随时可以恢复。
+            </p>
+          ) : (
+            <label className="field">
+              移动到目标题库
+              <select
+                aria-label="批量移动目标题库"
+                value={batchTargetDeckId}
+                disabled={batchBusy}
+                onChange={(e) => setBatchTargetDeckId(e.target.value)}
+              >
+                <option value="">未分类</option>
+                {ownedDecks.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+        <div className="dialog-footer">
+          <Button
+            variant="ghost"
+            disabled={batchBusy}
+            onClick={() => setBatchDialog(null)}
+          >
+            取消
+          </Button>
+          <Button
+            variant={batchDialog === "delete" ? "danger" : "default"}
+            disabled={batchBusy || !activeSelectedIds.length}
+            onClick={() =>
+              void runBatch(
+                batchDialog === "delete" ? "delete" : "move",
+                batchDialog === "move" ? batchTargetDeckId || null : undefined,
+              )
+            }
+          >
+            {batchBusy ? (
+              <Loader2 size={15} className="spin" />
+            ) : batchDialog === "delete" ? (
+              <Trash2 size={15} />
+            ) : (
+              <FolderInput size={15} />
+            )}{" "}
+            {batchDialog === "delete" ? "移入回收站" : "确认移动"}
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }

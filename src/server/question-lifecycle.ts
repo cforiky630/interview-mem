@@ -168,6 +168,123 @@ export function moveQuestion(
   );
 }
 
+export type BatchQuestionOperation =
+  | { ids: string[]; operation: "move"; deckId: string | null }
+  | { ids: string[]; operation: "archive" | "unarchive" | "delete" };
+
+/** Batch move, archive, restore-from-archive, or trash owned active questions in lock order. */
+export async function batchMutateQuestions(
+  userId: string,
+  params: BatchQuestionOperation,
+) {
+  const uniqueIds = [...new Set(params.ids)].sort();
+  if (!uniqueIds.length) throw new AppError(400, "请先选择要操作的题目。");
+  const db = await getDb();
+  const targetDeckId = params.operation === "move" ? params.deckId : undefined;
+  const before = await db
+    .select({ id: questions.id, deckId: questions.deckId })
+    .from(questions)
+    .where(
+      and(
+        eq(questions.ownerId, userId),
+        inArray(questions.id, uniqueIds),
+        isNull(questions.deletedAt),
+        isNull(questions.purgedAt),
+      ),
+    );
+  if (before.length !== uniqueIds.length) {
+    throw new AppError(404, "部分题目不存在或没有管理权限，请刷新后重试。");
+  }
+  const deckIds = [
+    ...new Set(
+      [...before.map((q) => q.deckId), targetDeckId].filter(
+        (id): id is string => !!id,
+      ),
+    ),
+  ].sort();
+  return db.transaction(async (tx) => {
+    const lockedDecks = deckIds.length
+      ? await tx
+          .select()
+          .from(decks)
+          .where(and(eq(decks.ownerId, userId), inArray(decks.id, deckIds)))
+          .orderBy(asc(decks.id))
+          .for("update")
+      : [];
+    if (
+      params.operation === "move" &&
+      targetDeckId &&
+      !lockedDecks.some((d) => d.id === targetDeckId && !d.deletedAt)
+    ) {
+      throw new AppError(404, "目标题库不存在或没有管理权限。");
+    }
+    const lockedQuestions = await tx
+      .select()
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, userId),
+          inArray(questions.id, uniqueIds),
+          isNull(questions.deletedAt),
+          isNull(questions.purgedAt),
+        ),
+      )
+      .orderBy(asc(questions.id))
+      .for("update");
+    if (lockedQuestions.length !== uniqueIds.length) {
+      throw new AppError(404, "部分题目已在其他页面删除，请刷新后重试。");
+    }
+    const lockedDeckSet = new Set(lockedDecks.map((d) => d.id));
+    if (lockedQuestions.some((q) => q.deckId && !lockedDeckSet.has(q.deckId))) {
+      throw new AppError(409, "部分题目分类已在其他页面修改，请刷新后重试。", "CONFLICT");
+    }
+    const now = new Date();
+    if (params.operation === "delete") {
+      await tx
+        .update(questions)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(inArray(questions.id, uniqueIds));
+      return { ok: true, updated: uniqueIds.length, skipped: 0 };
+    }
+    if (params.operation === "archive" || params.operation === "unarchive") {
+      await tx
+        .update(questions)
+        .set({ archived: params.operation === "archive", updatedAt: now })
+        .where(inArray(questions.id, uniqueIds));
+      return { ok: true, updated: uniqueIds.length, skipped: 0 };
+    }
+    const movableIds: string[] = [];
+    let skipped = 0;
+    if (targetDeckId) {
+      const existing = await tx
+        .select({ contentHash: questions.contentHash })
+        .from(questions)
+        .where(and(eq(questions.deckId, targetDeckId), isNull(questions.deletedAt)));
+      const seenHashes = new Set(existing.map((r) => r.contentHash));
+      for (const q of lockedQuestions) {
+        if (q.deckId === targetDeckId || seenHashes.has(q.contentHash)) {
+          skipped += 1;
+        } else {
+          seenHashes.add(q.contentHash);
+          movableIds.push(q.id);
+        }
+      }
+    } else {
+      for (const q of lockedQuestions) {
+        if (q.deckId === null) skipped += 1;
+        else movableIds.push(q.id);
+      }
+    }
+    if (movableIds.length) {
+      await tx
+        .update(questions)
+        .set({ deckId: targetDeckId ?? null, updatedAt: now })
+        .where(inArray(questions.id, movableIds));
+    }
+    return { ok: true, updated: movableIds.length, skipped };
+  });
+}
+
 /** Clear the author's expired private content; released snapshots and subscribers' state are independent. */
 export async function cleanupExpiredQuestions({
   userId,

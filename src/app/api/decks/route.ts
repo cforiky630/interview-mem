@@ -9,18 +9,25 @@ import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
 import { deckFields } from "@/server/content-fields";
 
+const deckColorSchema = z.enum(["sage", "blue", "sand", "rose"]);
+
 const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
     ...deckFields,
     description: deckFields.description.default(""),
-    color: z.enum(["sage", "blue", "sand", "rose"]).default("sage"),
+    color: deckColorSchema.default("sage"),
   }),
   z.object({
     action: z.literal("edit"),
     deckId: deckIdSchema,
-    expected: z.object({ title: z.string(), description: z.string() }),
+    expected: z.object({
+      title: z.string(),
+      description: z.string(),
+      color: deckColorSchema.optional(),
+    }),
     ...deckFields,
+    color: deckColorSchema.optional(),
   }),
   z.object({
     action: z.literal("publish"),
@@ -108,6 +115,7 @@ export const POST = route(async (request, user) => {
       .set({
         title: data.title,
         description: data.description,
+        ...(data.color ? { color: data.color } : {}),
         updatedAt: new Date(),
       })
       .where(
@@ -117,6 +125,9 @@ export const POST = route(async (request, user) => {
           isNull(decks.deletedAt),
           eq(decks.title, data.expected.title),
           eq(decks.description, data.expected.description),
+          ...(data.expected.color !== undefined
+            ? [eq(decks.color, data.expected.color)]
+            : []),
         ),
       )
       .returning({ id: decks.id });

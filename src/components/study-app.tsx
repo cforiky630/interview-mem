@@ -24,6 +24,7 @@ import {
   Moon,
   X,
   ArrowLeft,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
@@ -32,12 +33,25 @@ import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
+import {
+  buildSearchFromRoute,
+  extractSubscribeParam,
+  parseRouteFromSearch,
+  type AppView,
+  type RouteState,
+} from "@/lib/navigation";
 import { Button } from "./ui/button";
+import { ConfirmDialog } from "./ui/confirm-dialog";
 import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
 import { Library, Catalog } from "./library";
 import { useAiAnswerDraft } from "./use-ai-answer-draft";
 import { usePageScroll } from "./use-page-scroll";
+import {
+  AiIsland,
+  type AiIslandMode,
+  type AiTrigger,
+} from "./ai-island";
 import type { Mutate } from "./dialogs";
 const QuestionReader = dynamic(
   () => import("./question-reader").then((m) => m.QuestionReader),
@@ -61,6 +75,12 @@ const AiAnswerDialog = dynamic(() =>
 const CreateDeckDialog = dynamic(() =>
   import("./dialogs").then((m) => m.CreateDeckDialog),
 );
+const EditDeckDialog = dynamic(() =>
+  import("./dialogs").then((m) => m.EditDeckDialog),
+);
+const CreateQuestionDialog = dynamic(() =>
+  import("./dialogs").then((m) => m.CreateQuestionDialog),
+);
 const QuestionEditPage = dynamic(() =>
   import("./question-edit-page").then((m) => m.QuestionEditPage),
 );
@@ -70,9 +90,10 @@ const ImportDialog = dynamic(() =>
 const PublishDialog = dynamic(() =>
   import("./dialogs").then((m) => m.PublishDialog),
 );
-const SettingsDialog = dynamic(() =>
-  import("./dialogs").then((m) => m.SettingsDialog),
+const SettingsCard = dynamic(() =>
+  import("./settings-card").then((m) => m.SettingsCard),
 );
+import type { SettingsTab } from "./settings-card";
 const DeleteDeckDialog = dynamic(() =>
   import("./deck-delete-dialog").then((m) => m.DeleteDeckDialog),
 );
@@ -83,16 +104,7 @@ const QuestionActionDialog = dynamic(() =>
 
 import type { ImportSeed } from "./import-dialog";
 
-type View =
-  | "today"
-  | "library"
-  | "favorites"
-  | "inbox"
-  | "archived"
-  | "review"
-  | "catalog"
-  | "history"
-  | "question";
+type View = AppView;
 export type Palette = "forest" | "lavender";
 
 function syncThemeColorMeta(palette: Palette, theme: "light" | "dark") {
@@ -160,14 +172,34 @@ export function StudyApp() {
 }
 
 function WorkspaceApp({ sessionId }: { sessionId: string }) {
+  const initialRoute = useRef<RouteState | null>(null);
+  if (initialRoute.current === null) {
+    if (typeof window !== "undefined") {
+      const sub = extractSubscribeParam(window.location.search);
+      initialRoute.current = sub
+        ? { view: "catalog" }
+        : parseRouteFromSearch(window.location.search, true);
+    } else {
+      initialRoute.current = { view: "today" };
+    }
+  }
   const [data, setData] = useState<Workspace | null>(null);
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState(false);
-  const [view, setView] = useState<View>("today");
-  const [navigationTarget, setNavigationTarget] = useState<View>("today");
+  const [view, setView] = useState<View>(initialRoute.current.view);
+  const [navigationTarget, setNavigationTarget] = useState<View>(
+    initialRoute.current.view,
+  );
   const [isNavigating, startTransition] = useTransition();
-  const [deckId, setDeckId] = useState<string | null | undefined>();
-  const [questionId, setQuestionId] = useState<string | null>(null);
+  const [deckId, setDeckId] = useState<string | null | undefined>(
+    initialRoute.current.view === "library"
+      ? initialRoute.current.deckId
+      : initialRoute.current.originDeckId,
+  );
+  const [questionId, setQuestionId] = useState<string | null>(
+    initialRoute.current.questionId ?? null,
+  );
+  const [readingIds, setReadingIds] = useState<string[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [drawerDragX, setDrawerDragX] = useState(0);
   const drawerTouch = useRef<{
@@ -180,7 +212,45 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [importSeed, setImportSeed] = useState<ImportSeed>();
   const importCommitted = useRef<(() => void) | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editDeck, setEditDeck] = useState<Workspace["decks"][number] | null>(
+    null,
+  );
+  const [createQuestionOpen, setCreateQuestionOpen] = useState(false);
+  const [settingsState, setSettingsState] = useState<{
+    open: boolean;
+    tab: SettingsTab;
+    anchor: HTMLElement | null;
+  }>({ open: false, tab: "ai", anchor: null });
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  const topbarSettingsRef = useRef<HTMLButtonElement>(null);
+  const openSettings = useCallback(
+    (options?: {
+      tab?: SettingsTab;
+      anchor?: HTMLElement | null;
+      toggle?: boolean;
+    }) => {
+      const nextTab = options?.tab ?? "ai";
+      const resolvedAnchor =
+        options?.anchor ??
+        (topbarSettingsRef.current &&
+        topbarSettingsRef.current.offsetParent !== null
+          ? topbarSettingsRef.current
+          : null);
+      setSettingsMounted(true);
+      setSettingsState((prev) => {
+        if (
+          options?.toggle &&
+          prev.open &&
+          prev.anchor === resolvedAnchor &&
+          (!options.tab || prev.tab === options.tab)
+        ) {
+          return { ...prev, open: false };
+        }
+        return { open: true, tab: nextTab, anchor: resolvedAnchor };
+      });
+    },
+    [],
+  );
   const [palette, setPalette] = useState<Palette>("forest");
   const [themeOverride, setThemeOverride] = useState<"light" | "dark" | null>(
     null,
@@ -197,8 +267,24 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     action: "delete" | "move";
   } | null>(null);
   const [searchToken, setSearchToken] = useState(0);
+  const [aiMode, setAiMode] = useState<AiIslandMode>("collapsed");
+  const [aiTrigger, setAiTrigger] = useState<AiTrigger | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [reviewRevealed, setReviewRevealed] = useState(false);
+  const [confirmState, setConfirmState] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    confirmLabel: string;
+    variant?: "default" | "danger";
+    action: () => void | Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const origin = useRef<{ view: View; deckId?: string | null }>({
-    view: "library",
+    view: initialRoute.current.originView ?? "library",
+    ...(initialRoute.current.originDeckId !== undefined
+      ? { deckId: initialRoute.current.originDeckId }
+      : {}),
   });
   const reviewOrigin = useRef<{
     view: View;
@@ -211,8 +297,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const pendingCount = useRef(0);
   pendingCount.current = pending;
   const [queue, setQueue] = useState<QuestionView[]>([]);
+  const queueLength = useRef(0);
+  queueLength.current = queue.length;
+  const [reviewMode, setReviewMode] = useState<"fsrs" | "cram">("fsrs");
+  const [cramLabel, setCramLabel] = useState("");
   const [reviewIndex, setReviewIndex] = useState(0);
   const [ratings, setRatings] = useState<number[]>([]);
+  const [reviewResults, setReviewResults] = useState<
+    { question: QuestionView; rating: number }[]
+  >([]);
   const [reviewBusy, setReviewBusy] = useState(false);
   const grading = useRef(false);
   const eventId = useRef(crypto.randomUUID());
@@ -270,6 +363,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       lifetime.current = null;
     };
   }, []);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const deckIdRef = useRef(deckId);
+  deckIdRef.current = deckId;
   useEffect(() => {
     function openLinkedNote(event: Event) {
       const target = (event as CustomEvent<unknown>).detail;
@@ -302,10 +399,25 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         return;
       }
       if (editingId.current && pendingCount.current) return;
-      changePage("question", () => {
-        setEditQuestion(null);
-        setQuestionId(matches[0].id);
-      });
+      if (viewRef.current !== "question") {
+        origin.current = { view: viewRef.current, deckId: deckIdRef.current };
+      }
+      setReadingIds([]);
+      changePage(
+        "question",
+        () => {
+          setEditQuestion(null);
+          setQuestionId(matches[0].id);
+        },
+        {
+          route: {
+            view: "question",
+            questionId: matches[0].id,
+            originView: origin.current.view,
+            originDeckId: origin.current.deckId,
+          },
+        },
+      );
     }
     window.addEventListener("shiyi:open-note", openLinkedNote);
     return () => window.removeEventListener("shiyi:open-note", openLinkedNote);
@@ -369,11 +481,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     setError("");
     if (!sessionId) return;
     void refresh();
-    const shared = new URL(window.location.href).searchParams.get("subscribe");
+    const shared = extractSubscribeParam(window.location.search);
     if (shared) {
       setView("catalog");
       setNavigationTarget("catalog");
       void loadCatalog(shared);
+    } else {
+      const hydrated = parseRouteFromSearch(window.location.search, true);
+      if (hydrated.view === "catalog") void loadCatalog();
+      const canonical = buildSearchFromRoute(hydrated);
+      if (window.location.search !== canonical) {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${canonical}`,
+        );
+      }
     }
     function sync() {
       if (document.visibilityState === "visible") void refresh(true);
@@ -387,6 +510,40 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       clearInterval(timer);
     };
   }, [sessionId, refresh, loadCatalog]);
+  useEffect(() => {
+    function onPopState() {
+      if (editingId.current && pendingCount.current) {
+        return;
+      }
+      setSidebarOpen(false);
+      const next = parseRouteFromSearch(window.location.search);
+      const resolved =
+        next.view === "review" && queueLength.current === 0
+          ? { view: "today" as View }
+          : next;
+      if (resolved !== next) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+      setNavigationTarget(resolved.view);
+      startTransition(() => {
+        setEditQuestion(null);
+        if (resolved.view === "library") {
+          setDeckId(resolved.deckId);
+        } else if (resolved.view === "question") {
+          origin.current = {
+            view: resolved.originView ?? "library",
+            deckId: resolved.originDeckId,
+          };
+          setDeckId(resolved.originDeckId);
+          setQuestionId(resolved.questionId ?? null);
+        }
+        setView(resolved.view);
+      });
+      if (resolved.view === "catalog") void loadCatalog();
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [loadCatalog]);
   useEffect(() => {
     try {
       const savedPalette =
@@ -423,13 +580,48 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       /* Ignore storage access failures. */
     }
   }, [data?.settings.theme, palette]);
+  const preferredAiOpenMode = useRef<"docked" | "floating">("docked");
+  const handleAiModeChange = useCallback((next: AiIslandMode) => {
+    if (next !== "collapsed") preferredAiOpenMode.current = next;
+    setAiMode(next);
+  }, []);
+  const shortcutCtxRef = useRef({ view, reviewRevealed, aiMode });
+  shortcutCtxRef.current = { view, reviewRevealed, aiMode };
   useEffect(() => {
     function shortcuts(event: KeyboardEvent) {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "j"
+      ) {
+        if (document.querySelector("[role='dialog']:not([hidden])")) return;
+        const ctx = shortcutCtxRef.current;
+        if (ctx.view === "review" && !ctx.reviewRevealed) return;
+        event.preventDefault();
+        setAiMode((current) =>
+          current === "collapsed" ? preferredAiOpenMode.current : "collapsed",
+        );
+        return;
+      }
+      if (event.key === "Escape") {
+        if (
+          !document.querySelector("[role='dialog']:not([hidden])") &&
+          shortcutCtxRef.current.aiMode !== "collapsed" &&
+          (!(event.target as HTMLElement).closest(
+            "input,textarea,[contenteditable='true']",
+          ) ||
+            !!(event.target as HTMLElement).closest(".ai-island-panel"))
+        ) {
+          event.preventDefault();
+          setAiMode("collapsed");
+          return;
+        }
+      }
       if (
         (event.target as HTMLElement).closest(
           "input,textarea,[contenteditable='true']",
         ) ||
-        document.querySelector("[role='dialog']")
+        document.querySelector("[role='dialog']:not([hidden])")
       )
         return;
       if (
@@ -438,11 +630,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       ) {
         event.preventDefault();
         if (editingId.current && pendingCount.current) return;
-        changePage("library", () => {
-          setEditQuestion(null);
-          setDeckId(undefined);
-          setSearchToken((n) => n + 1);
-        });
+        changePage(
+          "library",
+          () => {
+            setEditQuestion(null);
+            setDeckId(undefined);
+            setSearchToken((n) => n + 1);
+          },
+          { route: { view: "library" } },
+        );
         setTimeout(
           () =>
             (
@@ -458,6 +654,36 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     window.addEventListener("keydown", shortcuts);
     return () => window.removeEventListener("keydown", shortcuts);
   }, []);
+  const toggleAi = useCallback((open?: boolean) => {
+    setAiMode((current) => {
+      if (open === false) return "collapsed";
+      if (open === true)
+        return current === "collapsed" ? preferredAiOpenMode.current : current;
+      return current === "collapsed"
+        ? preferredAiOpenMode.current
+        : "collapsed";
+    });
+  }, []);
+  const askAi = useCallback(
+    (request: { quote: string; prompt: string; attempt?: string }) => {
+      setAiTrigger({ ...request, nonce: Date.now() });
+      setAiMode((current) =>
+        current === "collapsed" ? preferredAiOpenMode.current : current,
+      );
+    },
+    [],
+  );
+  const isReaderView = (view === "question" || view === "review") && !editQuestion;
+  const aiHiddenInReview = view === "review" && !reviewRevealed;
+  const queueCardId = queue[reviewIndex]?.id;
+  useEffect(() => {
+    setReviewRevealed(false);
+  }, [view, reviewIndex, queueCardId]);
+  useEffect(() => {
+    if (aiHiddenInReview && aiMode !== "collapsed") {
+      setAiMode("collapsed");
+    }
+  }, [aiHiddenInReview, aiMode]);
   const mutate: Mutate = async (url, payload) => {
     const signal = lifetime.current?.signal;
     if (!signal || signal.aborted) return null;
@@ -483,24 +709,43 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     }
   };
   const answerDraft = useAiAnswerDraft(data, mutate, () =>
-    setSettingsOpen(true),
+    openSettings({ tab: "ai" }),
   );
   function openImport() {
     setImportSeed(undefined);
     importCommitted.current = null;
     setImportOpen(true);
   }
+  function pushRouteUrl(route: RouteState, replace = false) {
+    if (typeof window === "undefined") return;
+    const nextSearch = buildSearchFromRoute(route);
+    if (nextSearch === window.location.search) return;
+    const url = `${window.location.pathname}${nextSearch}`;
+    if (replace) window.history.replaceState(null, "", url);
+    else window.history.pushState(null, "", url);
+  }
   function navigate(next: View) {
     if (editingId.current && pendingCount.current) return;
-    changePage(next, () => {
-      setEditQuestion(null);
-      if (next === "library") setDeckId(undefined);
-    });
+    changePage(
+      next,
+      () => {
+        setEditQuestion(null);
+        if (next === "library") setDeckId(undefined);
+      },
+      { route: { view: next } },
+    );
     setSidebarOpen(false);
     if (next === "catalog") void loadCatalog();
   }
-  function changePage(next: View, prepare?: () => void) {
+  function changePage(
+    next: View,
+    prepare?: () => void,
+    options?: { replace?: boolean; skipHistory?: boolean; route?: RouteState },
+  ) {
     rememberScroll();
+    if (!options?.skipHistory) {
+      pushRouteUrl(options?.route ?? { view: next }, options?.replace);
+    }
     setNavigationTarget(next);
     // 导航反馈先提交，长文的 Markdown 渲染可被下一次触控打断。
     startTransition(() => {
@@ -510,26 +755,53 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }
   function openDeck(id?: string | null) {
     if (editingId.current && pendingCount.current) return;
-    changePage("library", () => {
-      setEditQuestion(null);
-      setDeckId(id);
-    });
+    changePage(
+      "library",
+      () => {
+        setEditQuestion(null);
+        setDeckId(id);
+      },
+      { route: { view: "library", deckId: id } },
+    );
     setSidebarOpen(false);
   }
-  function openQuestion(question: QuestionView) {
+  function openQuestion(
+    question: QuestionView,
+    orderedIds?: string[],
+    historyMode: "push" | "replace" = "push",
+  ) {
     if (editingId.current && pendingCount.current) return;
-    origin.current = { view, deckId };
-    changePage("question", () => {
-      setEditQuestion(null);
-      setQuestionId(question.id);
-    });
+    if (view !== "question") origin.current = { view, deckId };
+    if (orderedIds !== undefined) {
+      setReadingIds(orderedIds);
+    } else if (view !== "question") {
+      setReadingIds([]);
+    }
+    changePage(
+      "question",
+      () => {
+        setEditQuestion(null);
+        setQuestionId(question.id);
+      },
+      {
+        replace: historyMode === "replace",
+        route: {
+          view: "question",
+          questionId: question.id,
+          originView: origin.current.view,
+          originDeckId: origin.current.deckId,
+        },
+      },
+    );
   }
   function startReview(targetDeck?: string, single?: QuestionView) {
     if (editingId.current && pendingCount.current) return;
     setEditQuestion(null);
     if (!data) return;
     if (view === "review" && !targetDeck && !single && queue[reviewIndex]) {
-      if (navigationTarget !== "review") changePage("review");
+      if (navigationTarget !== "review") {
+        changePage("review", undefined, { replace: true, route: { view: "review" } });
+      }
       setSidebarOpen(false);
       return;
     }
@@ -552,11 +824,40 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         0,
         Math.max(0, data.settings.dailyNewLimit - data.stats.newLearnedToday),
       );
-    changePage("review", () => {
-      setQueue(single ? [single] : [...due, ...fresh]);
-      setReviewIndex(0);
-      setRatings([]);
-    });
+    setReviewMode("fsrs");
+    setCramLabel("");
+    setReviewResults([]);
+    changePage(
+      "review",
+      () => {
+        setQueue(single ? [single] : [...due, ...fresh]);
+        setReviewIndex(0);
+        setRatings([]);
+      },
+      { replace: view === "review", route: { view: "review" } },
+    );
+    setSidebarOpen(false);
+    eventId.current = crypto.randomUUID();
+    rememberScroll();
+  }
+  function startCram(items: QuestionView[], label: string) {
+    if (editingId.current && pendingCount.current) return;
+    setEditQuestion(null);
+    if (!data) return;
+    if (view !== "review") reviewOrigin.current = { view, deckId, questionId };
+    const cramList = items.filter((q) => !q.archived && q.answer.trim());
+    setReviewMode("cram");
+    setCramLabel(label);
+    setReviewResults([]);
+    changePage(
+      "review",
+      () => {
+        setQueue(cramList);
+        setReviewIndex(0);
+        setRatings([]);
+      },
+      { replace: view === "review", route: { view: "review" } },
+    );
     setSidebarOpen(false);
     eventId.current = crypto.randomUUID();
     rememberScroll();
@@ -572,6 +873,18 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (grading.current || isNavigating) return;
     const q = queue[reviewIndex];
     if (!q) return;
+    if (reviewMode === "cram") {
+      if (data)
+        savePracticeDraft(
+          practiceDraftKey(data.user.id, q.id, q.revision),
+          "",
+        );
+      setRatings((previous) => [...previous, rating]);
+      setReviewResults((previous) => [...previous, { question: q, rating }]);
+      setReviewIndex((n) => n + 1);
+      rememberScroll();
+      return;
+    }
     const latest = data?.questions.find((item) => item.id === q.id);
     if (
       !latest ||
@@ -604,6 +917,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             "",
           );
         setRatings((previous) => [...previous, rating]);
+        setReviewResults((previous) => [...previous, { question: q, rating }]);
         setReviewIndex((n) => n + 1);
         eventId.current = crypto.randomUUID();
         rememberScroll();
@@ -673,19 +987,60 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }
   function signOutPrompt() {
     if (editingId.current && pendingCount.current) return;
-    if (confirm("退出当前账号？")) {
-      void authClient.signOut();
-      changePage("today");
-    }
+    setConfirmState({
+      open: true,
+      title: "退出登录",
+      description: "退出当前账号？",
+      confirmLabel: "退出登录",
+      variant: "danger",
+      action: () => {
+        void authClient.signOut();
+        changePage("today");
+      },
+    });
   }
   const currentQuestion = data.questions.find((q) => q.id === questionId);
   const queueQuestion = queue[reviewIndex];
   const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
+  const readingList = readingIds.length
+    ? readingIds
+        .map((id) => data.questions.find((q) => q.id === id))
+        .filter((q): q is QuestionView => !!q)
+    : view === "question" &&
+        currentQuestion &&
+        ["library", "favorites", "inbox", "archived"].includes(
+          origin.current.view,
+        )
+      ? data.questions.filter((q) => {
+          if (origin.current.view === "archived") return q.archived;
+          if (q.archived) return false;
+          if (origin.current.view === "favorites") return q.favorite;
+          if (origin.current.view === "inbox") return q.needsEditing;
+          if (origin.current.deckId === null)
+            return q.isOwner && q.deckId === null;
+          if (origin.current.deckId !== undefined)
+            return q.deckId === origin.current.deckId;
+          return true;
+        })
+      : [];
+  const readingIndex = currentQuestion
+    ? readingList.findIndex((q) => q.id === currentQuestion.id)
+    : -1;
+  const weakQuestions = Array.from(
+    new Map(
+      reviewResults
+        .filter((r) => r.rating <= 2)
+        .map((r) => {
+          const latest =
+            data.questions.find((q) => q.id === r.question.id) ?? r.question;
+          return [latest.id, latest] as const;
+        }),
+    ).values(),
+  ).filter((q) => !q.archived && q.answer.trim());
   const libraryView = view === "question" ? origin.current.view : view;
   const activeNavView = view === "question" ? origin.current.view : view;
   const activeDeckId = view === "question" ? origin.current.deckId : deckId;
   const displayedView = isNavigating ? navigationTarget : view;
-  const isReaderView = (view === "question" || view === "review") && !editQuestion;
   const isImmersiveMobile = isReaderView || !!editQuestion;
   const hasMobileDeckBack =
     displayedView === "library" && activeDeckId !== undefined && !editQuestion;
@@ -714,27 +1069,29 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         editQuestion && pending && "editor-saving",
         isReaderView && "mobile-reader-active",
         isImmersiveMobile && "mobile-immersive",
+        aiMode === "docked" && !editQuestion && !aiHiddenInReview && "ai-pushed",
       )}
       onPointerDownCapture={rememberScroll}
       onKeyDownCapture={rememberScroll}
     >
-      {sidebarOpen && (
-        <button
-          className="sidebar-backdrop"
-          aria-label="关闭导航"
-          style={
-            drawerDragX < 0
-              ? { opacity: Math.max(0, 1 + drawerDragX / 280) }
-              : undefined
-          }
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+      <button
+        type="button"
+        className={cn("sidebar-backdrop", sidebarOpen && "is-open")}
+        aria-label="关闭导航"
+        aria-hidden={!sidebarOpen}
+        inert={!sidebarOpen}
+        style={
+          drawerDragX < 0
+            ? { opacity: Math.max(0, 1 + drawerDragX / 280), transition: "none" }
+            : undefined
+        }
+        onClick={() => setSidebarOpen(false)}
+      />
       <aside
         className={cn("sidebar", sidebarOpen && "sidebar-open")}
         style={
           drawerDragX < 0
-            ? { transform: `translateX(${drawerDragX}px)`, transition: "none" }
+            ? { translate: `${drawerDragX}px 0`, transition: "none" }
             : undefined
         }
         onTouchStart={(event) => {
@@ -919,10 +1276,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             </div>
           </div>
           <button
-            className="user-button"
-            onClick={() => {
+            type="button"
+            className={cn("user-button", settingsState.open && "is-active")}
+            data-settings-trigger="true"
+            aria-expanded={settingsState.open}
+            onClick={(event) => {
               setSidebarOpen(false);
-              setSettingsOpen(true);
+              openSettings({ anchor: event.currentTarget, toggle: true });
             }}
           >
             <span className="user-avatar">
@@ -999,8 +1359,18 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     type="button"
                     className="topbar-crumb-link"
                     onClick={() =>
-                      changePage(origin.current.view, () =>
-                        setDeckId(origin.current.deckId),
+                      changePage(
+                        origin.current.view,
+                        () => setDeckId(origin.current.deckId),
+                        {
+                          route: {
+                            view: origin.current.view,
+                            deckId:
+                              origin.current.view === "library"
+                                ? origin.current.deckId
+                                : undefined,
+                          },
+                        },
                       )
                     }
                   >
@@ -1072,6 +1442,21 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 {pending ? "正在同步" : syncError ? "连接中断" : "已同步"}
               </span>
             </span>
+            {!editQuestion && !aiHiddenInReview && (
+              <button
+                type="button"
+                className={cn(
+                  "icon-button mobile-ai-trigger",
+                  aiMode !== "collapsed" && "is-active",
+                  aiBusy && "is-busy",
+                )}
+                aria-label={aiMode !== "collapsed" ? "收起 AI 助手" : "打开 AI 助手"}
+                onClick={() => toggleAi()}
+              >
+                <Sparkles size={18} />
+                {aiBusy && <span className="ai-trigger-dot" aria-hidden="true" />}
+              </button>
+            )}
             <button
               type="button"
               className="icon-button mobile-search-trigger"
@@ -1144,9 +1529,19 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               </button>
             </div>
             <button
-              className="icon-button topbar-settings-btn"
+              ref={topbarSettingsRef}
+              type="button"
+              className={cn(
+                "icon-button topbar-settings-btn",
+                settingsState.open && "is-active",
+              )}
+              data-settings-trigger="true"
               aria-label="设置"
-              onClick={() => setSettingsOpen(true)}
+              aria-expanded={settingsState.open}
+              aria-controls="settings-floating-card"
+              onClick={(event) =>
+                openSettings({ anchor: event.currentTarget, toggle: true })
+              }
             >
               <Settings2 size={17} />
             </button>
@@ -1159,7 +1554,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         </header>
-        <div hidden={!!editQuestion}>
+        <div className="workspace-content" hidden={!!editQuestion}>
           {syncError && (
             <div className="connection-banner">
               <WifiOff size={14} />{" "}
@@ -1201,6 +1596,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   searchToken={searchToken}
                   mutate={mutate}
                   onDelete={setDeleteDeck}
+                  onEditDeck={setEditDeck}
                   onDeleteQuestion={(q) =>
                     setQuestionAction({ question: q, action: "delete" })
                   }
@@ -1209,8 +1605,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   }
                   onQuestion={openQuestion}
                   onPractice={(question) => startReview(undefined, question)}
+                  onCram={startCram}
                   onDeck={openDeck}
                   onImport={openImport}
+                  onCreateQuestion={() => setCreateQuestionOpen(true)}
                   onCreate={() => setCreateOpen(true)}
                   onReview={startReview}
                   onPublish={setPublishId}
@@ -1223,18 +1621,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                       version,
                     });
                   }}
-                  onUnsubscribe={async (id) => {
-                    if (
-                      confirm(
+                  onUnsubscribe={(id) => {
+                    setConfirmState({
+                      open: true,
+                      title: "取消订阅题库",
+                      description:
                         "取消订阅后停止接收更新，已有个人笔记和复习历史仍保留。确定继续？",
-                      )
-                    ) {
-                      const result = await mutate("/api/decks", {
-                        action: "unsubscribe",
-                        deckId: id,
-                      });
-                      if (result) openDeck();
-                    }
+                      confirmLabel: "取消订阅",
+                      variant: "danger",
+                      action: async () => {
+                        const result = await mutate("/api/decks", {
+                          action: "unsubscribe",
+                          deckId: id,
+                        });
+                        if (result) openDeck();
+                      },
+                    });
                   }}
                 />
               </div>
@@ -1245,8 +1647,18 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               question={currentQuestion}
               data={data}
               onBack={() => {
-                changePage(origin.current.view, () =>
-                  setDeckId(origin.current.deckId),
+                changePage(
+                  origin.current.view,
+                  () => setDeckId(origin.current.deckId),
+                  {
+                    route: {
+                      view: origin.current.view,
+                      deckId:
+                        origin.current.view === "library"
+                          ? origin.current.deckId
+                          : undefined,
+                    },
+                  },
                 );
               }}
               backLabel={
@@ -1260,6 +1672,26 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                         ? "返回今日"
                         : "返回题库"
               }
+              prevNext={
+                readingIndex !== -1 && readingList.length > 1
+                  ? {
+                      index: readingIndex,
+                      total: readingList.length,
+                      hasPrev: readingIndex > 0,
+                      hasNext: readingIndex < readingList.length - 1,
+                      prevTitle: readingList[readingIndex - 1]?.title,
+                      nextTitle: readingList[readingIndex + 1]?.title,
+                      onPrev: () => {
+                        const target = readingList[readingIndex - 1];
+                        if (target) openQuestion(target, undefined, "replace");
+                      },
+                      onNext: () => {
+                        const target = readingList[readingIndex + 1];
+                        if (target) openQuestion(target, undefined, "replace");
+                      },
+                    }
+                  : undefined
+              }
               onEdit={() => setEditQuestion(currentQuestion)}
               onDelete={() =>
                 setQuestionAction({
@@ -1270,13 +1702,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               onMove={() =>
                 setQuestionAction({ question: currentQuestion, action: "move" })
               }
-              onSettings={() => setSettingsOpen(true)}
               onGenerateAnswer={answerDraft.open}
               onFavorite={() => void favorite(currentQuestion)}
               mutate={mutate}
               onSingleReview={() => startReview(undefined, currentQuestion)}
               activeTheme={activeTheme}
               onToggleTheme={toggleTheme}
+              aiOpen={aiMode !== "collapsed"}
+              onToggleAi={toggleAi}
+              onAskAi={askAi}
             />
           )}
           {view === "question" && !currentQuestion && (
@@ -1295,14 +1729,29 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 question={currentReview}
                 data={data}
                 review
+                cram={reviewMode === "cram"}
+                cramLabel={cramLabel}
                 onBack={() => {
                   const back = reviewOrigin.current;
                   if (back.view === "question" && back.questionId) {
-                    changePage("question", () =>
-                      setQuestionId(back.questionId!),
+                    changePage(
+                      "question",
+                      () => setQuestionId(back.questionId!),
+                      {
+                        route: {
+                          view: "question",
+                          questionId: back.questionId,
+                          originView: origin.current.view,
+                          originDeckId: origin.current.deckId,
+                        },
+                      },
                     );
                   } else if (back.view === "library") {
-                    changePage("library", () => setDeckId(back.deckId));
+                    changePage(
+                      "library",
+                      () => setDeckId(back.deckId),
+                      { route: { view: "library", deckId: back.deckId } },
+                    );
                   } else {
                     navigate(back.view === "review" ? "today" : back.view);
                   }
@@ -1317,7 +1766,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 onMove={() =>
                   setQuestionAction({ question: currentReview, action: "move" })
                 }
-                onSettings={() => setSettingsOpen(true)}
                 onGenerateAnswer={answerDraft.open}
                 onFavorite={() => void favorite(currentReview)}
                 mutate={mutate}
@@ -1326,11 +1774,19 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 busy={reviewBusy}
                 activeTheme={activeTheme}
                 onToggleTheme={toggleTheme}
+                aiOpen={aiMode !== "collapsed"}
+                onToggleAi={toggleAi}
+                onAskAi={askAi}
+                onRevealedChange={setReviewRevealed}
               />
             ) : (
               <ReviewComplete
                 count={ratings.length}
                 ratings={ratings}
+                cram={reviewMode === "cram"}
+                cramLabel={cramLabel}
+                weakCount={weakQuestions.length}
+                onDrillWeak={() => startCram(weakQuestions, "薄弱巩固")}
                 onBack={() => navigate("today")}
                 onLibrary={() => navigate("library")}
               />
@@ -1441,7 +1897,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           onInbox={() => navigate("inbox")}
           onSettings={() => {
             setImportOpen(false);
-            setSettingsOpen(true);
+            openSettings({ tab: "ai" });
           }}
         />
       )}
@@ -1453,10 +1909,56 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           onCreated={openDeck}
         />
       )}
-      {settingsOpen && (
-        <SettingsDialog
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
+      {editDeck && (
+        <EditDeckDialog
+          deck={editDeck}
+          onClose={() => setEditDeck(null)}
+          mutate={mutate}
+        />
+      )}
+      {createQuestionOpen && (
+        <CreateQuestionDialog
+          open={createQuestionOpen}
+          defaultDeckId={
+            libraryView === "library" && typeof deckId === "string"
+              ? deckId
+              : null
+          }
+          data={data}
+          mutate={mutate}
+          onClose={() => setCreateQuestionOpen(false)}
+          onCreated={(id) => {
+            if (view !== "question") origin.current = { view, deckId };
+            setReadingIds([]);
+            changePage(
+              "question",
+              () => {
+                setEditQuestion(null);
+                setQuestionId(id);
+              },
+              {
+                route: {
+                  view: "question",
+                  questionId: id,
+                  originView: origin.current.view,
+                  originDeckId: origin.current.deckId,
+                },
+              },
+            );
+          }}
+        />
+      )}
+      {settingsMounted && (
+        <SettingsCard
+          open={settingsState.open}
+          tab={settingsState.tab}
+          onTabChange={(tab) =>
+            setSettingsState((prev) => ({ ...prev, tab }))
+          }
+          anchor={settingsState.anchor}
+          onClose={() =>
+            setSettingsState((prev) => ({ ...prev, open: false }))
+          }
           data={data}
           mutate={mutate}
           palette={palette}
@@ -1483,10 +1985,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               view === "question" &&
               questionId === questionAction.question.id
             ) {
-              changePage(origin.current.view, () => {
-                setQuestionId(null);
-                setDeckId(origin.current.deckId);
-              });
+              changePage(
+                origin.current.view,
+                () => {
+                  setQuestionId(null);
+                  setDeckId(origin.current.deckId);
+                },
+                {
+                  route: {
+                    view: origin.current.view,
+                    deckId:
+                      origin.current.view === "library"
+                        ? origin.current.deckId
+                        : undefined,
+                  },
+                },
+              );
             }
           }}
         />
@@ -1501,6 +2015,59 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           }}
         />
       )}
+      <ConfirmDialog
+        open={!!confirmState?.open}
+        onOpenChange={(next) => {
+          if (!next && !confirmBusy) {
+            setConfirmState((prev) => (prev ? { ...prev, open: false } : null));
+          }
+        }}
+        title={confirmState?.title ?? ""}
+        description={confirmState?.description ?? ""}
+        confirmLabel={confirmState?.confirmLabel}
+        variant={confirmState?.variant}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!confirmState || confirmBusy) return;
+          setConfirmBusy(true);
+          try {
+            await confirmState.action();
+            setConfirmState((prev) =>
+              prev ? { ...prev, open: false } : null,
+            );
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+      />
+      <AiIsland
+        key={data.user.id}
+        data={data}
+        question={
+          view === "question"
+            ? currentQuestion
+            : view === "review" && reviewRevealed
+              ? currentReview
+              : undefined
+        }
+        activeDeck={
+          (view === "library" || view === "question") && activeDeckId
+            ? data.decks.find((d) => d.id === activeDeckId)
+            : undefined
+        }
+        mode={aiMode}
+        allowDock={!editQuestion}
+        hidden={!!editQuestion || aiHiddenInReview}
+        trigger={aiTrigger}
+        onModeChange={handleAiModeChange}
+        onOpen={() => toggleAi(true)}
+        onOpenQuestion={(target) => openQuestion(target)}
+        onSettings={(anchor) =>
+          openSettings({ tab: "ai", anchor, toggle: true })
+        }
+        onBusyChange={setAiBusy}
+        mutate={mutate}
+      />
     </div>
   );
 }

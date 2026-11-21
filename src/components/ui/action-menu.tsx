@@ -1,6 +1,22 @@
 "use client";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { MoreHorizontal } from "lucide-react";
+
+function menuItems(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), a[href]",
+    ),
+  ).filter((el) => getComputedStyle(el).display !== "none");
+}
 
 export function ActionMenu({
   label = "更多操作",
@@ -10,10 +26,67 @@ export function ActionMenu({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [sheetMode, setSheetMode] = useState(false);
   const ref = useRef<HTMLDetailsElement>(null);
   const trigger = useRef<HTMLElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const closingRef = useRef(false);
+  const closeTokenRef = useRef(0);
+  const focusFirstOnOpenRef = useRef(false);
+
+  const requestClose = useCallback(
+    (restoreFocus: "keyboard" | "none" = "none") => {
+      const token = ++closeTokenRef.current;
+      if (restoreFocus === "keyboard") {
+        trigger.current?.focus({ preventScroll: true });
+      }
+      const menu = panel.current;
+      if (!menu || (!open && !closingRef.current)) {
+        closingRef.current = false;
+        setClosing(false);
+        setOpen(false);
+        return;
+      }
+      closingRef.current = true;
+      setClosing(true);
+      setOpen(false);
+
+      void (async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        if (closeTokenRef.current !== token) return;
+        const animations = menu.getAnimations({ subtree: true });
+        if (animations.length > 0) {
+          await Promise.race([
+            Promise.allSettled(animations.map((a) => a.finished)),
+            new Promise((resolve) => setTimeout(resolve, 320)),
+          ]);
+        }
+        if (closeTokenRef.current !== token) return;
+        if (menu.matches(":popover-open")) menu.hidePopover();
+        closingRef.current = false;
+        setClosing(false);
+      })();
+    },
+    [open],
+  );
+
+  useEffect(() => {
+    const menu = panel.current;
+    if (!open && !closing && menu?.matches(":popover-open")) {
+      menu.hidePopover();
+    }
+  }, [open, closing]);
+
+  useEffect(() => {
+    const menu = panel.current;
+    return () => {
+      if (menu?.matches(":popover-open")) menu.hidePopover();
+    };
+  }, []);
+
   useLayoutEffect(() => {
     const anchor = ref.current;
     const menu = panel.current;
@@ -25,7 +98,7 @@ export function ActionMenu({
 
     // The top layer avoids clipping inside scrollable dialogs and cards.
     const floating = typeof menu.showPopover === "function";
-    if (floating) menu.showPopover();
+    if (floating && !menu.matches(":popover-open")) menu.showPopover();
     let previousOverflow: string | null = null;
     const viewport = window.visualViewport;
     const place = () => {
@@ -52,7 +125,7 @@ export function ActionMenu({
         left + (viewport?.width ?? document.documentElement.clientWidth);
       const bottom = top + (viewport?.height ?? window.innerHeight);
       if (bounds.bottom <= top || bounds.top >= bottom) {
-        setOpen(false);
+        requestClose("none");
         return;
       }
 
@@ -82,18 +155,40 @@ export function ActionMenu({
       document.documentElement.style.overflow = "hidden";
     }
     place();
+    if (focusFirstOnOpenRef.current) {
+      focusFirstOnOpenRef.current = false;
+      requestAnimationFrame(() => {
+        menuItems(menu)[0]?.focus({ preventScroll: true });
+      });
+    }
     const outside = (event: PointerEvent) => {
-      if (!anchor.contains(event.target as Node)) setOpen(false);
+      if (!anchor.contains(event.target as Node)) requestClose("none");
     };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        requestClose("keyboard");
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const items = menuItems(menu);
+      if (!items.length) return;
       event.preventDefault();
       event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus({ preventScroll: true });
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      let next = 0;
+      if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = items.length - 1;
+      else if (current < 0) next = event.key === "ArrowUp" ? items.length - 1 : 0;
+      else
+        next =
+          (current + (event.key === "ArrowUp" ? -1 : 1) + items.length) %
+          items.length;
+      items[next]?.focus({ preventScroll: true });
     };
     document.addEventListener("pointerdown", outside, true);
-    window.addEventListener("keydown", escape, true);
+    window.addEventListener("keydown", keydown, true);
     window.addEventListener("resize", place);
     if (!isMobile) window.addEventListener("scroll", place, true);
     viewport?.addEventListener("resize", place);
@@ -102,28 +197,53 @@ export function ActionMenu({
       if (previousOverflow !== null) {
         document.documentElement.style.overflow = previousOverflow;
       }
-      if (floating && menu.matches(":popover-open")) menu.hidePopover();
+      if (floating && !closingRef.current && menu.matches(":popover-open")) {
+        menu.hidePopover();
+      }
       document.removeEventListener("pointerdown", outside, true);
-      window.removeEventListener("keydown", escape, true);
+      window.removeEventListener("keydown", keydown, true);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
       viewport?.removeEventListener("resize", place);
       viewport?.removeEventListener("scroll", place);
     };
-  }, [open]);
+  }, [open, requestClose]);
+
   return (
-    <details ref={ref} open={open} className="reader-more action-menu">
+    <details ref={ref} open={open || closing} className="reader-more action-menu">
       <summary
         ref={trigger}
         className="icon-button"
         aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            focusFirstOnOpenRef.current = true;
+            if (!open) {
+              closeTokenRef.current += 1;
+              closingRef.current = false;
+              setClosing(false);
+              setSheetMode(window.matchMedia("(max-width: 760px)").matches);
+              setOpen(true);
+            } else {
+              menuItems(panel.current)[0]?.focus({ preventScroll: true });
+            }
+          }
+        }}
         onClick={(event) => {
           event.preventDefault();
-          const next = !open;
-          if (next) {
+          if (open) {
+            requestClose(event.detail === 0 ? "keyboard" : "none");
+          } else {
+            closeTokenRef.current += 1;
+            closingRef.current = false;
+            setClosing(false);
+            focusFirstOnOpenRef.current = event.detail === 0;
             setSheetMode(window.matchMedia("(max-width: 760px)").matches);
+            setOpen(true);
           }
-          setOpen(next);
         }}
       >
         <MoreHorizontal size={19} />
@@ -132,17 +252,17 @@ export function ActionMenu({
         ref={panel}
         popover="manual"
         data-sheet={sheetMode ? "true" : "false"}
+        data-closing={closing ? "" : undefined}
         onClick={(event) => {
           if (!(event.target as Element).closest("button,a")) return;
-          setOpen(false);
-          trigger.current?.focus({ preventScroll: true });
+          requestClose(event.detail === 0 ? "keyboard" : "none");
         }}
       >
         {sheetMode ? (
           <>
             <div
               className="action-sheet-backdrop"
-              onClick={() => setOpen(false)}
+              onClick={() => requestClose("none")}
             />
             <div className="action-sheet-card" role="menu" aria-label={label}>
               <div className="sheet-grabber" aria-hidden="true" />
@@ -151,7 +271,7 @@ export function ActionMenu({
               <button
                 type="button"
                 className="action-sheet-cancel"
-                onClick={() => setOpen(false)}
+                onClick={() => requestClose("none")}
               >
                 取消
               </button>

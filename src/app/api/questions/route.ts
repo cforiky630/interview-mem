@@ -1,22 +1,36 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { getDb } from "@/db";
+import { getDb, type Database } from "@/db";
 import { decks, questions, studyCards, user as users } from "@/db/schema";
 import { body, route } from "@/server/api";
 import { accessibleQuestion, ownedDeck } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
-import { questionFields } from "@/server/content-fields";
+import { noteFields, questionFields } from "@/server/content-fields";
+import { mergeQuestionTags } from "@/lib/markdown-source";
 import {
   deleteQuestion,
   restoreQuestion,
   moveQuestion,
   mutateOwnedQuestion,
+  batchMutateQuestions,
 } from "@/server/question-lifecycle";
 
 const schema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("create"),
+    deckId: deckIdSchema.nullable().default(null),
+    ...questionFields,
+    tags: questionFields.tags.default([]),
+  }),
+  z.object({
+    action: z.literal("batch"),
+    ids: z.array(z.string().uuid()).min(1).max(100),
+    operation: z.enum(["move", "archive", "unarchive", "delete"]),
+    deckId: deckIdSchema.nullable().optional(),
+  }),
   z.object({ action: z.literal("delete"), id: z.string().uuid() }),
   z.object({ action: z.literal("restore"), id: z.string().uuid() }),
   z.object({
@@ -44,7 +58,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("note"),
     id: z.string().uuid(),
-    note: z.string().max(50_000),
+    ...noteFields,
     expectedVersion: z.number().int().nonnegative(),
   }),
   z.object({
@@ -55,8 +69,108 @@ const schema = z.discriminatedUnion("action", [
     answer: z.string().max(100_000).optional(),
   }),
 ]);
+async function insertOwnedQuestion(
+  db: Database,
+  params: {
+    userId: string;
+    deckId: string | null;
+    parentId: string | null;
+    title: string;
+    answer: string;
+    tags: string[];
+    sourceText: string;
+    duplicateMessage: string;
+  },
+) {
+  if (params.deckId) await ownedDeck(params.userId, params.deckId);
+  const hash = contentHash(params.title, params.answer);
+  const inserted = await db.transaction(async (tx) => {
+    if (params.deckId) {
+      const [target] = await tx
+        .select()
+        .from(decks)
+        .where(
+          and(
+            eq(decks.id, params.deckId),
+            eq(decks.ownerId, params.userId),
+            isNull(decks.deletedAt),
+          ),
+        )
+        .for("update");
+      if (!target) throw new AppError(404, "目标题库已删除。");
+    } else {
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, params.userId))
+        .for("update");
+    }
+    const duplicate = await tx
+      .select({ id: questions.id })
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, params.userId),
+          params.deckId
+            ? eq(questions.deckId, params.deckId)
+            : isNull(questions.deckId),
+          eq(questions.contentHash, hash),
+          isNull(questions.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (duplicate.length) throw new AppError(409, params.duplicateMessage);
+    return tx
+      .insert(questions)
+      .values({
+        id: crypto.randomUUID(),
+        deckId: params.deckId,
+        ownerId: params.userId,
+        parentId: params.parentId,
+        title: params.title,
+        answer: params.answer,
+        tags: params.tags,
+        sourceText: params.sourceText,
+        contentHash: hash,
+        needsEditing: !params.answer.trim(),
+      })
+      .onConflictDoNothing()
+      .returning();
+  });
+  if (!inserted.length) throw new AppError(409, "目标题库已有相同内容。");
+  return { id: inserted[0].id };
+}
+
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);
+  if (data.action === "batch")
+    return Response.json(
+      await batchMutateQuestions(
+        user.id,
+        data.operation === "move"
+          ? { ids: data.ids, operation: "move", deckId: data.deckId ?? null }
+          : { ids: data.ids, operation: data.operation },
+      ),
+    );
+  const db = await getDb();
+  if (data.action === "create") {
+    const normalizedTags = mergeQuestionTags([], data.tags);
+    const sourceText = data.answer.trim()
+      ? `# ${data.title}\n\n${data.answer}`
+      : `# ${data.title}`;
+    return NextResponse.json(
+      await insertOwnedQuestion(db, {
+        userId: user.id,
+        deckId: data.deckId,
+        parentId: null,
+        title: data.title,
+        answer: data.answer,
+        tags: normalizedTags,
+        sourceText,
+        duplicateMessage: "目标位置已有相同题目和答案。",
+      }),
+    );
+  }
   if (data.action === "delete")
     return Response.json(await deleteQuestion(user.id, data.id));
   if (data.action === "restore")
@@ -64,7 +178,6 @@ export const POST = route(async (request, user) => {
   if (data.action === "move")
     return Response.json(await moveQuestion(user.id, data.id, data.deckId));
   const question = await accessibleQuestion(user.id, data.id);
-  const db = await getDb();
   if (data.action === "edit" || data.action === "archive") {
     if (!question.isOwner)
       throw new AppError(
@@ -125,63 +238,20 @@ export const POST = route(async (request, user) => {
     );
   }
   if (data.action === "copy") {
-    if (data.deckId) await ownedDeck(user.id, data.deckId);
     const title = data.title ?? question.title;
     const answer = data.answer ?? question.answer;
-    const inserted = await db.transaction(async (tx) => {
-      if (data.deckId) {
-        const [target] = await tx
-          .select()
-          .from(decks)
-          .where(
-            and(
-              eq(decks.id, data.deckId),
-              eq(decks.ownerId, user.id),
-              isNull(decks.deletedAt),
-            ),
-          )
-          .for("update");
-        if (!target) throw new AppError(404, "目标题库已删除。");
-      } else
-        await tx
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.id, user.id))
-          .for("update");
-      const duplicate = await tx
-        .select({ id: questions.id })
-        .from(questions)
-        .where(
-          and(
-            eq(questions.ownerId, user.id),
-            data.deckId
-              ? eq(questions.deckId, data.deckId)
-              : isNull(questions.deckId),
-            eq(questions.contentHash, contentHash(title, answer)),
-            isNull(questions.deletedAt),
-          ),
-        )
-        .limit(1);
-      if (duplicate.length) throw new AppError(409, "当前位置已有相同内容。");
-      return tx
-        .insert(questions)
-        .values({
-          id: crypto.randomUUID(),
-          deckId: data.deckId,
-          ownerId: user.id,
-          parentId: data.id,
-          title,
-          answer,
-          tags: question.tags,
-          sourceText: `引用：${question.title}\n\n${answer}`,
-          contentHash: contentHash(title, answer),
-          needsEditing: !answer.trim(),
-        })
-        .onConflictDoNothing()
-        .returning();
-    });
-    if (!inserted.length) throw new AppError(409, "目标题库已有相同内容。");
-    return NextResponse.json({ id: inserted[0].id });
+    return NextResponse.json(
+      await insertOwnedQuestion(db, {
+        userId: user.id,
+        deckId: data.deckId,
+        parentId: data.id,
+        title,
+        answer,
+        tags: question.tags,
+        sourceText: `引用：${question.title}\n\n${answer}`,
+        duplicateMessage: "当前位置已有相同内容。",
+      }),
+    );
   }
   await db
     .insert(studyCards)
