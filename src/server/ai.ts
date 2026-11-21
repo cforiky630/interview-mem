@@ -6,11 +6,39 @@ import { AppError } from "./errors";
 import { normalizeAiBaseUrl } from "@/lib/ai-config";
 import { aiFetch } from "./ai-transport";
 
-export type ProviderMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
+export type ProviderToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+export type ProviderMessage =
+  | {
+      role: "system" | "user" | "assistant";
+      content: string | null;
+      tool_calls?: ProviderToolCall[];
+    }
+  | {
+      role: "tool";
+      tool_call_id: string;
+      name?: string;
+      content: string;
+    };
+export type ProviderTool = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 };
 export type AiConnection = { baseUrl: string; model: string; key: string };
+
+export function isReasoningModel(model: string) {
+  const base = model.split("/").at(-1)?.trim().toLowerCase() ?? "";
+  return /(?:^deepseek-reasoner$|(?:^|[-_])r1(?:[-_.]|$)|(?:^|[-_])qwq(?:[-_.]|$)|^o[134](?:[-_.]|$))/i.test(
+    base,
+  );
+}
 export async function aiCredential(userId: string, expectedBaseUrl?: string) {
   const db = await getDb();
   const [credential] = await db
@@ -60,8 +88,27 @@ export async function providerRequest(
   messages: ProviderMessage[],
   stream: boolean,
   signal?: AbortSignal,
-  maxTokens = 3000,
+  maxTokensOrOptions:
+    | number
+    | {
+        maxTokens?: number;
+        tools?: ProviderTool[];
+        toolChoice?: "auto" | "none";
+        timeoutMs?: number;
+      } = 3000,
 ) {
+  const options =
+    typeof maxTokensOrOptions === "number"
+      ? { maxTokens: maxTokensOrOptions }
+      : maxTokensOrOptions;
+  const reasoning = isReasoningModel(connection.model);
+  const rawMax = options.maxTokens ?? 3000;
+  const maxTokens = reasoning
+    ? rawMax <= 64
+      ? 256
+      : Math.max(rawMax, 8000)
+    : rawMax;
+  const timeoutMs = options.timeoutMs ?? (reasoning ? 120_000 : 60_000);
   const url = new URL(
     `${normalizeAiBaseUrl(connection.baseUrl)}/chat/completions`,
   );
@@ -83,10 +130,16 @@ export async function providerRequest(
         messages,
         stream,
         [modernTokens ? "max_completion_tokens" : "max_tokens"]: maxTokens,
+        ...(options.tools?.length
+          ? {
+              tools: options.tools,
+              tool_choice: options.toolChoice ?? "auto",
+            }
+          : {}),
       }),
       signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
-        : AbortSignal.timeout(60_000),
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     if (error instanceof AppError) throw error;

@@ -131,16 +131,31 @@ export type ChatEdit =
       expectedVersion: number;
       fields: { note: string };
     };
+export type ChatToolStep = {
+  name: string;
+  label: string;
+};
+export type ChatQuestionReference = {
+  id: string;
+  title: string;
+  deckTitle: string;
+};
 export type ChatMessage = {
   id: string;
   role: string;
   content: string;
   edits?: ChatEdit[] | null;
+  reasoning?: string;
+  toolSteps?: ChatToolStep[];
+  references?: ChatQuestionReference[];
   createdAt: string;
 };
+export type ConversationScope = "question" | "deck" | "workspace";
 export type Conversation = {
   id: string;
-  questionId: string;
+  scope?: ConversationScope;
+  deckId?: string | null;
+  questionId: string | null;
   quote: string;
   attempt: string;
   questionTitle: string;

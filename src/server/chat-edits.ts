@@ -58,7 +58,9 @@ export function readChatEdits(
   output: string,
   { question, deck, note }: ChatEditContext,
 ): ChatEdit[] | null {
-  const text = output.trim();
+  let text = output.trim();
+  const fenced = text.match(/^```[\w-]*\r?\n([\s\S]*?)\r?\n```$/);
+  if (fenced) text = fenced[1].trim();
   if (!text.startsWith(EDIT_START) || !text.endsWith(EDIT_END)) return null;
   let json: unknown;
   try {

@@ -121,7 +121,7 @@ export const POST = route(async (request, user) => {
           [{ role: "user", content: "Reply OK." }],
           false,
           request.signal,
-          32,
+          64,
         );
         let result;
         try {
@@ -209,7 +209,7 @@ export const POST = route(async (request, user) => {
         [{ role: "user", content: "请只回复 OK。" }],
         false,
         request.signal,
-        32,
+        64,
       );
       await response.body?.cancel();
     } finally {

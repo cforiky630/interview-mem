@@ -5,6 +5,7 @@ import {
   BookOpen,
   BookmarkPlus,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   KeyRound,
   Layers2,
@@ -24,6 +25,8 @@ import { api } from "@/lib/client";
 import type {
   ChatEdit,
   ChatMessage,
+  ChatQuestionReference,
+  ChatToolStep,
   Conversation,
   DeckView,
   QuestionView,
@@ -45,6 +48,81 @@ export type AiTrigger = {
 };
 
 type DeckFilter = "all" | "needsEditing" | "due";
+type LiveAssistantMeta = {
+  reasoning?: string;
+  toolSteps?: ChatToolStep[];
+  references?: ChatQuestionReference[];
+};
+
+function buildScopeKey(
+  scope: AiScope,
+  userId: string,
+  questionId?: string,
+  deckId?: string,
+) {
+  if (scope === "question" && questionId) return `q:${questionId}`;
+  if (scope === "deck" && deckId) return `d:${deckId}`;
+  return `w:${userId}`;
+}
+
+function buildChatUrl(
+  scope: AiScope,
+  questionId?: string,
+  deckId?: string,
+) {
+  if (scope === "question" && questionId) {
+    return `/api/chat?scope=question&questionId=${encodeURIComponent(questionId)}`;
+  }
+  if (scope === "deck" && deckId) {
+    return `/api/chat?scope=deck&deckId=${encodeURIComponent(deckId)}`;
+  }
+  return "/api/chat?scope=workspace";
+}
+
+function ReasoningDisclosure({
+  reasoning,
+  hasContent,
+  busy,
+}: {
+  reasoning: string;
+  hasContent: boolean;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(!hasContent && busy);
+  const userToggledRef = useRef(false);
+
+  useEffect(() => {
+    if (hasContent && !userToggledRef.current) {
+      setOpen(false);
+    }
+  }, [hasContent]);
+
+  return (
+    <details
+      className="ai-reasoning-box"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary
+        onClick={() => {
+          userToggledRef.current = true;
+        }}
+      >
+        <span className="ai-reasoning-marker" aria-hidden="true">
+          <ChevronRight size={13} />
+        </span>
+        <span className="ai-reasoning-label">
+          {!hasContent && busy
+            ? "正在深度思考…"
+            : `思考过程 · ${reasoning.length} 字`}
+        </span>
+      </summary>
+      <div className="ai-reasoning-body">
+        <pre>{reasoning}</pre>
+      </div>
+    </details>
+  );
+}
 
 function appendToStoredNote(
   userId: string,
@@ -269,6 +347,7 @@ export function AiIsland({
   const [scope, setScope] = useState<AiScope>(
     question ? "question" : contextDeck ? "deck" : "workspace",
   );
+  const [scopedView, setScopedView] = useState<"chat" | "launcher">("chat");
   const [threads, setThreads] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [items, setItems] = useState<ChatMessage[]>([]);
@@ -288,10 +367,12 @@ export function AiIsland({
     time: number;
     locked: "v" | "h" | null;
   } | null>(null);
-  const loadedQuestionRef = useRef<{
-    questionId: string | null;
+  const loadedTargetRef = useRef<{
+    key: string;
     userId: string;
-  }>({ questionId: null, userId: data.user.id });
+  }>({ key: "", userId: data.user.id });
+  const lastQuestionIdRef = useRef<string | null>(question?.id ?? null);
+  const threadMetaRef = useRef<Record<string, LiveAssistantMeta>>({});
   const lastAutoKey = useRef("");
   const lastTrigger = useRef(0);
   const editInFlight = useRef(false);
@@ -307,6 +388,12 @@ export function AiIsland({
       : "workspace";
 
   useEffect(() => {
+    if (question?.id) {
+      lastQuestionIdRef.current = question.id;
+    }
+  }, [question?.id]);
+
+  useEffect(() => {
     if (lastAutoKey.current === autoKey) return;
     lastAutoKey.current = autoKey;
     setScope(question ? "question" : contextDeck ? "deck" : "workspace");
@@ -319,6 +406,13 @@ export function AiIsland({
           (scope === "deck" || (scope === "question" && !question))
         ? "deck"
         : "workspace";
+
+  const scopeKey = buildScopeKey(
+    effectiveScope,
+    data.user.id,
+    question?.id,
+    contextDeck?.id,
+  );
 
   useEffect(() => {
     onBusyChange?.(busy);
@@ -339,15 +433,17 @@ export function AiIsland({
   }, [mode, hidden]);
 
   useEffect(() => {
-    if (!question?.id) return;
+    if (effectiveScope === "question" && !question?.id) return;
+    if (effectiveScope === "deck" && !contextDeck?.id) return;
     if (
-      loadedQuestionRef.current.questionId === question.id &&
-      loadedQuestionRef.current.userId === data.user.id
+      loadedTargetRef.current.key === scopeKey &&
+      loadedTargetRef.current.userId === data.user.id
     ) {
       return;
     }
     if (mode === "collapsed") {
       if (!inFlight.current) {
+        loadedTargetRef.current = { key: "", userId: data.user.id };
         setThreads([]);
         setActiveId(null);
         setItems([]);
@@ -358,8 +454,8 @@ export function AiIsland({
       }
       return;
     }
-    loadedQuestionRef.current = {
-      questionId: question.id,
+    loadedTargetRef.current = {
+      key: scopeKey,
       userId: data.user.id,
     };
     abort.current?.abort();
@@ -374,11 +470,17 @@ export function AiIsland({
     setError("");
     let canceled = false;
     setLoading(true);
-    void api<Conversation[]>(`/api/chat?questionId=${question.id}`, undefined, {
-      userId: data.user.id,
-    })
+    void api<Conversation[]>(
+      buildChatUrl(effectiveScope, question?.id, contextDeck?.id),
+      undefined,
+      { userId: data.user.id },
+    )
       .then((rows) => {
-        if (!canceled) setThreads(rows);
+        if (!canceled) {
+          setThreads(
+            rows.map((row) => mergeThreadMeta(row, threadMetaRef.current)),
+          );
+        }
       })
       .catch((e) => {
         if (!canceled) setError(e.message);
@@ -389,15 +491,26 @@ export function AiIsland({
     return () => {
       canceled = true;
     };
-  }, [question?.id, data.user.id, mode]);
+  }, [
+    scopeKey,
+    effectiveScope,
+    question?.id,
+    contextDeck?.id,
+    data.user.id,
+    mode,
+  ]);
 
   useEffect(() => {
-    if (mode === "collapsed" || effectiveScope !== "question") return;
+    if (
+      mode === "collapsed" ||
+      (effectiveScope !== "question" && scopedView !== "chat")
+    )
+      return;
     scroll.current?.scrollTo({
       top: scroll.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [items, busy, mode, effectiveScope]);
+  }, [items, busy, mode, effectiveScope, scopedView]);
 
   useEffect(() => {
     if (!trigger || trigger.nonce === lastTrigger.current) return;
@@ -408,6 +521,10 @@ export function AiIsland({
       return;
     }
     lastTrigger.current = trigger.nonce;
+    loadedTargetRef.current = {
+      key: `q:${question.id}`,
+      userId: data.user.id,
+    };
     setScope("question");
     const nextAttempt = trigger.attempt ?? "";
     setQuote(trigger.quote);
@@ -424,13 +541,31 @@ export function AiIsland({
           null,
           true,
           nextAttempt,
+          "question",
           question.id,
+          undefined,
         );
       } else {
         requestAnimationFrame(() => composerRef.current?.focus());
       }
     }
   }, [trigger?.nonce]); // selection or critique trigger intentionally starts a fresh thread
+
+  function mergeThreadMeta(
+    thread: Conversation,
+    cache: Record<string, LiveAssistantMeta>,
+  ): Conversation {
+    const meta = cache[thread.id];
+    if (!meta || !thread.messages.length) return thread;
+    const nextMessages = [...thread.messages];
+    for (let i = nextMessages.length - 1; i >= 0; i--) {
+      if (nextMessages[i].role === "assistant") {
+        nextMessages[i] = { ...nextMessages[i], ...meta };
+        break;
+      }
+    }
+    return { ...thread, messages: nextMessages };
+  }
 
   function selectThread(id: string) {
     const thread = threads.find((t) => t.id === id);
@@ -448,15 +583,20 @@ export function AiIsland({
     conversationId = activeId,
     fresh = false,
     submittedAttempt = attempt,
+    targetScope = effectiveScope,
     targetQuestionId = question?.id,
+    targetDeckId = contextDeck?.id,
   ) {
-    if (
-      !targetQuestionId ||
-      !text.trim() ||
-      inFlight.current ||
-      !data.settings.hasKey
-    )
-      return;
+    if (!text.trim() || inFlight.current || !data.settings.hasKey) return;
+    if (targetScope === "question" && !targetQuestionId) return;
+    if (targetScope === "deck" && !targetDeckId) return;
+
+    const targetKey = buildScopeKey(
+      targetScope,
+      data.user.id,
+      targetQuestionId,
+      targetDeckId,
+    );
     inFlight.current = true;
     setBusy(true);
     setInput("");
@@ -481,6 +621,7 @@ export function AiIsland({
     const controller = new AbortController();
     abort.current = controller;
     let resolvedId = conversationId;
+    const liveMeta: LiveAssistantMeta = {};
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -489,11 +630,19 @@ export function AiIsland({
           "X-Workspace-User": data.user.id,
         },
         body: JSON.stringify({
-          questionId: targetQuestionId,
+          scope: targetScope,
+          ...(targetScope === "question" && targetQuestionId
+            ? { questionId: targetQuestionId }
+            : {}),
+          ...(targetScope === "deck" && targetDeckId
+            ? { deckId: targetDeckId }
+            : {}),
           ...(conversationId ? { conversationId } : {}),
           message: text.trim(),
-          quote: selectedQuote,
-          ...(!conversationId && submittedAttempt.trim()
+          quote: targetScope === "question" ? selectedQuote : "",
+          ...(targetScope === "question" &&
+          !conversationId &&
+          submittedAttempt.trim()
             ? { attempt: submittedAttempt.trim() }
             : {}),
         }),
@@ -521,12 +670,54 @@ export function AiIsland({
           const payload = JSON.parse(json);
           if (event === "meta") {
             resolvedId = payload.conversationId;
-            if (loadedQuestionRef.current.questionId === targetQuestionId) {
+            if (loadedTargetRef.current.key === targetKey) {
               setActiveId(resolvedId);
             }
-          }
-          if (event === "delta") {
-            if (loadedQuestionRef.current.questionId === targetQuestionId) {
+          } else if (event === "reasoning") {
+            const textChunk =
+              typeof payload.text === "string" ? payload.text : "";
+            if (textChunk) {
+              liveMeta.reasoning = (liveMeta.reasoning ?? "") + textChunk;
+              if (loadedTargetRef.current.key === targetKey) {
+                setItems((previous) =>
+                  previous.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, reasoning: liveMeta.reasoning }
+                      : m,
+                  ),
+                );
+              }
+            }
+          } else if (event === "tool") {
+            const step = {
+              name: String(payload.name ?? ""),
+              label: String(payload.label ?? ""),
+            };
+            liveMeta.toolSteps = [...(liveMeta.toolSteps ?? []), step];
+            if (loadedTargetRef.current.key === targetKey) {
+              setItems((previous) =>
+                previous.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, toolSteps: liveMeta.toolSteps }
+                    : m,
+                ),
+              );
+            }
+          } else if (event === "references") {
+            if (Array.isArray(payload.refs)) {
+              liveMeta.references = payload.refs;
+              if (loadedTargetRef.current.key === targetKey) {
+                setItems((previous) =>
+                  previous.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, references: liveMeta.references }
+                      : m,
+                  ),
+                );
+              }
+            }
+          } else if (event === "delta") {
+            if (loadedTargetRef.current.key === targetKey) {
               setItems((previous) =>
                 previous.map((m) =>
                   m.id === assistantId
@@ -535,26 +726,38 @@ export function AiIsland({
                 ),
               );
             }
+          } else if (event === "error") {
+            throw new Error(payload.error);
           }
-          if (event === "error") throw new Error(payload.error);
         }
         if (done) break;
       }
+      if (
+        resolvedId &&
+        (liveMeta.reasoning ||
+          liveMeta.toolSteps?.length ||
+          liveMeta.references?.length)
+      ) {
+        threadMetaRef.current[resolvedId] = { ...liveMeta };
+      }
       const rows = await api<Conversation[]>(
-        `/api/chat?questionId=${targetQuestionId}`,
+        buildChatUrl(targetScope, targetQuestionId, targetDeckId),
         undefined,
         { userId: data.user.id, signal: controller.signal },
       );
-      if (loadedQuestionRef.current.questionId === targetQuestionId) {
-        setThreads(rows);
-        const current = rows.find((t) => t.id === resolvedId);
+      if (loadedTargetRef.current.key === targetKey) {
+        const merged = rows.map((row) =>
+          mergeThreadMeta(row, threadMetaRef.current),
+        );
+        setThreads(merged);
+        const current = merged.find((t) => t.id === resolvedId);
         if (current) {
           setItems(current.messages);
           setAttempt("");
         }
       }
     } catch (e) {
-      if (loadedQuestionRef.current.questionId === targetQuestionId) {
+      if (loadedTargetRef.current.key === targetKey) {
         setItems((previous) =>
           previous.filter(
             (m) => m.id !== assistantId || m.content.trim().length > 0,
@@ -698,9 +901,9 @@ export function AiIsland({
         : "全局题库";
 
   const recentQuestion =
-    !question && loadedQuestionRef.current.questionId
+    !question && lastQuestionIdRef.current
       ? data.questions.find(
-          (q) => q.id === loadedQuestionRef.current.questionId && !q.archived,
+          (q) => q.id === lastQuestionIdRef.current && !q.archived,
         )
       : undefined;
 
@@ -817,7 +1020,7 @@ export function AiIsland({
               <span className={`ai-live-dot ${busy ? "is-pulsing" : ""}`} />
             </div>
             <div className="ai-panel-controls">
-              {effectiveScope === "question" && (
+              {(effectiveScope !== "question" ? scopedView === "chat" : Boolean(question)) && (
                 <Button
                   variant="ghost"
                   size="icon"
@@ -885,7 +1088,32 @@ export function AiIsland({
           </div>
         )}
 
-        {effectiveScope !== "question" ? (
+        {effectiveScope !== "question" && (
+          <div className="ai-scope-subtabs" role="tablist" aria-label="题库助手视图">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={scopedView === "chat"}
+              className={scopedView === "chat" ? "is-active" : ""}
+              onClick={() => setScopedView("chat")}
+            >
+              <Sparkles size={12} />
+              AI 整理
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={scopedView === "launcher"}
+              className={scopedView === "launcher" ? "is-active" : ""}
+              onClick={() => setScopedView("launcher")}
+            >
+              <Search size={12} />
+              快捷直达
+            </button>
+          </div>
+        )}
+
+        {effectiveScope !== "question" && scopedView === "launcher" ? (
           <ScopeLauncher
             key={effectiveScope === "deck" ? (contextDeck?.id ?? "deck") : "workspace"}
             scope={effectiveScope}
@@ -894,11 +1122,26 @@ export function AiIsland({
             recentQuestion={recentQuestion}
             onOpenQuestion={onOpenQuestion}
           />
-        ) : question ? (
+        ) : effectiveScope !== "question" || question ? (
           <>
-            <div className="ai-context-chip" title={question.title}>
-              <span>正在围绕</span>
-              <strong>{question.title}</strong>
+            <div
+              className="ai-context-chip"
+              title={
+                effectiveScope === "question" && question
+                  ? question.title
+                  : effectiveScope === "deck" && contextDeck
+                    ? contextDeck.title
+                    : "全局题库"
+              }
+            >
+              <span>{effectiveScope === "question" ? "正在围绕" : "当前范围"}</span>
+              <strong>
+                {effectiveScope === "question" && question
+                  ? question.title
+                  : effectiveScope === "deck" && contextDeck
+                    ? contextDeck.title
+                    : "全局题库工作区"}
+              </strong>
             </div>
             {threads.length > 0 && (
               <div className="thread-selector">
@@ -909,22 +1152,30 @@ export function AiIsland({
                   onChange={(e) => selectThread(e.target.value)}
                 >
                   <option value="">新的疑问，新的理解</option>
-                  {threads.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.attempt.trim()
-                        ? `[作答点评] ${(t.messages.find((m) => m.role === "user")?.content || "默写点评").slice(0, 22)}`
-                        : t.quote
-                          ? `划选：${t.quote.slice(0, 24)}`
-                          : t.messages
-                              .find((m) => m.role === "user")
-                              ?.content.slice(0, 28) || "题目问答"}{" "}
-                      · v{t.questionRevision}
-                    </option>
-                  ))}
+                  {threads.map((t) => {
+                    const firstUser =
+                      t.messages.find((m) => m.role === "user")?.content ?? "";
+                    const label =
+                      effectiveScope === "question"
+                        ? `${
+                            t.attempt.trim()
+                              ? `[作答点评] ${(firstUser || "默写点评").slice(0, 22)}`
+                              : t.quote
+                                ? `划选：${t.quote.slice(0, 24)}`
+                                : firstUser.slice(0, 28) || "题目问答"
+                          } · v${t.questionRevision}`
+                        : firstUser.slice(0, 32) ||
+                          (effectiveScope === "deck" ? "题库整理" : "全库问答");
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {label}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}
-            {quote && (
+            {effectiveScope === "question" && quote && (
               <div className="ai-quote">
                 <Quote size={14} />
                 <p>{quote}</p>
@@ -939,7 +1190,7 @@ export function AiIsland({
                 )}
               </div>
             )}
-            {visibleAttempt && (
+            {effectiveScope === "question" && visibleAttempt && (
               <div className="ai-attempt-card">
                 <div className="ai-attempt-head">
                   <PenLine size={14} />
@@ -979,17 +1230,20 @@ export function AiIsland({
                 )}
               </div>
             )}
-            {active && active.questionRevision !== question.revision && (
-              <details className="quote-version">
-                <summary>
-                  引用的是 v{active.questionRevision}，题目当前为 v
-                  {question.revision}
-                </summary>
-                <div className="old-snapshot">
-                  <Markdown>{active.answerSnapshot}</Markdown>
-                </div>
-              </details>
-            )}
+            {effectiveScope === "question" &&
+              question &&
+              active &&
+              active.questionRevision !== question.revision && (
+                <details className="quote-version">
+                  <summary>
+                    引用的是 v{active.questionRevision}，题目当前为 v
+                    {question.revision}
+                  </summary>
+                  <div className="old-snapshot">
+                    <Markdown>{active.answerSnapshot}</Markdown>
+                  </div>
+                </details>
+              )}
             <div className="ai-messages" ref={scroll}>
               {loading && !items.length && (
                 <div className="ai-loading">
@@ -1001,21 +1255,44 @@ export function AiIsland({
                   <span className="ai-welcome-spark">
                     <Sparkles size={30} strokeWidth={1.2} />
                   </span>
-                  <h3>哪里没想明白？</h3>
+                  <h3>
+                    {effectiveScope === "question"
+                      ? "哪里没想明白？"
+                      : effectiveScope === "deck"
+                        ? "梳理当前题库"
+                        : "盘点全局题库"}
+                  </h3>
                   <p>
-                    {question.isOwner
-                      ? ownedDeck
-                        ? "可以围绕本题提问，也可以请我修改本题、个人笔记或所属题库。"
-                        : "可以围绕本题提问，也可以请我修改本题或个人笔记。"
-                      : "结合本题与参考答案拆解疑问，划选正文即可追问。"}
+                    {effectiveScope === "question" && question
+                      ? question.isOwner
+                        ? ownedDeck
+                          ? "可以围绕本题提问，也可以请我修改本题、个人笔记或所属题库。"
+                          : "可以围绕本题提问，也可以请我修改本题或个人笔记。"
+                        : "结合本题与参考答案拆解疑问，划选正文即可追问。"
+                      : effectiveScope === "deck" && contextDeck
+                        ? `只读检索「${contextDeck.title}」中的真实题目，支持查重、结构梳理与复习排期。`
+                        : "检索全库真实题目、排查重复内容，或制定今天的优先复习清单。"}
                   </p>
                   {data.settings.hasKey ? (
                     <div className="prompt-suggestions">
-                      {[
-                        "用生活比喻或代码示例讲透底层机制",
-                        "两分钟面试口述，这段答案怎么凝练？",
-                        "这道题最容易答偏或被深挖的点有哪些？",
-                      ].map((p) => (
+                      {(effectiveScope === "question"
+                        ? [
+                            "用生活比喻或代码示例讲透底层机制",
+                            "两分钟面试口述，这段答案怎么凝练？",
+                            "这道题最容易答偏或被深挖的点有哪些？",
+                          ]
+                        : effectiveScope === "deck"
+                          ? [
+                              "梳理当前题库的知识脉络与重点分组",
+                              "排查当前题库中可能重复或相似的题目",
+                              "挑出待复习和待完善的题目，排出优先级",
+                            ]
+                          : [
+                              "盘点全局题库分布，目前哪些方向急需复习？",
+                              "排查整个题库中的重复题或高度相似卡片",
+                              "结合待完善题目，帮我定今天的整理计划",
+                            ]
+                      ).map((p) => (
                         <button key={p} onClick={() => void send(p)}>
                           {p}
                           <ArrowUp size={13} />
@@ -1026,7 +1303,7 @@ export function AiIsland({
                     <div className="ai-key-prompt">
                       <KeyRound size={18} />
                       <p>
-                        请先在设置中配置 OpenAI 兼容模型接口，即可开启划词追问与生成笔记。
+                        请先在设置中配置 OpenAI 兼容模型接口，即可开启划词追问与题库分析。
                       </p>
                       <Button
                         variant="outline"
@@ -1050,6 +1327,27 @@ export function AiIsland({
                       <Sparkles size={13} /> AI 助手
                     </div>
                   )}
+                  {message.role === "assistant" &&
+                    Boolean(message.toolSteps?.length) && (
+                      <div className="ai-tool-steps" aria-label="AI 检索过程">
+                        {message.toolSteps!.map((step, idx) => (
+                          <span
+                            key={`${message.id}:tool:${idx}`}
+                            className="ai-tool-step-pill"
+                          >
+                            <Search size={11} />
+                            {step.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  {message.role === "assistant" && message.reasoning && (
+                    <ReasoningDisclosure
+                      reasoning={message.reasoning}
+                      hasContent={Boolean(message.content)}
+                      busy={busy}
+                    />
+                  )}
                   {message.content ? (
                     <Markdown>{message.content}</Markdown>
                   ) : busy ? (
@@ -1059,21 +1357,52 @@ export function AiIsland({
                   ) : (
                     <span className="muted small">已停止回答</span>
                   )}
-                  {message.edits?.map((edit) => {
-                    const key = `${message.id}:${edit.target}`;
-                    return (
-                      <ChatEditCard
-                        key={key}
-                        edit={edit}
-                        question={question}
-                        deck={ownedDeck}
-                        busy={busy || applying !== null}
-                        applying={applying === key}
-                        onApply={() => void applyEdit(edit, key)}
-                      />
-                    );
-                  })}
                   {message.role === "assistant" &&
+                    Boolean(message.references?.length) && (
+                      <div className="ai-ref-list">
+                        <span className="ai-ref-heading">引用题目</span>
+                        <div className="ai-ref-chips">
+                          {message.references!.map((ref) => {
+                            const target = data.questions.find(
+                              (q) => q.id === ref.id,
+                            );
+                            return (
+                              <button
+                                key={ref.id}
+                                type="button"
+                                className="ai-ref-chip"
+                                disabled={!target}
+                                onClick={() => target && onOpenQuestion(target)}
+                                title={
+                                  target ? `打开：${ref.title}` : ref.title
+                                }
+                              >
+                                <BookOpen size={12} />
+                                <span>{ref.title}</span>
+                                <small>{ref.deckTitle}</small>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  {question &&
+                    message.edits?.map((edit) => {
+                      const key = `${message.id}:${edit.target}`;
+                      return (
+                        <ChatEditCard
+                          key={key}
+                          edit={edit}
+                          question={question}
+                          deck={ownedDeck}
+                          busy={busy || applying !== null}
+                          applying={applying === key}
+                          onApply={() => void applyEdit(edit, key)}
+                        />
+                      );
+                    })}
+                  {question &&
+                    message.role === "assistant" &&
                     message.content &&
                     !message.edits?.length &&
                     !busy && (
@@ -1131,11 +1460,15 @@ export function AiIsland({
                   ref={composerRef}
                   aria-label="给 AI 助手发消息"
                   placeholder={
-                    data.settings.hasKey
-                      ? question.isOwner
-                        ? "输入问题，或请我优化答案、笔记与题库（Enter 发送，Shift + Enter 换行）…"
-                        : "围绕当前题目或选中段落追问（Enter 发送，Shift + Enter 换行）…"
-                      : "请先配置模型 API Key 后提问"
+                    !data.settings.hasKey
+                      ? "请先配置模型 API Key 后提问"
+                      : effectiveScope === "question" && question
+                        ? question.isOwner
+                          ? "输入问题，或请我优化答案、笔记与题库（Enter 发送，Shift + Enter 换行）…"
+                          : "围绕当前题目或选中段落追问（Enter 发送，Shift + Enter 换行）…"
+                        : effectiveScope === "deck"
+                          ? "围绕当前题库提问：查重、归纳考点、规划复习（Enter 发送，Shift + Enter 换行）…"
+                          : "围绕全库提问：盘点方向、找重复题、安排复习（Enter 发送，Shift + Enter 换行）…"
                   }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -1193,7 +1526,11 @@ export function AiIsland({
                   )}
                 </div>
               </div>
-              <p>AI 回答结合当前题目上下文生成，请对照自己的理解沉淀为个人笔记</p>
+              <p>
+                {effectiveScope === "question"
+                  ? "AI 回答结合当前题目上下文生成，请对照自己的理解沉淀为个人笔记"
+                  : "AI 仅在当前用户题库内只读检索与去重，点击引用题目可直达原文"}
+              </p>
             </div>
           </>
         ) : null}

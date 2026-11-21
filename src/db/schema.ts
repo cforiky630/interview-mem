@@ -145,6 +145,9 @@ export const questions = pgTable(
   (t) => [
     index("question_deck_idx").on(t.deckId),
     index("question_owner_idx").on(t.ownerId, t.deletedAt),
+    index("question_import_idx")
+      .on(t.importId)
+      .where(sql`${t.importId} is not null`),
     index("question_trash_expiry_idx")
       .on(t.deletedAt)
       .where(sql`${t.deletedAt} is not null and ${t.purgedAt} is null`),
@@ -184,7 +187,13 @@ export const releases = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.deckId, t.version] })],
+  (t) => [
+    primaryKey({ columns: [t.deckId, t.version] }),
+    index("release_questions_gin_idx").using(
+      "gin",
+      sql`${t.questions} jsonb_path_ops`,
+    ),
+  ],
 );
 export const subscriptions = pgTable(
   "subscriptions",
@@ -244,32 +253,36 @@ export const reviewEvents = pgTable(
   },
   (t) => [index("review_user_time_idx").on(t.userId, t.createdAt)],
 );
-export const imports = pgTable("imports", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => user.id, { onDelete: "cascade" }),
-  deckId: text("deck_id").references(() => decks.id),
-  raw: text("raw").notNull(),
-  inputType: text("input_type")
-    .$type<"qa" | "questions">()
-    .notNull()
-    .default("qa"),
-  method: text("method").notNull().default("rules"),
-  sourceName: text("source_name"),
-  sourceHash: text("source_hash"),
-  preview: jsonb("preview").$type<ImportPreviewItem[]>(),
-  commitHash: text("commit_hash"),
-  status: text("status").notNull().default("pending"),
-  result: jsonb("result").$type<{
-    added: number;
-    duplicates: number;
-    updated?: number;
-  }>(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const imports = pgTable(
+  "imports",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    deckId: text("deck_id").references(() => decks.id),
+    raw: text("raw").notNull(),
+    inputType: text("input_type")
+      .$type<"qa" | "questions">()
+      .notNull()
+      .default("qa"),
+    method: text("method").notNull().default("rules"),
+    sourceName: text("source_name"),
+    sourceHash: text("source_hash"),
+    preview: jsonb("preview").$type<ImportPreviewItem[]>(),
+    commitHash: text("commit_hash"),
+    status: text("status").notNull().default("pending"),
+    result: jsonb("result").$type<{
+      added: number;
+      duplicates: number;
+      updated?: number;
+    }>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("import_user_time_idx").on(t.userId, t.createdAt)],
+);
 export const conversations = pgTable(
   "conversations",
   {
@@ -277,27 +290,42 @@ export const conversations = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
-    questionId: text("question_id")
+    scope: text("scope")
+      .$type<"question" | "deck" | "workspace">()
       .notNull()
-      .references(() => questions.id),
+      .default("question"),
+    deckId: text("deck_id").references(() => decks.id),
+    questionId: text("question_id").references(() => questions.id),
     quote: text("quote").notNull().default(""),
     attempt: text("attempt").notNull().default(""),
-    questionTitle: text("question_title").notNull(),
-    answerSnapshot: text("answer_snapshot").notNull(),
-    questionRevision: integer("question_revision").notNull(),
+    questionTitle: text("question_title").notNull().default(""),
+    answerSnapshot: text("answer_snapshot").notNull().default(""),
+    questionRevision: integer("question_revision").notNull().default(0),
     ...dates(),
   },
-  (t) => [index("conversation_user_question_idx").on(t.userId, t.questionId)],
+  (t) => [
+    index("conversation_user_question_idx").on(t.userId, t.questionId),
+    index("conversation_user_scope_idx").on(
+      t.userId,
+      t.scope,
+      t.deckId,
+      t.updatedAt,
+    ),
+  ],
 );
-export const messages = pgTable("chat_messages", {
-  id: text("id").primaryKey(),
-  conversationId: text("conversation_id")
-    .notNull()
-    .references(() => conversations.id, { onDelete: "cascade" }),
-  role: text("role").notNull(),
-  content: text("content").notNull(),
-  edits: jsonb("edits").$type<ChatEdit[]>(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const messages = pgTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    edits: jsonb("edits").$type<ChatEdit[]>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("chat_message_conv_time_idx").on(t.conversationId, t.createdAt)],
+);

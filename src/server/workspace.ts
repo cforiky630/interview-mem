@@ -44,7 +44,22 @@ export async function ensureWorkspace(userId: string) {
 }
 
 export function publishedQuestion(
-  q: typeof questions.$inferSelect,
+  q: Pick<
+    typeof questions.$inferSelect,
+    | "id"
+    | "deckId"
+    | "parentId"
+    | "title"
+    | "answer"
+    | "tags"
+    | "revision"
+    | "majorRevision"
+    | "needsEditing"
+    | "archived"
+    | "createdAt"
+    | "updatedAt"
+    | "validation"
+  >,
 ): PublishedQuestion {
   return {
     id: q.id,
@@ -165,7 +180,21 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
   const recentCutoff = new Date(Date.now() - 30 * 86400_000);
   const [drafts, activityRows, aggregateRows, published] = await Promise.all([
     db
-      .select()
+      .select({
+        id: questions.id,
+        deckId: questions.deckId,
+        parentId: questions.parentId,
+        title: questions.title,
+        answer: questions.answer,
+        tags: questions.tags,
+        revision: questions.revision,
+        majorRevision: questions.majorRevision,
+        needsEditing: questions.needsEditing,
+        archived: questions.archived,
+        createdAt: questions.createdAt,
+        updatedAt: questions.updatedAt,
+        validation: questions.validation,
+      })
       .from(questions)
       .where(
         and(

@@ -136,7 +136,7 @@ export async function aiFetch(url: URL, init: RequestInit) {
     url.hash
   )
     throw new AppError(400, "模型服务需要有效的 HTTPS 接口地址。");
-  const signal = init.signal ?? AbortSignal.timeout(60_000);
+  const signal = init.signal ?? AbortSignal.timeout(120_000);
   const addresses = await resolveAiAddresses(
     url.hostname,
     AbortSignal.any([signal, AbortSignal.timeout(5000)]),
@@ -147,8 +147,8 @@ export async function aiFetch(url: URL, init: RequestInit) {
       lookup: pinnedAiLookup(url.hostname, addresses),
       timeout: 10_000,
     },
-    headersTimeout: 60_000,
-    bodyTimeout: 60_000,
+    headersTimeout: 120_000,
+    bodyTimeout: 120_000,
   });
   const destroy = () => {
     void dispatcher.destroy().catch(() => {});

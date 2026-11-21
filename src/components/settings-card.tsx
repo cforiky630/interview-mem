@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Check, Download, Moon, Sparkles, Sun, X } from "lucide-react";
+import { Check, Download, Moon, Sun, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import type { Workspace } from "@/lib/types";
@@ -8,13 +8,16 @@ import { AiConnectionForm } from "./ai-connection-form";
 import type { Mutate } from "./dialogs";
 import { Button } from "./ui/button";
 import { useDiscretePresence } from "./use-discrete-presence";
+import "./settings-card.css";
 
-export type SettingsTab = "ai" | "study" | "data";
+export type SettingsPanelMode = "ai" | "account";
+export type AccountSettingsTab = "study" | "data";
 
 export function SettingsCard({
   open,
-  tab,
-  onTabChange,
+  mode,
+  accountTab,
+  onAccountTabChange,
   anchor,
   onClose,
   data,
@@ -23,8 +26,9 @@ export function SettingsCard({
   onPaletteChange,
 }: {
   open: boolean;
-  tab: SettingsTab;
-  onTabChange: (tab: SettingsTab) => void;
+  mode: SettingsPanelMode;
+  accountTab: AccountSettingsTab;
+  onAccountTabChange: (tab: AccountSettingsTab) => void;
   anchor: HTMLElement | null;
   onClose: () => void;
   data: Workspace;
@@ -204,7 +208,7 @@ export function SettingsCard({
       vv?.removeEventListener("resize", schedulePlace);
       vv?.removeEventListener("scroll", schedulePlace);
     };
-  }, [open, anchor, tab, cardPresence.ref]);
+  }, [open, anchor, mode, accountTab, cardPresence.ref]);
 
   useEffect(() => {
     if (!open) return;
@@ -319,6 +323,7 @@ export function SettingsCard({
         inert={!open || cardPresence.isClosing}
         hidden={cardPresence.isHidden}
         data-closing={cardPresence.isClosing ? "" : undefined}
+        data-mode={mode}
         tabIndex={-1}
         className="settings-card"
         style={
@@ -377,19 +382,35 @@ export function SettingsCard({
         >
           <div className="sheet-grabber" aria-hidden="true" />
           <div className="settings-card-header">
-            <div className="settings-card-title-row">
-              <h2 id="settings-card-title">偏好与 AI 配置</h2>
-              <span
-                className={`settings-card-status ${data.settings.hasKey ? "is-connected" : ""}`}
-              >
-                <i aria-hidden="true" />
-                {data.settings.hasKey
-                  ? data.settings.model || "已连接"
-                  : "未配置 AI"}
-              </span>
-            </div>
+            {mode === "ai" ? (
+              <div className="settings-card-title-row">
+                <h2 id="settings-card-title">AI 模型配置</h2>
+                <span
+                  className={`settings-card-status ${data.settings.hasKey ? "is-connected" : ""}`}
+                >
+                  <i aria-hidden="true" />
+                  {data.settings.hasKey
+                    ? data.settings.model || "已连接"
+                    : "未配置"}
+                </span>
+              </div>
+            ) : (
+              <div className="settings-account-hero">
+                <span className="settings-account-avatar" aria-hidden="true">
+                  {data.user.name.slice(0, 1).toUpperCase()}
+                </span>
+                <div className="settings-account-meta">
+                  <h2 id="settings-card-title">{data.user.name}</h2>
+                  <p title={data.user.email}>
+                    {data.user.email || "学习偏好与数据备份"}
+                  </p>
+                </div>
+              </div>
+            )}
             <p id="settings-card-desc" className="sr-only">
-              管理 AI 连接、学习偏好与数据备份。
+              {mode === "ai"
+                ? "配置 OpenAI 兼容模型地址、API Key 与默认模型。"
+                : "管理每日学习目标、界面外观与数据备份导出。"}
             </p>
             <button
               type="button"
@@ -401,47 +422,40 @@ export function SettingsCard({
             </button>
           </div>
         </div>
-        <div
-          className="settings-card-tabs"
-          role="tablist"
-          aria-label="配置分类"
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "ai"}
-            className={tab === "ai" ? "selected" : ""}
-            onClick={() => onTabChange("ai")}
+        {mode === "account" && (
+          <div
+            className="settings-card-tabs"
+            role="tablist"
+            aria-label="个人设置分类"
           >
-            <Sparkles size={14} /> AI 连接
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "study"}
-            className={tab === "study" ? "selected" : ""}
-            onClick={() => onTabChange("study")}
-          >
-            学习偏好
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "data"}
-            className={tab === "data" ? "selected" : ""}
-            onClick={() => onTabChange("data")}
-          >
-            数据导出
-          </button>
-        </div>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={accountTab === "study"}
+              className={accountTab === "study" ? "selected" : ""}
+              onClick={() => onAccountTabChange("study")}
+            >
+              学习偏好
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={accountTab === "data"}
+              className={accountTab === "data" ? "selected" : ""}
+              onClick={() => onAccountTabChange("data")}
+            >
+              数据备份
+            </button>
+          </div>
+        )}
         <div className="settings-card-body">
-          {tab === "ai" ? (
+          {mode === "ai" ? (
             <AiConnectionForm
               userId={data.user.id}
               settings={data.settings}
               mutate={mutate}
             />
-          ) : tab === "study" ? (
+          ) : accountTab === "study" ? (
             <>
               <label className="field">
                 每日学习目标

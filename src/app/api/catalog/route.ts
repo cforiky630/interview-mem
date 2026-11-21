@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { route } from "@/server/api";
 import { deckIdSchema } from "@/server/resource-ids";
 import { getDb } from "@/db";
@@ -9,7 +9,13 @@ export const GET = route(async (request, user) => {
   const shared = new URL(request.url).searchParams.get("id");
   if (shared) deckIdSchema.parse(shared);
   const rows = await db
-    .select({ deck: decks, release: releases, ownerName: users.name })
+    .select({
+      deck: decks,
+      ownerName: users.name,
+      releaseTitle: releases.title,
+      releaseDescription: releases.description,
+      count: sql<number>`(select count(*)::int from jsonb_array_elements(${releases.questions}) as elem where coalesce((elem->>'archived')::boolean, false) is false)`,
+    })
     .from(decks)
     .innerJoin(
       releases,
@@ -41,14 +47,14 @@ export const GET = route(async (request, user) => {
     .from(subscriptions)
     .where(eq(subscriptions.userId, user.id));
   return NextResponse.json(
-    rows.map(({ deck, release, ownerName }) => ({
+    rows.map(({ deck, ownerName, releaseTitle, releaseDescription, count }) => ({
       id: deck.id,
-      title: release.title,
-      description: release.description,
+      title: releaseTitle,
+      description: releaseDescription,
       color: deck.color,
       ownerName,
       publishedVersion: deck.publishedVersion,
-      count: release.questions.filter((q) => !q.archived).length,
+      count,
       subscribed: subs.some((s) => s.deckId === deck.id),
       isOwner: deck.ownerId === user.id,
       updatedAt: deck.updatedAt.toISOString(),

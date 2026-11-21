@@ -10,7 +10,7 @@ import {
   Star,
   Inbox,
   History,
-  Settings2,
+  ChevronsUpDown,
   Search,
   Plus,
   LogOut,
@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
-import { api, RequestError } from "@/lib/client";
+import { api } from "@/lib/client";
 import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
@@ -46,13 +46,14 @@ import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
 import { Library, Catalog } from "./library";
 import { useAiAnswerDraft } from "./use-ai-answer-draft";
+import { useAppShortcuts } from "./use-app-shortcuts";
 import { usePageScroll } from "./use-page-scroll";
+import { useWorkspaceSync } from "./use-workspace-sync";
 import {
   AiIsland,
   type AiIslandMode,
   type AiTrigger,
 } from "./ai-island";
-import type { Mutate } from "./dialogs";
 const QuestionReader = dynamic(
   () => import("./question-reader").then((m) => m.QuestionReader),
   {
@@ -93,7 +94,7 @@ const PublishDialog = dynamic(() =>
 const SettingsCard = dynamic(() =>
   import("./settings-card").then((m) => m.SettingsCard),
 );
-import type { SettingsTab } from "./settings-card";
+import type { AccountSettingsTab, SettingsPanelMode } from "./settings-card";
 const DeleteDeckDialog = dynamic(() =>
   import("./deck-delete-dialog").then((m) => m.DeleteDeckDialog),
 );
@@ -183,9 +184,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       initialRoute.current = { view: "today" };
     }
   }
-  const [data, setData] = useState<Workspace | null>(null);
-  const [error, setError] = useState("");
-  const [syncError, setSyncError] = useState(false);
+  const {
+    data,
+    error,
+    syncError,
+    pending,
+    pendingCount,
+    lifetime,
+    refresh,
+    mutate,
+  } = useWorkspaceSync(sessionId);
   const [view, setView] = useState<View>(initialRoute.current.view);
   const [navigationTarget, setNavigationTarget] = useState<View>(
     initialRoute.current.view,
@@ -218,18 +226,20 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [createQuestionOpen, setCreateQuestionOpen] = useState(false);
   const [settingsState, setSettingsState] = useState<{
     open: boolean;
-    tab: SettingsTab;
+    mode: SettingsPanelMode;
+    accountTab: AccountSettingsTab;
     anchor: HTMLElement | null;
-  }>({ open: false, tab: "ai", anchor: null });
+  }>({ open: false, mode: "ai", accountTab: "study", anchor: null });
   const [settingsMounted, setSettingsMounted] = useState(false);
   const topbarSettingsRef = useRef<HTMLButtonElement>(null);
   const openSettings = useCallback(
     (options?: {
-      tab?: SettingsTab;
+      mode?: SettingsPanelMode;
+      accountTab?: AccountSettingsTab;
       anchor?: HTMLElement | null;
       toggle?: boolean;
     }) => {
-      const nextTab = options?.tab ?? "ai";
+      const nextMode: SettingsPanelMode = options?.mode ?? "ai";
       const resolvedAnchor =
         options?.anchor ??
         (topbarSettingsRef.current &&
@@ -241,12 +251,18 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         if (
           options?.toggle &&
           prev.open &&
+          prev.mode === nextMode &&
           prev.anchor === resolvedAnchor &&
-          (!options.tab || prev.tab === options.tab)
+          (!options.accountTab || prev.accountTab === options.accountTab)
         ) {
           return { ...prev, open: false };
         }
-        return { open: true, tab: nextTab, anchor: resolvedAnchor };
+        return {
+          open: true,
+          mode: nextMode,
+          accountTab: options?.accountTab ?? prev.accountTab,
+          anchor: resolvedAnchor,
+        };
       });
     },
     [],
@@ -293,9 +309,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }>({ view: "today" });
   const [catalog, setCatalog] = useState<CatalogDeck[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
-  const [pending, setPending] = useState(0);
-  const pendingCount = useRef(0);
-  pendingCount.current = pending;
   const [queue, setQueue] = useState<QuestionView[]>([]);
   const queueLength = useRef(0);
   queueLength.current = queue.length;
@@ -309,7 +322,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [reviewBusy, setReviewBusy] = useState(false);
   const grading = useRef(false);
   const eventId = useRef(crypto.randomUUID());
-  const lifetime = useRef<AbortController | null>(null);
   const pageKey = editQuestion
     ? `edit:${editQuestion.id}`
     : view === "question"
@@ -355,14 +367,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       document.documentElement.style.overflow = previous;
     };
   }, [sidebarOpen]);
-  useEffect(() => {
-    const controller = new AbortController();
-    lifetime.current = controller;
-    return () => {
-      controller.abort();
-      lifetime.current = null;
-    };
-  }, []);
   const viewRef = useRef(view);
   viewRef.current = view;
   const deckIdRef = useRef(deckId);
@@ -422,39 +426,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     window.addEventListener("shiyi:open-note", openLinkedNote);
     return () => window.removeEventListener("shiyi:open-note", openLinkedNote);
   }, [data?.questions]);
-  const refresh = useCallback(
-    async (silent = false) => {
-      const signal = lifetime.current?.signal;
-      if (!signal || signal.aborted) return null;
-      try {
-        const result = await api<Workspace>("/api/workspace", undefined, {
-          userId: sessionId,
-          signal,
-        });
-        if (result.user.id !== sessionId) {
-          window.location.reload();
-          return null;
-        }
-        setData(result);
-        setError("");
-        setSyncError(false);
-        return result;
-      } catch (e) {
-        if (signal.aborted) return null;
-        if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
-          window.location.reload();
-          return null;
-        }
-        if (e instanceof RequestError && e.status === 401) {
-          setData(null);
-          window.location.reload();
-        } else if (silent) setSyncError(true);
-        else setError(e instanceof Error ? e.message : "题库暂时无法读取。");
-        return null;
-      }
-    },
-    [sessionId],
-  );
   const loadCatalog = useCallback(
     async (shared?: string) => {
       const signal = lifetime.current?.signal;
@@ -474,42 +445,28 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         setCatalogLoading(false);
       }
     },
-    [sessionId],
+    [sessionId, lifetime],
   );
   useEffect(() => {
-    setData(null);
-    setError("");
     if (!sessionId) return;
-    void refresh();
     const shared = extractSubscribeParam(window.location.search);
     if (shared) {
       setView("catalog");
       setNavigationTarget("catalog");
       void loadCatalog(shared);
-    } else {
-      const hydrated = parseRouteFromSearch(window.location.search, true);
-      if (hydrated.view === "catalog") void loadCatalog();
-      const canonical = buildSearchFromRoute(hydrated);
-      if (window.location.search !== canonical) {
-        window.history.replaceState(
-          null,
-          "",
-          `${window.location.pathname}${canonical}`,
-        );
-      }
+      return;
     }
-    function sync() {
-      if (document.visibilityState === "visible") void refresh(true);
+    const hydrated = parseRouteFromSearch(window.location.search, true);
+    if (hydrated.view === "catalog") void loadCatalog();
+    const canonical = buildSearchFromRoute(hydrated);
+    if (window.location.search !== canonical) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${canonical}`,
+      );
     }
-    window.addEventListener("focus", sync);
-    window.addEventListener("online", sync);
-    const timer = setInterval(sync, 60_000);
-    return () => {
-      window.removeEventListener("focus", sync);
-      window.removeEventListener("online", sync);
-      clearInterval(timer);
-    };
-  }, [sessionId, refresh, loadCatalog]);
+  }, [sessionId, loadCatalog]);
   useEffect(() => {
     function onPopState() {
       if (editingId.current && pendingCount.current) {
@@ -585,75 +542,38 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (next !== "collapsed") preferredAiOpenMode.current = next;
     setAiMode(next);
   }, []);
-  const shortcutCtxRef = useRef({ view, reviewRevealed, aiMode });
-  shortcutCtxRef.current = { view, reviewRevealed, aiMode };
-  useEffect(() => {
-    function shortcuts(event: KeyboardEvent) {
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey &&
-        event.key.toLowerCase() === "j"
-      ) {
-        if (document.querySelector("[role='dialog']:not([hidden])")) return;
-        const ctx = shortcutCtxRef.current;
-        if (ctx.view === "review" && !ctx.reviewRevealed) return;
-        event.preventDefault();
-        setAiMode((current) =>
-          current === "collapsed" ? preferredAiOpenMode.current : "collapsed",
-        );
-        return;
-      }
-      if (event.key === "Escape") {
-        if (
-          !document.querySelector("[role='dialog']:not([hidden])") &&
-          shortcutCtxRef.current.aiMode !== "collapsed" &&
-          (!(event.target as HTMLElement).closest(
-            "input,textarea,[contenteditable='true']",
-          ) ||
-            !!(event.target as HTMLElement).closest(".ai-island-panel"))
-        ) {
-          event.preventDefault();
-          setAiMode("collapsed");
-          return;
-        }
-      }
-      if (
-        (event.target as HTMLElement).closest(
-          "input,textarea,[contenteditable='true']",
-        ) ||
-        document.querySelector("[role='dialog']:not([hidden])")
-      )
-        return;
-      if (
-        event.key === "/" ||
-        ((event.metaKey || event.ctrlKey) && event.key === "k")
-      ) {
-        event.preventDefault();
-        if (editingId.current && pendingCount.current) return;
-        changePage(
-          "library",
-          () => {
-            setEditQuestion(null);
-            setDeckId(undefined);
-            setSearchToken((n) => n + 1);
-          },
-          { route: { view: "library" } },
-        );
-        setTimeout(
-          () =>
-            (
-              document.querySelector(
-                "input[aria-label='搜索题目']",
-              ) as HTMLInputElement
-            )?.focus(),
-          70,
-        );
-      }
-      if (event.key === "Escape") setSidebarOpen(false);
-    }
-    window.addEventListener("keydown", shortcuts);
-    return () => window.removeEventListener("keydown", shortcuts);
-  }, []);
+  useAppShortcuts({
+    view,
+    reviewRevealed,
+    aiMode,
+    onToggleAi: () =>
+      setAiMode((current) =>
+        current === "collapsed" ? preferredAiOpenMode.current : "collapsed",
+      ),
+    onCloseAi: () => setAiMode("collapsed"),
+    onCloseSidebar: () => setSidebarOpen(false),
+    onQuickSearch: () => {
+      if (editingId.current && pendingCount.current) return;
+      changePage(
+        "library",
+        () => {
+          setEditQuestion(null);
+          setDeckId(undefined);
+          setSearchToken((n) => n + 1);
+        },
+        { route: { view: "library" } },
+      );
+      setTimeout(
+        () =>
+          (
+            document.querySelector(
+              "input[aria-label='搜索题目']",
+            ) as HTMLInputElement
+          )?.focus(),
+        70,
+      );
+    },
+  });
   const toggleAi = useCallback((open?: boolean) => {
     setAiMode((current) => {
       if (open === false) return "collapsed";
@@ -684,32 +604,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setAiMode("collapsed");
     }
   }, [aiHiddenInReview, aiMode]);
-  const mutate: Mutate = async (url, payload) => {
-    const signal = lifetime.current?.signal;
-    if (!signal || signal.aborted) return null;
-    setPending((n) => n + 1);
-    try {
-      const result = await api<Record<string, unknown>>(url, payload, {
-        userId: sessionId,
-        signal,
-      });
-      await refresh(true);
-      return result;
-    } catch (e) {
-      if (signal.aborted) return null;
-      if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
-        window.location.reload();
-        return null;
-      }
-      toast.error(e instanceof Error ? e.message : "操作失败，请重试。");
-      if (e instanceof RequestError && e.status === 409) await refresh(true);
-      return null;
-    } finally {
-      setPending((n) => n - 1);
-    }
-  };
   const answerDraft = useAiAnswerDraft(data, mutate, () =>
-    openSettings({ tab: "ai" }),
+    openSettings({ mode: "ai" }),
   );
   function openImport() {
     setImportSeed(undefined);
@@ -1277,22 +1173,59 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           </div>
           <button
             type="button"
-            className={cn("user-button", settingsState.open && "is-active")}
-            data-settings-trigger="true"
-            aria-expanded={settingsState.open}
-            onClick={(event) => {
+            className="sidebar-mobile-ai-btn"
+            data-settings-trigger="ai"
+            onClick={() => {
               setSidebarOpen(false);
-              openSettings({ anchor: event.currentTarget, toggle: true });
+              openSettings({ mode: "ai" });
             }}
           >
-            <span className="user-avatar">
+            <span
+              className={cn(
+                "ai-status-dot",
+                data.settings.hasKey && "is-connected",
+              )}
+              aria-hidden="true"
+            />
+            <span className="sidebar-mobile-ai-label">
+              <strong>AI 模型配置</strong>
+              <small>
+                {data.settings.hasKey
+                  ? data.settings.model || "已连接"
+                  : "未配置连接"}
+              </small>
+            </span>
+            <Sparkles size={15} />
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "user-button",
+              settingsState.open && settingsState.mode === "account" && "is-active",
+            )}
+            data-settings-trigger="account"
+            aria-label="个人设置与数据备份"
+            aria-expanded={settingsState.open && settingsState.mode === "account"}
+            aria-controls="settings-floating-card"
+            onClick={(event) => {
+              setSidebarOpen(false);
+              openSettings({
+                mode: "account",
+                anchor: event.currentTarget,
+                toggle: true,
+              });
+            }}
+          >
+            <span className="user-avatar" aria-hidden="true">
               {data.user.name.slice(0, 1).toUpperCase()}
             </span>
-            <span>
+            <span className="user-meta">
               <strong>{data.user.name}</strong>
-              <small>偏好与 AI 设置</small>
+              <small>{data.user.email || "学习偏好 · 数据备份"}</small>
             </span>
-            <Settings2 size={16} />
+            <span className="user-chevron" aria-hidden="true">
+              <ChevronsUpDown size={14} />
+            </span>
           </button>
           <button
             type="button"
@@ -1532,18 +1465,30 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               ref={topbarSettingsRef}
               type="button"
               className={cn(
-                "icon-button topbar-settings-btn",
-                settingsState.open && "is-active",
+                "topbar-ai-config-btn",
+                data.settings.hasKey && "is-connected",
+                settingsState.open && settingsState.mode === "ai" && "is-active",
               )}
-              data-settings-trigger="true"
-              aria-label="设置"
-              aria-expanded={settingsState.open}
+              data-settings-trigger="ai"
+              aria-label="AI 模型配置"
+              aria-expanded={settingsState.open && settingsState.mode === "ai"}
               aria-controls="settings-floating-card"
+              title={
+                data.settings.hasKey
+                  ? `AI 模型配置：${data.settings.model || "已连接"}`
+                  : "配置 OpenAI 兼容模型接口"
+              }
               onClick={(event) =>
-                openSettings({ anchor: event.currentTarget, toggle: true })
+                openSettings({
+                  mode: "ai",
+                  anchor: event.currentTarget,
+                  toggle: true,
+                })
               }
             >
-              <Settings2 size={17} />
+              <span className="ai-status-dot" aria-hidden="true" />
+              <Sparkles size={13} />
+              <span>AI 配置</span>
             </button>
             <button
               className="icon-button logout-button"
@@ -1897,7 +1842,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           onInbox={() => navigate("inbox")}
           onSettings={() => {
             setImportOpen(false);
-            openSettings({ tab: "ai" });
+            openSettings({ mode: "ai" });
           }}
         />
       )}
@@ -1951,9 +1896,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       {settingsMounted && (
         <SettingsCard
           open={settingsState.open}
-          tab={settingsState.tab}
-          onTabChange={(tab) =>
-            setSettingsState((prev) => ({ ...prev, tab }))
+          mode={settingsState.mode}
+          accountTab={settingsState.accountTab}
+          onAccountTabChange={(accountTab) =>
+            setSettingsState((prev) => ({ ...prev, accountTab }))
           }
           anchor={settingsState.anchor}
           onClose={() =>
@@ -2063,7 +2009,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         onOpen={() => toggleAi(true)}
         onOpenQuestion={(target) => openQuestion(target)}
         onSettings={(anchor) =>
-          openSettings({ tab: "ai", anchor, toggle: true })
+          openSettings({ mode: "ai", anchor, toggle: true })
         }
         onBusyChange={setAiBusy}
         mutate={mutate}
