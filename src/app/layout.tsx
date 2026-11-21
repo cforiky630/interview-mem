@@ -11,15 +11,15 @@ export const viewport: Viewport = {
   viewportFit: "cover",
   colorScheme: "light dark",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#F4F5F6" },
-    { media: "(prefers-color-scheme: dark)", color: "#0E1010" },
+    { media: "(prefers-color-scheme: light)", color: "#F5F7F6" },
+    { media: "(prefers-color-scheme: dark)", color: "#0C0F0E" },
   ],
 };
 export const metadata: Metadata = {
   title: "拾忆 · 把知识变成自己的表达",
   description: "面试题知识库、间隔复习与 AI 助手。每天一点，记得更久。",
 };
-const THEME_INIT_SCRIPT = `(function(){try{var d=document.documentElement.dataset;var t=localStorage.getItem("shiyi:theme");if(t==="light"||t==="dark")d.theme=t;var p=localStorage.getItem("shiyi:palette");d.palette=p==="lavender"?"lavender":"forest";}catch(e){}})();`;
+const THEME_INIT_SCRIPT = `(function(){try{var d=document.documentElement.dataset;var t=localStorage.getItem("shiyi:theme");if(t!=="light"&&t!=="dark"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}d.theme=t;var p=localStorage.getItem("shiyi:palette")==="lavender"?"lavender":"forest";d.palette=p;var c=p==="lavender"?(t==="dark"?"#0D0C13":"#F6F4F8"):(t==="dark"?"#0C0F0E":"#F5F7F6");var ms=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<ms.length;i++)ms[i].setAttribute("content",c);}catch(e){}})();`;
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {

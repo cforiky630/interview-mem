@@ -690,10 +690,9 @@
 .import-review-card {
   position: relative;
   min-width: 0;
-  border: 1px solid var(--glass-edge);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--surface-glass);
-  backdrop-filter: var(--glass-blur);
+  background: var(--surface);
   box-shadow: var(--shadow-card);
   transition:
     border-color var(--dur-fast) ease,
@@ -704,7 +703,7 @@
 .import-review-card:hover,
 .import-review-card[data-expanded="true"] {
   border-color: var(--border-accent);
-  background: var(--surface-glass-strong);
+  background: var(--surface);
   box-shadow: var(--shadow-card-hover);
 }
 
@@ -1006,66 +1005,66 @@
 }
 
 .diff-del {
-  background: rgba(214, 152, 146, 0.14);
-  color: #703430;
+  background: rgba(196, 68, 68, 0.08);
+  color: #7c2424;
 }
 
 .diff-del .diff-marker {
-  color: #9e4742;
+  color: #a33838;
 }
 
 .diff-del del {
   text-decoration: line-through;
-  background: rgba(214, 152, 146, 0.34);
-  color: #5e2420;
+  background: rgba(196, 68, 68, 0.22);
+  color: #631919;
   border-radius: 4px;
   padding: 0 3px;
 }
 
 .diff-ins {
-  background: rgba(154, 186, 178, 0.16);
-  color: #264842;
+  background: rgba(27, 107, 77, 0.09);
+  color: #144d38;
 }
 
 .diff-ins .diff-marker {
-  color: #3a6b62;
+  color: #1b6b4d;
 }
 
 .diff-ins ins {
   text-decoration: none;
   font-weight: 600;
-  background: rgba(154, 186, 178, 0.36);
-  color: #1c3a34;
+  background: rgba(27, 107, 77, 0.22);
+  color: #0e3b2a;
   border-radius: 4px;
   padding: 0 3px;
 }
 
 [data-theme="dark"] .diff-del {
-  background: rgba(220, 140, 136, 0.13);
-  color: #f0cbc8;
+  background: rgba(235, 114, 114, 0.11);
+  color: #f4c6c6;
 }
 
 [data-theme="dark"] .diff-del .diff-marker {
-  color: #eba09a;
+  color: #f09595;
 }
 
 [data-theme="dark"] .diff-del del {
-  background: rgba(220, 140, 136, 0.28);
-  color: #ffe2df;
+  background: rgba(235, 114, 114, 0.26);
+  color: #ffe3e3;
 }
 
 [data-theme="dark"] .diff-ins {
-  background: rgba(154, 194, 186, 0.13);
-  color: #cce8e2;
+  background: rgba(78, 196, 150, 0.11);
+  color: #c2f0dc;
 }
 
 [data-theme="dark"] .diff-ins .diff-marker {
-  color: #8cc4b9;
+  color: #5fd1a5;
 }
 
 [data-theme="dark"] .diff-ins ins {
-  background: rgba(154, 194, 186, 0.28);
-  color: #e4f6f2;
+  background: rgba(78, 196, 150, 0.26);
+  color: #e4fbf1;
 }
 
 .proofread-item-actions {

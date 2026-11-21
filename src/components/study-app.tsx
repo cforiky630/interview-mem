@@ -22,6 +22,8 @@ import {
   WifiOff,
   Sun,
   Moon,
+  X,
+  ArrowLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
@@ -93,16 +95,52 @@ type View =
   | "question";
 export type Palette = "forest" | "lavender";
 
+function syncThemeColorMeta(palette: Palette, theme: "light" | "dark") {
+  const color =
+    palette === "lavender"
+      ? theme === "dark"
+        ? "#0D0C13"
+        : "#F6F4F8"
+      : theme === "dark"
+        ? "#0C0F0E"
+        : "#F5F7F6";
+  document
+    .querySelectorAll('meta[name="theme-color"]')
+    .forEach((el) => el.setAttribute("content", color));
+}
+
 export function StudyApp() {
   const { data: session, isPending } = authClient.useSession();
   useEffect(() => {
     try {
       const cached = localStorage.getItem("shiyi:theme");
-      if (cached === "light" || cached === "dark")
-        document.documentElement.dataset.theme = cached;
-      const savedPalette = localStorage.getItem("shiyi:palette");
-      document.documentElement.dataset.palette =
-        savedPalette === "lavender" ? "lavender" : "forest";
+      const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+      const resolved: "light" | "dark" =
+        cached === "light" || cached === "dark"
+          ? cached
+          : media?.matches
+            ? "dark"
+            : "light";
+      document.documentElement.dataset.theme = resolved;
+      const savedPalette: Palette =
+        localStorage.getItem("shiyi:palette") === "lavender"
+          ? "lavender"
+          : "forest";
+      document.documentElement.dataset.palette = savedPalette;
+      syncThemeColorMeta(savedPalette, resolved);
+      if (cached !== "light" && cached !== "dark" && media) {
+        const onChange = (event: MediaQueryListEvent) => {
+          const next = event.matches ? "dark" : "light";
+          document.documentElement.dataset.theme = next;
+          const activePal =
+            document.documentElement.dataset.palette === "lavender"
+              ? "lavender"
+              : "forest";
+          syncThemeColorMeta(activePal, next);
+        };
+        media.addEventListener("change", onChange);
+        return () => media.removeEventListener("change", onChange);
+      }
     } catch {
       /* Ignore storage access failures. */
     }
@@ -131,6 +169,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [deckId, setDeckId] = useState<string | null | undefined>();
   const [questionId, setQuestionId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [drawerDragX, setDrawerDragX] = useState(0);
+  const drawerTouch = useRef<{
+    x: number;
+    y: number;
+    time: number;
+    locked: "h" | "v" | null;
+  } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importSeed, setImportSeed] = useState<ImportSeed>();
   const importCommitted = useRef<(() => void) | null>(null);
@@ -206,7 +251,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     return () => window.clearTimeout(id);
   }, [data?.user.id]);
   useEffect(() => {
-    if (!sidebarOpen) return;
+    if (!sidebarOpen) {
+      setDrawerDragX(0);
+      drawerTouch.current = null;
+      return;
+    }
     const previous = document.documentElement.style.overflow;
     document.documentElement.style.overflow = "hidden";
     return () => {
@@ -353,6 +402,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const applyPalette = useCallback((next: Palette) => {
     setPalette(next);
     document.documentElement.dataset.palette = next;
+    const currentTheme =
+      document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    syncThemeColorMeta(next, currentTheme);
     try {
       localStorage.setItem("shiyi:palette", next);
     } catch {
@@ -362,13 +414,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!data) return;
     setThemeOverride(null);
-    document.documentElement.dataset.theme = data.settings.theme;
+    const nextTheme = data.settings.theme === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = nextTheme;
+    syncThemeColorMeta(palette, nextTheme);
     try {
-      localStorage.setItem("shiyi:theme", data.settings.theme);
+      localStorage.setItem("shiyi:theme", nextTheme);
     } catch {
       /* Ignore storage access failures. */
     }
-  }, [data?.settings.theme]);
+  }, [data?.settings.theme, palette]);
   useEffect(() => {
     function shortcuts(event: KeyboardEvent) {
       if (
@@ -581,12 +635,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         )}
       </div>
     );
-  const activeTheme = themeOverride ?? data.settings.theme;
-  function toggleTheme() {
-    if (!data) return;
-    const next: "light" | "dark" = activeTheme === "dark" ? "light" : "dark";
+  const activeTheme: "light" | "dark" =
+    (themeOverride ?? data.settings.theme) === "dark" ? "dark" : "light";
+  function setThemeMode(next: "light" | "dark") {
+    if (!data || next === activeTheme) return;
     setThemeOverride(next);
     document.documentElement.dataset.theme = next;
+    syncThemeColorMeta(palette, next);
     try {
       localStorage.setItem("shiyi:theme", next);
     } catch {
@@ -600,6 +655,29 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       timeZone: data.settings.timeZone,
     });
   }
+  function toggleTheme() {
+    setThemeMode(activeTheme === "dark" ? "light" : "dark");
+  }
+  function openQuickSearch() {
+    navigate("library");
+    setSearchToken((n) => n + 1);
+    setTimeout(
+      () =>
+        (
+          document.querySelector(
+            "input[aria-label='搜索题目']",
+          ) as HTMLInputElement
+        )?.focus(),
+      70,
+    );
+  }
+  function signOutPrompt() {
+    if (editingId.current && pendingCount.current) return;
+    if (confirm("退出当前账号？")) {
+      void authClient.signOut();
+      changePage("today");
+    }
+  }
   const currentQuestion = data.questions.find((q) => q.id === questionId);
   const queueQuestion = queue[reviewIndex];
   const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
@@ -607,25 +685,36 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const activeNavView = view === "question" ? origin.current.view : view;
   const activeDeckId = view === "question" ? origin.current.deckId : deckId;
   const displayedView = isNavigating ? navigationTarget : view;
+  const isReaderView = (view === "question" || view === "review") && !editQuestion;
+  const isImmersiveMobile = isReaderView || !!editQuestion;
+  const hasMobileDeckBack =
+    displayedView === "library" && activeDeckId !== undefined && !editQuestion;
   const mobileView = ["question", "favorites", "inbox", "archived"].includes(
     navigationTarget,
   )
     ? "library"
     : navigationTarget;
   const nav = [
-    { id: "today" as const, label: "今日", icon: LayoutDashboard },
-    { id: "library" as const, label: "我的题库", icon: Layers2 },
+    { id: "today" as const, label: "今日", mobileLabel: "今日", icon: LayoutDashboard },
+    { id: "library" as const, label: "我的题库", mobileLabel: "题库", icon: Layers2 },
     {
       id: "review" as const,
       label: "开始复习",
+      mobileLabel: "复习",
       icon: RotateCcw,
       count: data.stats.due,
     },
-    { id: "catalog" as const, label: "发现题库", icon: Rss },
+    { id: "catalog" as const, label: "发现题库", mobileLabel: "发现", icon: Rss },
   ];
   return (
     <div
-      className={`app-shell ${editQuestion ? "editor-open" : ""} ${editQuestion && pending ? "editor-saving" : ""}`}
+      className={cn(
+        "app-shell",
+        editQuestion && "editor-open",
+        editQuestion && pending && "editor-saving",
+        isReaderView && "mobile-reader-active",
+        isImmersiveMobile && "mobile-immersive",
+      )}
       onPointerDownCapture={rememberScroll}
       onKeyDownCapture={rememberScroll}
     >
@@ -633,36 +722,90 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         <button
           className="sidebar-backdrop"
           aria-label="关闭导航"
+          style={
+            drawerDragX < 0
+              ? { opacity: Math.max(0, 1 + drawerDragX / 280) }
+              : undefined
+          }
           onClick={() => setSidebarOpen(false)}
         />
       )}
-      <aside className={cn("sidebar", sidebarOpen && "sidebar-open")}>
-        <button
-          className="brand brand-button"
-          onClick={() => navigate("today")}
-        >
-          <span className="brand-mark">
-            <BookOpen size={23} />
-          </span>
-          <div>
-            拾忆<span>SHIYI</span>
-          </div>
-        </button>
+      <aside
+        className={cn("sidebar", sidebarOpen && "sidebar-open")}
+        style={
+          drawerDragX < 0
+            ? { transform: `translateX(${drawerDragX}px)`, transition: "none" }
+            : undefined
+        }
+        onTouchStart={(event) => {
+          if (!sidebarOpen || event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          drawerTouch.current = {
+            x: touch.clientX,
+            y: touch.clientY,
+            time: Date.now(),
+            locked: null,
+          };
+        }}
+        onTouchMove={(event) => {
+          const state = drawerTouch.current;
+          if (!state || event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          const dx = touch.clientX - state.x;
+          const dy = touch.clientY - state.y;
+          if (!state.locked) {
+            if (Math.hypot(dx, dy) < 8) return;
+            state.locked =
+              dx < 0 && Math.abs(dx) > Math.abs(dy) * 1.25 ? "h" : "v";
+          }
+          if (state.locked === "h") {
+            setDrawerDragX(Math.min(0, dx));
+          }
+        }}
+        onTouchEnd={(event) => {
+          const state = drawerTouch.current;
+          drawerTouch.current = null;
+          if (!state || state.locked !== "h") {
+            setDrawerDragX(0);
+            return;
+          }
+          const endX = event.changedTouches[0]?.clientX ?? state.x;
+          const dx = endX - state.x;
+          const velocity = dx / Math.max(1, Date.now() - state.time);
+          if (dx < -72 || velocity < -0.45) {
+            setSidebarOpen(false);
+          }
+          setDrawerDragX(0);
+        }}
+        onTouchCancel={() => {
+          drawerTouch.current = null;
+          setDrawerDragX(0);
+        }}
+      >
+        <div className="sidebar-head">
+          <button
+            className="brand brand-button"
+            onClick={() => navigate("today")}
+          >
+            <span className="brand-mark">
+              <BookOpen size={23} />
+            </span>
+            <div>
+              拾忆<span>SHIYI</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            className="icon-button sidebar-close-btn"
+            aria-label="关闭导航"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X size={18} />
+          </button>
+        </div>
         <button
           className="sidebar-search"
-          onClick={() => {
-            navigate("library");
-            setSearchToken((n) => n + 1);
-            setTimeout(
-              () =>
-                (
-                  document.querySelector(
-                    "input[aria-label='搜索题目']",
-                  ) as HTMLInputElement
-                )?.focus(),
-              70,
-            );
-          }}
+          onClick={openQuickSearch}
         >
           <Search size={16} />
           <span>搜索题目</span>
@@ -739,14 +882,65 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           )}
         </div>
         <div className="sidebar-bottom">
-          <button className="user-button" onClick={() => setSettingsOpen(true)}>
+          <div className="sidebar-mobile-appearance">
+            <div className="sidebar-appearance-group" role="group" aria-label="色系切换">
+              <button
+                type="button"
+                className={palette === "forest" ? "is-active" : ""}
+                onClick={() => applyPalette("forest")}
+              >
+                <span className="appearance-swatch" style={{ background: "#1A6347" }} />
+                青瓷
+              </button>
+              <button
+                type="button"
+                className={palette === "lavender" ? "is-active" : ""}
+                onClick={() => applyPalette("lavender")}
+              >
+                <span className="appearance-swatch" style={{ background: "#5D4B99" }} />
+                熏衣
+              </button>
+            </div>
+            <div className="sidebar-appearance-group" role="group" aria-label="明暗切换">
+              <button
+                type="button"
+                className={activeTheme === "light" ? "is-active" : ""}
+                onClick={() => setThemeMode("light")}
+              >
+                <Sun size={14} /> 浅色
+              </button>
+              <button
+                type="button"
+                className={activeTheme === "dark" ? "is-active" : ""}
+                onClick={() => setThemeMode("dark")}
+              >
+                <Moon size={14} /> 深色
+              </button>
+            </div>
+          </div>
+          <button
+            className="user-button"
+            onClick={() => {
+              setSidebarOpen(false);
+              setSettingsOpen(true);
+            }}
+          >
             <span className="user-avatar">
               {data.user.name.slice(0, 1).toUpperCase()}
             </span>
             <span>
               <strong>{data.user.name}</strong>
+              <small>偏好与 AI 设置</small>
             </span>
             <Settings2 size={16} />
+          </button>
+          <button
+            type="button"
+            className="sidebar-mobile-logout"
+            onClick={signOutPrompt}
+          >
+            <LogOut size={15} />
+            <span>退出登录</span>
           </button>
         </div>
       </aside>
@@ -754,16 +948,27 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         {isNavigating && (
           <div className="page-transition-progress" aria-hidden="true" />
         )}
-        <header className="topbar">
+        <header className={cn("topbar", hasMobileDeckBack && "has-mobile-back")}>
           <div>
-            <button
-              className="icon-button mobile-menu"
-              aria-label="打开导航"
-              aria-expanded={sidebarOpen}
-              onClick={() => setSidebarOpen(true)}
-            >
-              <Menu size={21} />
-            </button>
+            {hasMobileDeckBack ? (
+              <button
+                type="button"
+                className="icon-button mobile-back-btn"
+                aria-label="返回我的题库"
+                onClick={() => openDeck()}
+              >
+                <ArrowLeft size={20} />
+              </button>
+            ) : (
+              <button
+                className="icon-button mobile-menu"
+                aria-label="打开导航"
+                aria-expanded={sidebarOpen}
+                onClick={() => setSidebarOpen(true)}
+              >
+                <Menu size={21} />
+              </button>
+            )}
             <span className="topbar-breadcrumb">
               {editQuestion ? (
                 <strong>编辑题目</strong>
@@ -849,7 +1054,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             </span>
           </div>
           <div className="topbar-actions">
-            <span className={`sync-state ${syncError ? "sync-offline" : ""}`}>
+            <span
+              className={cn(
+                "sync-state",
+                syncError && "sync-offline",
+                !pending && !syncError && "sync-idle",
+              )}
+            >
               {pending ? (
                 <RefreshCw size={13} className="spin" />
               ) : syncError ? (
@@ -861,6 +1072,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 {pending ? "正在同步" : syncError ? "连接中断" : "已同步"}
               </span>
             </span>
+            <button
+              type="button"
+              className="icon-button mobile-search-trigger"
+              aria-label="搜索题目"
+              onClick={openQuickSearch}
+            >
+              <Search size={18} />
+            </button>
             {!editQuestion &&
               displayedView !== "today" &&
               displayedView !== "library" && (
@@ -886,27 +1105,27 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 aria-label={
                   palette === "forest"
                     ? "切换至熏衣紫主题色"
-                    : "切换至墨绿主题色"
+                    : "切换至青瓷绿主题色"
                 }
                 title={
                   palette === "forest"
-                    ? "当前：墨绿（点击切换熏衣紫）"
-                    : "当前：熏衣紫（点击切换墨绿）"
+                    ? "当前：青瓷（点击切换熏衣紫）"
+                    : "当前：熏衣（点击切换青瓷绿）"
                 }
               >
                 <span className="palette-quick-dots" aria-hidden="true">
                   <i
                     style={{
-                      background: palette === "forest" ? "#163F30" : "#5C5082",
+                      background: palette === "forest" ? "#1A6347" : "#5D4B99",
                     }}
                   />
                   <i
                     style={{
-                      background: palette === "forest" ? "#5FA083" : "#B9AFD8",
+                      background: palette === "forest" ? "#4EC496" : "#A796F0",
                     }}
                   />
                 </span>
-                <span>{palette === "forest" ? "墨绿" : "熏衣"}</span>
+                <span>{palette === "forest" ? "青瓷" : "熏衣"}</span>
               </button>
               <button
                 type="button"
@@ -925,7 +1144,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               </button>
             </div>
             <button
-              className="icon-button"
+              className="icon-button topbar-settings-btn"
               aria-label="设置"
               onClick={() => setSettingsOpen(true)}
             >
@@ -934,13 +1153,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             <button
               className="icon-button logout-button"
               aria-label="退出登录"
-              onClick={() => {
-                if (editingId.current && pendingCount.current) return;
-                if (confirm("退出当前账号？")) {
-                  void authClient.signOut();
-                  changePage("today");
-                }
-              }}
+              onClick={signOutPrompt}
             >
               <LogOut size={16} />
             </button>
@@ -1062,6 +1275,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               onFavorite={() => void favorite(currentQuestion)}
               mutate={mutate}
               onSingleReview={() => startReview(undefined, currentQuestion)}
+              activeTheme={activeTheme}
+              onToggleTheme={toggleTheme}
             />
           )}
           {view === "question" && !currentQuestion && (
@@ -1109,6 +1324,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 progress={{ current: reviewIndex + 1, total: queue.length }}
                 onGrade={(rating, answer) => void grade(rating, answer)}
                 busy={reviewBusy}
+                activeTheme={activeTheme}
+                onToggleTheme={toggleTheme}
               />
             ) : (
               <ReviewComplete
@@ -1177,15 +1394,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         )}
       </main>
       <nav className="mobile-bottom-nav" aria-label="手机主导航">
-        {nav.map(({ id, label, icon: Icon }) => (
+        {nav.map(({ id, mobileLabel, icon: Icon, count }) => (
           <button
             key={id}
             className={mobileView === id ? "active" : ""}
             aria-current={mobileView === id ? "page" : undefined}
             onClick={() => (id === "review" ? startReview() : navigate(id))}
           >
-            <Icon size={20} />
-            <span>{label}</span>
+            <span className="mobile-nav-icon-wrap">
+              <Icon size={20} />
+              {id === "review" && !!count && (
+                <span className="mobile-nav-badge" aria-label={`${count} 题待复习`}>
+                  {count > 99 ? "99+" : count}
+                </span>
+              )}
+            </span>
+            <span>{mobileLabel}</span>
           </button>
         ))}
       </nav>

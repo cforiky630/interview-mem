@@ -64,6 +64,15 @@ export function AuthScreen() {
       </section>
       <section className="auth-form-side">
         <div className="auth-form-wrap">
+          <div className="auth-mobile-brand">
+            <span className="brand-mark">
+              <BookOpen size={20} />
+            </span>
+            <div>
+              <strong>拾忆 · SHIYI</strong>
+              <span>把每一道题内化成自己的表达</span>
+            </div>
+          </div>
           <div className="auth-small-mark">
             <BookOpen size={24} />
           </div>

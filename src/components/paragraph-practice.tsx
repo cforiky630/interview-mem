@@ -1,6 +1,14 @@
 "use client";
 import { memo, useEffect, useRef, useState } from "react";
-import { PencilLine, Eye, RotateCcw, X, Check } from "lucide-react";
+import {
+  PencilLine,
+  Eye,
+  RotateCcw,
+  X,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
@@ -152,6 +160,12 @@ export function FollowupCards({
   const [index, setIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [draft, setDraft] = useState("");
+  const [dragX, setDragX] = useState(0);
+  const cardTouch = useRef<{
+    x: number;
+    y: number;
+    locked: "h" | "v" | null;
+  } | null>(null);
   const current = followups[index];
   const key = `${draftPrefix}:followup:${current?.id}`;
   useEffect(() => {
@@ -180,6 +194,26 @@ export function FollowupCards({
       <div className="carousel-controls">
         <span>面试追问</span>
         <div>
+          {followups.length > 1 && (
+            <div className="followup-inline-arrows">
+              <button
+                type="button"
+                className="carousel-step-btn"
+                aria-label="上一道追问"
+                onClick={() => move(-1)}
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <button
+                type="button"
+                className="carousel-step-btn"
+                aria-label="下一道追问"
+                onClick={() => move(1)}
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          )}
           <span aria-live="polite">
             {index + 1} / {followups.length}
           </span>
@@ -193,7 +227,55 @@ export function FollowupCards({
           onPrevious={() => move(-1)}
           onNext={() => move(1)}
         />
-        <div className="followup-card" key={current.id}>
+        <div
+          className="followup-card"
+          key={current.id}
+          style={
+            dragX !== 0
+              ? {
+                  transform: `translateX(${dragX * 0.42}px) rotate(${dragX * 0.01}deg)`,
+                  transition: "none",
+                }
+              : undefined
+          }
+          onTouchStart={(event) => {
+            if (followups.length <= 1 || event.touches.length !== 1) return;
+            const touch = event.touches[0];
+            cardTouch.current = {
+              x: touch.clientX,
+              y: touch.clientY,
+              locked: null,
+            };
+          }}
+          onTouchMove={(event) => {
+            const state = cardTouch.current;
+            if (!state || event.touches.length !== 1) return;
+            const touch = event.touches[0];
+            const dx = touch.clientX - state.x;
+            const dy = touch.clientY - state.y;
+            if (!state.locked) {
+              if (Math.hypot(dx, dy) < 10) return;
+              state.locked =
+                Math.abs(dx) > Math.abs(dy) * 1.25 ? "h" : "v";
+            }
+            if (state.locked === "h") {
+              setDragX(dx);
+            }
+          }}
+          onTouchEnd={() => {
+            const state = cardTouch.current;
+            cardTouch.current = null;
+            if (state?.locked === "h") {
+              if (dragX < -48) move(1);
+              else if (dragX > 48) move(-1);
+            }
+            setDragX(0);
+          }}
+          onTouchCancel={() => {
+            cardTouch.current = null;
+            setDragX(0);
+          }}
+        >
           <span className="card-number">
             Q{String(index + 1).padStart(2, "0")}
           </span>

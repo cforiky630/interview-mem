@@ -53,12 +53,29 @@ export function AiPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [applying, setApplying] = useState<string | null>(null);
+  const [dragY, setDragY] = useState(0);
+  const sheetTouch = useRef<{
+    x: number;
+    y: number;
+    time: number;
+    locked: "v" | "h" | null;
+  } | null>(null);
   const editInFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
   const lastTrigger = useRef(0);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 760px)");
+    if (!mq.matches) return;
+    const previous = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = previous;
+    };
+  }, []);
   useEffect(() => {
     let canceled = false;
     setLoading(true);
@@ -258,40 +275,98 @@ export function AiPanel({
   }
 
   return (
-    <aside className="ai-panel" aria-label="AI 助手">
-      <div className="ai-panel-heading">
-        <div>
-          <span className="ai-avatar">
-            <Sparkles size={18} />
-          </span>
-          <strong>AI 助手</strong>
-          <span className="ai-live-dot" />
-        </div>
-        <div>
-          <Button
-            variant="ghost"
-            size="icon"
-            title="新对话"
-            aria-label="新对话"
-            disabled={busy}
-            onClick={() => {
-              setActiveId(null);
-              setQuote("");
-              setItems([]);
-              setInput("");
-              setError("");
-            }}
-          >
-            <Plus size={17} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="关闭 AI 助手"
-            onClick={onClose}
-          >
-            <X size={17} />
-          </Button>
+    <aside
+      className="ai-panel"
+      aria-label="AI 助手"
+      style={
+        dragY > 0
+          ? { transform: `translateY(${dragY}px)`, transition: "none" }
+          : undefined
+      }
+    >
+      <div
+        className="ai-panel-sheet-handle"
+        onTouchStart={(event) => {
+          if (event.touches.length !== 1) return;
+          if (!window.matchMedia("(max-width: 760px)").matches) return;
+          const touch = event.touches[0];
+          sheetTouch.current = {
+            x: touch.clientX,
+            y: touch.clientY,
+            time: Date.now(),
+            locked: null,
+          };
+        }}
+        onTouchMove={(event) => {
+          const state = sheetTouch.current;
+          if (!state || event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          const dx = touch.clientX - state.x;
+          const dy = touch.clientY - state.y;
+          if (!state.locked) {
+            if (Math.hypot(dx, dy) < 8) return;
+            state.locked =
+              dy > 0 && Math.abs(dy) > Math.abs(dx) * 1.2 ? "v" : "h";
+          }
+          if (state.locked === "v") {
+            setDragY(Math.max(0, dy));
+          }
+        }}
+        onTouchEnd={(event) => {
+          const state = sheetTouch.current;
+          sheetTouch.current = null;
+          if (!state || state.locked !== "v") {
+            setDragY(0);
+            return;
+          }
+          const endY = event.changedTouches[0]?.clientY ?? state.y;
+          const dy = endY - state.y;
+          const velocity = dy / Math.max(1, Date.now() - state.time);
+          setDragY(0);
+          if (dy > 90 || velocity > 0.45) {
+            onClose();
+          }
+        }}
+        onTouchCancel={() => {
+          sheetTouch.current = null;
+          setDragY(0);
+        }}
+      >
+        <div className="sheet-grabber" aria-hidden="true" />
+        <div className="ai-panel-heading">
+          <div>
+            <span className="ai-avatar">
+              <Sparkles size={18} />
+            </span>
+            <strong>AI 助手</strong>
+            <span className="ai-live-dot" />
+          </div>
+          <div>
+            <Button
+              variant="ghost"
+              size="icon"
+              title="新对话"
+              aria-label="新对话"
+              disabled={busy}
+              onClick={() => {
+                setActiveId(null);
+                setQuote("");
+                setItems([]);
+                setInput("");
+                setError("");
+              }}
+            >
+              <Plus size={17} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="关闭 AI 助手"
+              onClick={onClose}
+            >
+              <X size={17} />
+            </Button>
+          </div>
         </div>
       </div>
       {threads.length > 0 && (

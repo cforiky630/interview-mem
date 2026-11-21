@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -71,6 +71,12 @@ export function Dashboard({
   onInbox: () => void;
 }) {
   const [index, setIndex] = useState(0);
+  const [dragX, setDragX] = useState(0);
+  const cardTouch = useRef<{
+    x: number;
+    y: number;
+    locked: "h" | "v" | null;
+  } | null>(null);
   const remainingNew = Math.max(
     0,
     data.settings.dailyNewLimit - data.stats.newLearnedToday,
@@ -135,6 +141,53 @@ export function Dashboard({
           <Plus size={16} /> 导入面试题
         </Button>
       </div>
+      <section className="mobile-today-strip" aria-label="今日进度">
+        <div className="mobile-today-progress">
+          <div
+            className="plan-ring mobile-plan-ring"
+            role="progressbar"
+            aria-label="今日目标"
+            aria-valuenow={Math.round(percent)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <svg viewBox="0 0 54 54" width="48" height="48" aria-hidden="true">
+              <circle className="plan-ring-track" cx="27" cy="27" r="22" />
+              <circle
+                className="plan-ring-fill"
+                cx="27"
+                cy="27"
+                r="22"
+                strokeDasharray="138.23"
+                strokeDashoffset={138.23 * (1 - percent / 100)}
+              />
+            </svg>
+            <span>{Math.round(percent)}%</span>
+          </div>
+          <div className="mobile-today-meta">
+            <strong>
+              今日 {data.stats.reviewedToday} / {data.settings.dailyGoal} 道
+            </strong>
+            <span>
+              待复习 {data.stats.due} · 新学 {data.stats.newLearnedToday}/
+              {data.settings.dailyNewLimit}
+            </span>
+            {missing > 0 && (
+              <button
+                type="button"
+                className="mobile-today-missing"
+                onClick={onInbox}
+              >
+                待补答案 {missing} 题 <ArrowUpRight size={12} />
+              </button>
+            )}
+          </div>
+        </div>
+        <Button size="sm" className="mobile-today-cta" onClick={onReview}>
+          开始复习
+          <ArrowRight size={14} />
+        </Button>
+      </section>
       <div className="notebook-home-grid">
         <div className="notebook-home-main">
           <section className="focus-section" aria-label="今日练习">
@@ -180,6 +233,54 @@ export function Dashboard({
                   className="focus-card"
                   key={question.id}
                   aria-roledescription="卡片"
+                  style={
+                    dragX !== 0
+                      ? {
+                          transform: `translateX(${dragX * 0.42}px) rotate(${dragX * 0.012}deg)`,
+                          transition: "none",
+                        }
+                      : undefined
+                  }
+                  onTouchStart={(event) => {
+                    if (cards.length <= 1 || event.touches.length !== 1) return;
+                    const touch = event.touches[0];
+                    cardTouch.current = {
+                      x: touch.clientX,
+                      y: touch.clientY,
+                      locked: null,
+                    };
+                  }}
+                  onTouchMove={(event) => {
+                    const state = cardTouch.current;
+                    if (!state || event.touches.length !== 1) return;
+                    const touch = event.touches[0];
+                    const dx = touch.clientX - state.x;
+                    const dy = touch.clientY - state.y;
+                    if (!state.locked) {
+                      if (Math.hypot(dx, dy) < 10) return;
+                      state.locked =
+                        Math.abs(dx) > Math.abs(dy) * 1.25 ? "h" : "v";
+                    }
+                    if (state.locked === "h") {
+                      setDragX(dx);
+                    }
+                  }}
+                  onTouchEnd={() => {
+                    const state = cardTouch.current;
+                    cardTouch.current = null;
+                    if (state?.locked === "h") {
+                      if (dragX < -48) {
+                        setIndex((selectedIndex + 1) % cards.length);
+                      } else if (dragX > 48) {
+                        setIndex((selectedIndex - 1 + cards.length) % cards.length);
+                      }
+                    }
+                    setDragX(0);
+                  }}
+                  onTouchCancel={() => {
+                    cardTouch.current = null;
+                    setDragX(0);
+                  }}
                 >
                   <div className="focus-card-top">
                     <span className="card-number">
@@ -257,6 +358,19 @@ export function Dashboard({
                 </div>
               )}
             </div>
+            {cards.length > 1 && (
+              <div className="focus-swipe-dots" aria-label="滑动切换练习卡">
+                {cards.map((item, i) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-label={`第 ${i + 1} 张练习卡`}
+                    aria-current={i === selectedIndex ? "true" : undefined}
+                    onClick={() => setIndex(i)}
+                  />
+                ))}
+              </div>
+            )}
           </section>
           <section className="section-block notebook-decks">
             <div className="section-heading">

@@ -143,9 +143,8 @@
 
 .question-editor-writing {
   min-width: 0;
-  background: var(--surface-glass-strong);
-  backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-edge);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   overflow: hidden;
@@ -220,9 +219,8 @@
   max-height: calc(100dvh - 180px);
   overflow: auto;
   padding: 0 22px 26px;
-  background: var(--surface-glass);
-  backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--border-accent);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
 }

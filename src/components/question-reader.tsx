@@ -21,6 +21,8 @@ import {
   PenLine,
   Trash2,
   FolderInput,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
@@ -121,6 +123,8 @@ export function QuestionReader({
   busy,
   progress,
   onSingleReview,
+  activeTheme,
+  onToggleTheme,
 }: {
   question: QuestionView;
   data: Workspace;
@@ -138,6 +142,8 @@ export function QuestionReader({
   busy?: boolean;
   progress?: { current: number; total: number };
   onSingleReview?: () => void;
+  activeTheme?: "light" | "dark";
+  onToggleTheme?: () => void;
 }) {
   const [revealed, setRevealed] = useState(!review);
   const noteMeta = useMemo(
@@ -395,7 +401,7 @@ export function QuestionReader({
           )}
           <div className="reader-tools">
             <button
-              className={`icon-button ${question.favorite ? "is-favorite" : ""}`}
+              className={`icon-button reader-desktop-tool ${question.favorite ? "is-favorite" : ""}`}
               aria-label={question.favorite ? "取消收藏" : "收藏题目"}
               onClick={onFavorite}
             >
@@ -406,12 +412,25 @@ export function QuestionReader({
             </button>
             {(!review || revealed) && (
               <Button
+                className="reader-desktop-tool"
                 variant={chatOpen ? "secondary" : "outline"}
                 size="sm"
                 onClick={() => setChatOpen(!chatOpen)}
               >
                 <Sparkles size={15} /> AI 助手
               </Button>
+            )}
+            {onToggleTheme && (
+              <button
+                type="button"
+                className="icon-button reader-mobile-theme-btn"
+                aria-label={
+                  activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"
+                }
+                onClick={onToggleTheme}
+              >
+                {activeTheme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+              </button>
             )}
             {(question.isOwner || !!question.validation || !review) && (
               <ActionMenu label="更多题目操作">
@@ -589,7 +608,9 @@ export function QuestionReader({
                   <p>试着脱稿大声说一遍：先抛结论，再讲机制与取舍。</p>
                 </div>
               )}
-              <div className="answer-submit-row">
+              <div
+                className={`answer-submit-row ${!revealed ? "is-pre-reveal" : ""}`}
+              >
                 {!revealed ? (
                   <Button onClick={() => setRevealed(true)}>
                     <Eye size={15} /> 对照答案
@@ -834,16 +855,102 @@ export function QuestionReader({
           )}
         </article>
       </div>
+      {!review && (
+        <div className="mobile-reader-dock" role="toolbar" aria-label="题目快捷操作">
+          <button
+            type="button"
+            className={`mobile-dock-btn ${question.favorite ? "is-favorite" : ""}`}
+            aria-label={question.favorite ? "取消收藏" : "收藏题目"}
+            onClick={onFavorite}
+          >
+            <Star size={17} fill={question.favorite ? "currentColor" : "none"} />
+            <span>{question.favorite ? "已藏" : "收藏"}</span>
+          </button>
+          {tab === "answer" && documentView.blocks.length > 0 && (
+            <button
+              type="button"
+              className={`mobile-dock-btn ${hideAll ? "is-active" : ""}`}
+              onClick={() => setHideAll(!hideAll)}
+            >
+              <PencilLine size={17} />
+              <span>{hideAll ? "正文" : "默写"}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className={`mobile-dock-btn ${chatOpen ? "is-active" : ""}`}
+            onClick={() => setChatOpen(!chatOpen)}
+          >
+            <Sparkles size={17} />
+            <span>AI</span>
+          </button>
+          {!question.archived && !!question.answer.trim() ? (
+            <Button
+              size="sm"
+              className="mobile-dock-primary"
+              onClick={onSingleReview}
+            >
+              <PenLine size={15} /> 开始答题
+            </Button>
+          ) : (
+            question.isOwner &&
+            !question.archived &&
+            !question.answer.trim() && (
+              <Button
+                size="sm"
+                className="mobile-dock-primary"
+                onClick={() => onGenerateAnswer(question)}
+              >
+                <Sparkles size={15} /> AI 写答案
+              </Button>
+            )
+          )}
+        </div>
+      )}
+      {review && !revealed && (
+        <div className="mobile-review-reveal-bar" role="toolbar" aria-label="答题控制">
+          <div className="segmented-control" aria-label="切换作答方式">
+            <button
+              type="button"
+              aria-pressed={inputMode === "written"}
+              onClick={() => setInputMode("written")}
+            >
+              <PenLine size={14} /> 默写
+            </button>
+            <button
+              type="button"
+              aria-pressed={inputMode === "oral"}
+              onClick={() => setInputMode("oral")}
+            >
+              <Mic size={14} /> 口述
+            </button>
+          </div>
+          <Button
+            className="mobile-dock-primary"
+            onClick={() => setRevealed(true)}
+          >
+            <Eye size={16} /> 对照答案
+          </Button>
+        </div>
+      )}
       {chatOpen && (
-        <AiPanel
-          question={question}
-          data={data}
-          trigger={trigger}
-          onClose={() => setChatOpen(false)}
-          onSettings={onSettings}
-          onAppendNote={appendNote}
-          mutate={mutate}
-        />
+        <>
+          <button
+            type="button"
+            className="ai-sheet-backdrop"
+            aria-label="关闭 AI 助手"
+            onClick={() => setChatOpen(false)}
+          />
+          <AiPanel
+            question={question}
+            data={data}
+            trigger={trigger}
+            onClose={() => setChatOpen(false)}
+            onSettings={onSettings}
+            onAppendNote={appendNote}
+            mutate={mutate}
+          />
+        </>
       )}
       {selection && (
         <div

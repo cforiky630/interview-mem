@@ -400,14 +400,14 @@ export function SettingsDialog({
                     </span>
                   )}
                   <span className="palette-swatches" aria-hidden="true">
-                    <i style={{ background: "#133327" }} />
-                    <i style={{ background: "#1B4D3A" }} />
-                    <i style={{ background: "#5FA083" }} />
-                    <i style={{ background: "#F4F5F6" }} />
+                    <i style={{ background: "#1A6347" }} />
+                    <i style={{ background: "#4EC496" }} />
+                    <i style={{ background: "#EFF3F1" }} />
+                    <i style={{ background: "#0C0F0E" }} />
                   </span>
                   <span className="palette-card-text">
-                    <strong>墨绿 · 松烟</strong>
-                    <small>深墨绿与纯白</small>
+                    <strong>青瓷 · 松影</strong>
+                    <small>晨光白与玄玉夜</small>
                   </span>
                 </button>
                 <button
@@ -425,14 +425,14 @@ export function SettingsDialog({
                     </span>
                   )}
                   <span className="palette-swatches" aria-hidden="true">
-                    <i style={{ background: "#5C5082" }} />
-                    <i style={{ background: "#B9AFD8" }} />
-                    <i style={{ background: "#D7D1DC" }} />
-                    <i style={{ background: "#F2EEEA" }} />
+                    <i style={{ background: "#5D4B99" }} />
+                    <i style={{ background: "#A796F0" }} />
+                    <i style={{ background: "#F0ECF5" }} />
+                    <i style={{ background: "#0D0C13" }} />
                   </span>
                   <span className="palette-card-text">
-                    <strong>熏衣 · 雾紫</strong>
-                    <small>月砂与奶霜</small>
+                    <strong>雾紫 · 星鸢</strong>
+                    <small>月霜白与星夜紫</small>
                   </span>
                 </button>
               </div>

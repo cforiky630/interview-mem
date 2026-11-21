@@ -23,6 +23,7 @@ export function Dialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="dialog-overlay" />
         <DialogPrimitive.Content className={cn("dialog-content", className)}>
+          <div className="dialog-grabber" aria-hidden="true" />
           <div className="dialog-header">
             <div>
               <DialogPrimitive.Title className="dialog-title">

@@ -339,10 +339,14 @@ export function Library({
                 <span className="deck-icon">
                   <BookOpen size={23} />
                 </span>
-                <h3>{d.title}</h3>
-                <p>
-                  {d.count} 道题{!d.isOwner ? ` · ${d.ownerName}` : ""}
-                </p>
+                <div className="library-book-meta">
+                  <h3>{d.title}</h3>
+                  <p>
+                    {d.count} 道题
+                    {d.due > 0 ? ` · ${d.due} 待复习` : ""}
+                    {!d.isOwner ? ` · ${d.ownerName}` : ""}
+                  </p>
+                </div>
                 <ArrowUpRight size={17} />
               </button>
               <ActionMenu label={`管理题库：${d.title}`}>
@@ -406,15 +410,39 @@ export function Library({
                 )}
               </div>
               {!archived && (
-                <select
-                  aria-label="筛选学习状态"
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value)}
-                >
-                  <option value="all">全部状态</option>
-                  <option value="due">待复习</option>
-                  <option value="new">未学习</option>
-                </select>
+                <>
+                  <select
+                    className="desktop-status-select"
+                    aria-label="筛选学习状态"
+                    value={status}
+                    onChange={(e) => setStatus(e.target.value)}
+                  >
+                    <option value="all">全部状态</option>
+                    <option value="due">待复习</option>
+                    <option value="new">未学习</option>
+                  </select>
+                  <div
+                    className="mobile-status-pills"
+                    role="group"
+                    aria-label="筛选学习状态"
+                  >
+                    {[
+                      ["all", "全部"],
+                      ["due", "待复习"],
+                      ["new", "未学习"],
+                    ].map(([val, label]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        className={status === val ? "is-active" : ""}
+                        aria-pressed={status === val}
+                        onClick={() => setStatus(val)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
               <span className="list-count">{filtered.length} 道题</span>
               {deck && filter !== "archived" && (
