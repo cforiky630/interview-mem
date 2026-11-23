@@ -4,10 +4,8 @@ import dynamic from "next/dynamic";
 import {
   Check,
   Eye,
-  FileText,
   Loader2,
   MessageSquarePlus,
-  PencilLine,
   Undo2,
 } from "lucide-react";
 import type { QuestionView } from "@/lib/types";
@@ -71,7 +69,7 @@ export function InlineAnswerEditor({
   onBatchImport?: (seed: ImportSeed, onCommitted: () => void) => void;
   onCommittedImport: () => void;
 }) {
-  const [mode, setMode] = useState<"source" | "document" | "preview">("source");
+  const [mode, setMode] = useState<"document" | "source" | "preview">("document");
   const [previewTab, setPreviewTab] = useState<"body" | "followups">("body");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [markUndo, setMarkUndo] = useState<{
@@ -87,10 +85,11 @@ export function InlineAnswerEditor({
   }, [confirmDiscard]);
 
   useEffect(() => {
+    if (mode !== "source") return;
     requestAnimationFrame(() => {
       textareaRef.current?.focus({ preventScroll: true });
     });
-  }, []);
+  }, [mode]);
 
   const deferredAnswer = useDeferredValue(draft.answer);
   const analyzing = deferredAnswer !== draft.answer;
@@ -124,7 +123,9 @@ export function InlineAnswerEditor({
       return;
     }
     patch({ answer: value, pasted: true, keepWhole: false });
-    setMode("source");
+    if (parseQuestions(value, "qa", { preserveSource: true }).length > 1) {
+      setMode("source");
+    }
   }
 
   function addFollowup() {
@@ -219,29 +220,36 @@ export function InlineAnswerEditor({
         <div className="editor-modes" role="group" aria-label="编辑方式">
           <button
             type="button"
-            aria-pressed={mode === "source"}
-            disabled={busy}
-            onClick={() => setMode("source")}
-          >
-            <FileText size={14} /> 原文
-          </button>
-          <button
-            type="button"
             aria-pressed={mode === "document"}
             disabled={busy}
             onClick={() => setMode("document")}
           >
-            <PencilLine size={14} /> 文档
+            排版
           </button>
           <button
             type="button"
-            aria-pressed={mode === "preview"}
+            aria-pressed={mode === "source"}
             disabled={busy}
-            onClick={() => setMode("preview")}
+            onClick={() => setMode("source")}
           >
-            <Eye size={14} /> 预览
+            源码
           </button>
         </div>
+        <button
+          type="button"
+          className={`icon-button inline-editor-preview-btn ${mode === "preview" ? "is-active" : ""}`}
+          title={mode === "preview" ? "返回编辑" : "学习卡预览"}
+          aria-label={mode === "preview" ? "返回编辑" : "学习卡预览"}
+          aria-pressed={mode === "preview"}
+          disabled={busy}
+          onClick={() =>
+            setMode((current) =>
+              current === "preview" ? "document" : "preview",
+            )
+          }
+        >
+          <Eye size={15} />
+        </button>
         {mode === "source" && (
           <>
             <button
@@ -415,6 +423,9 @@ export function InlineAnswerEditor({
           <Editor
             key={`inline-doc:${question.id}`}
             disabled={busy}
+            autoFocus
+            showFollowupTools
+            ariaLabel="参考答案编辑器"
             value={draft.answer}
             onChange={(answer) => {
               setConfirmDiscard(false);
@@ -425,6 +436,21 @@ export function InlineAnswerEditor({
             onSelectionRequired={() =>
               setError("先选中一段问答，再指定为追问。")
             }
+            onSaveShortcut={() => {
+              if (
+                !invalid &&
+                !busy &&
+                !analyzing &&
+                !conflict &&
+                !multiple &&
+                dirty
+              ) {
+                void onSave();
+              }
+            }}
+            onEscapeKey={() => {
+              if (!busy && !dirty) onCancel();
+            }}
           />
         ) : (
           <div className="inline-editor-preview">
@@ -483,7 +509,7 @@ export function InlineAnswerEditor({
                 ))
               ) : (
                 <p className="quiet-empty">
-                  尚未识别到面试追问。可在「原文」用「插入追问」快速添加问答模板。
+                  尚未识别到面试追问。可在编辑工具栏用「插入追问」快速添加问答模板。
                 </p>
               )}
             </div>
@@ -571,13 +597,24 @@ export function InlineAnswerEditor({
       </details>
 
       <div className="inline-editor-footer">
-        <span className={storageError ? "form-error-inline" : "muted"}>
-          {storageError
-            ? "本地草稿保存失败"
-            : dirty
-              ? "未保存修改 · Ctrl/⌘ + S 保存"
-              : "未修改"}
-        </span>
+        {storageError ? (
+          <span className="form-error-inline" role="status">
+            本地草稿保存失败
+          </span>
+        ) : (
+          <span
+            className={`note-save-state ${dirty ? "is-dirty" : "is-saved"}`}
+            role="status"
+            title={dirty ? "有未保存修改（Ctrl/⌘ + S 保存）" : "未修改"}
+            aria-label={dirty ? "有未保存修改" : "未修改"}
+          >
+            {dirty ? (
+              <i className="note-dirty-dot" aria-hidden="true" />
+            ) : (
+              <Check size={14} aria-hidden="true" />
+            )}
+          </span>
+        )}
         <div className="inline-editor-actions">
           <Button
             type="button"
@@ -601,16 +638,13 @@ export function InlineAnswerEditor({
           <Button
             type="button"
             size="sm"
+            title="保存修改 (Ctrl/⌘ + S)"
             disabled={
               invalid || busy || analyzing || conflict || multiple || !dirty
             }
             onClick={() => void onSave()}
           >
-            {busy ? (
-              <Loader2 size={14} className="spin" />
-            ) : (
-              <Check size={14} />
-            )}
+            {busy && <Loader2 size={14} className="spin" />}
             保存修改
           </Button>
         </div>

@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { getDb } from "@/db";
+import { getDb, type Database } from "@/db";
 import {
   decks,
   questions,
@@ -22,6 +22,20 @@ import type {
 import { dateKey } from "@/lib/utils";
 import { AppError } from "./errors";
 import { contentHash } from "./crypto";
+
+export async function nextQuestionBaseMs(
+  tx: Pick<Database, "select">,
+  ownerId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      maxCreatedAt: sql<string | Date | null>`max(${questions.createdAt})`,
+    })
+    .from(questions)
+    .where(eq(questions.ownerId, ownerId));
+  const maxMs = row?.maxCreatedAt ? new Date(row.maxCreatedAt).getTime() : 0;
+  return Math.max(Date.now(), Number.isFinite(maxMs) ? maxMs + 1 : 0);
+}
 
 export async function ensureWorkspace(userId: string) {
   const db = await getDb();
@@ -328,6 +342,11 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         release.summary,
       );
   }
+  questionViews.sort((a, b) => {
+    const diff =
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+  });
   const pref = prefRows[0];
   const counts = new Map(activityRows.map((row) => [row.date, row.count]));
   let streak = 0;

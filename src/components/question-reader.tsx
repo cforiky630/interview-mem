@@ -15,6 +15,7 @@ import {
   PencilLine,
   Sparkles,
   Eye,
+  EyeOff,
   MessageSquare,
   X,
   Archive,
@@ -775,7 +776,9 @@ export function QuestionReader({
           )}
           <div className="reader-tools">
             <button
+              type="button"
               className={`icon-button reader-desktop-tool ${question.favorite ? "is-favorite" : ""}`}
+              title={question.favorite ? "取消收藏" : "收藏题目"}
               aria-label={question.favorite ? "取消收藏" : "收藏题目"}
               onClick={onFavorite}
             >
@@ -784,16 +787,6 @@ export function QuestionReader({
                 fill={question.favorite ? "currentColor" : "none"}
               />
             </button>
-            {(!review || revealed) && (
-              <Button
-                className="reader-desktop-tool"
-                variant={aiOpen ? "secondary" : "outline"}
-                size="sm"
-                onClick={() => onToggleAi?.(!aiOpen)}
-              >
-                <Sparkles size={15} /> AI 助手
-              </Button>
-            )}
             {review && revealed && (
               <button
                 type="button"
@@ -906,8 +899,12 @@ export function QuestionReader({
           <header className="question-card-heading">
             <div className="question-breadcrumb">
               <span>{question.deckTitle}</span>
-              <ChevronRight size={12} />
-              <span>{review ? (cram ? "突击练习" : "答题") : "学习卡"}</span>
+              {review && (
+                <>
+                  <ChevronRight size={12} />
+                  <span>{cram ? "突击练习" : "答题"}</span>
+                </>
+              )}
               {review && cram && (
                 <span className="cram-badge">
                   {cramLabel || "专题突击"} · 不影响记忆曲线
@@ -934,6 +931,7 @@ export function QuestionReader({
                   value={editDraft.title}
                   disabled={editBusy}
                   placeholder="输入清晰、完整的面试题干（最多 200 字）"
+                  title="Enter 保存 · Esc 取消"
                   onChange={(event) =>
                     patchEditDraft({ title: event.target.value })
                   }
@@ -956,9 +954,7 @@ export function QuestionReader({
                   }}
                 />
                 <div className="inline-title-actions">
-                  <span>
-                    {editDraft.title.length} / 200 · Enter 保存 · Esc 取消
-                  </span>
+                  <span>{editDraft.title.length}/200</span>
                   <div>
                     <Button
                       type="button"
@@ -972,13 +968,10 @@ export function QuestionReader({
                     <Button
                       type="submit"
                       size="sm"
+                      title="保存 (Enter)"
                       disabled={editBusy || !editDraft.title.trim()}
                     >
-                      {editBusy ? (
-                        <Loader2 size={13} className="spin" />
-                      ) : (
-                        <Check size={13} />
-                      )}
+                      {editBusy && <Loader2 size={13} className="spin" />}
                       {editingAnswer ? "保存全部" : "保存"}
                     </Button>
                   </div>
@@ -1003,7 +996,7 @@ export function QuestionReader({
                   type="button"
                   className="icon-button inline-title-trigger"
                   aria-label="编辑题目"
-                  title="点击原地编辑题目"
+                  title="点击编辑标题"
                   onClick={enterTitleEdit}
                 >
                   <PencilLine size={16} />
@@ -1052,7 +1045,7 @@ export function QuestionReader({
             !editingAnswer &&
             !editingTitle && (
               <div className="editor-notice">
-                已恢复上次未保存的草稿。
+                已恢复未保存的修改
                 <button
                   type="button"
                   className="text-button"
@@ -1156,31 +1149,42 @@ export function QuestionReader({
                   <div
                     className={`oral-timer ${oralSeconds > 120 ? "is-overtime" : ""}`}
                   >
-                    <Clock size={14} />
+                    <Clock size={14} aria-hidden="true" />
                     <span>{formatTimer(oralSeconds)} / 02:00</span>
                     <button
                       type="button"
-                      className="text-button"
+                      className={`icon-button oral-timer-btn ${oralRunning ? "is-running" : ""}`}
                       disabled={revealed}
+                      title={
+                        oralRunning
+                          ? "暂停计时"
+                          : oralSeconds > 0
+                            ? "继续计时"
+                            : "开始计时"
+                      }
+                      aria-label={
+                        oralRunning
+                          ? "暂停计时"
+                          : oralSeconds > 0
+                            ? "继续计时"
+                            : "开始计时"
+                      }
                       onClick={() => setOralRunning((r) => !r)}
                     >
-                      {oralRunning ? <Pause size={13} /> : <Play size={13} />}
-                      {oralRunning
-                        ? "暂停"
-                        : oralSeconds > 0
-                          ? "继续"
-                          : "开始计时"}
+                      {oralRunning ? <Pause size={14} /> : <Play size={14} />}
                     </button>
                     {oralSeconds > 0 && !revealed && (
                       <button
                         type="button"
-                        className="text-button"
+                        className="icon-button oral-timer-btn"
+                        title="重置计时"
+                        aria-label="重置计时"
                         onClick={() => {
                           setOralRunning(false);
                           setOralSeconds(0);
                         }}
                       >
-                        重置
+                        <RotateCcw size={14} />
                       </button>
                     )}
                   </div>
@@ -1313,23 +1317,29 @@ export function QuestionReader({
                         {canInlineEdit && (
                           <button
                             type="button"
-                            className="text-button"
+                            className="icon-button"
+                            title="编辑答案"
+                            aria-label="编辑答案"
                             onClick={() => {
                               setHideAll(false);
                               setEditingAnswer(true);
                             }}
                           >
-                            <PencilLine size={14} /> 编辑答案
+                            <PencilLine size={16} />
                           </button>
                         )}
                         <button
-                          className={`text-button ${hideAll ? "active" : ""}`}
+                          type="button"
+                          className={`icon-button ${hideAll ? "active" : ""}`}
+                          title={hideAll ? "显示正文" : "逐段默写"}
+                          aria-label={hideAll ? "显示正文" : "逐段默写"}
+                          aria-pressed={hideAll}
                           onClick={() => setHideAll(!hideAll)}
                         >
-                          <PenLine size={14} />
-                          {hideAll ? "显示正文" : "逐段默写"}
+                          {hideAll ? <Eye size={16} /> : <EyeOff size={16} />}
                         </button>
                         <button
+                          type="button"
                           className="icon-button"
                           title="问 AI"
                           aria-label="围绕本题问 AI"
@@ -1428,8 +1438,7 @@ export function QuestionReader({
                       </span>
                     </div>
                     <p>
-                      根据每次自评结果结合 FSRS
-                      算法估算遗忘曲线，只在快忘掉前提醒巩固。
+                      根据每次自评自动计算复习间隔，只在快忘掉前提醒巩固。
                     </p>
                   </section>
                 )}

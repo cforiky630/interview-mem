@@ -394,7 +394,7 @@ export function AiConnectionForm({
                 }}
               >
                 {busy === "delete" && <Loader2 size={14} className="spin" />}
-                确认删除
+                删除
               </Button>
               <Button
                 type="button"

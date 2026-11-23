@@ -16,7 +16,7 @@ import {
   type ImportPreviewItem,
 } from "@/lib/import-preview";
 import { contentHash } from "./crypto";
-import { ownedDeck } from "./workspace";
+import { nextQuestionBaseMs, ownedDeck } from "./workspace";
 import { acquireAi, aiCredential, providerRequest } from "./ai";
 import { deckIdSchema } from "./resource-ids";
 import { AppError } from "./errors";
@@ -545,6 +545,8 @@ export async function commitImport(userId: string, data: CommitRequest) {
     const ordered = replacingItem
       ? [replacingItem, ...candidates.filter((q) => q !== replacingItem)]
       : candidates;
+    const baseMs = await nextQuestionBaseMs(tx, userId);
+    let insertSeq = 0;
     for (const q of ordered) {
       const result = results.get(q.batchId)!;
       const itemHash = contentHash(q.title, q.answer);
@@ -586,6 +588,7 @@ export async function commitImport(userId: string, data: CommitRequest) {
         if (inputType === "questions") names.add(title);
         continue;
       }
+      const ts = new Date(baseMs + insertSeq++);
       const inserted = await tx
         .insert(questions)
         .values({
@@ -599,6 +602,8 @@ export async function commitImport(userId: string, data: CommitRequest) {
           needsEditing: !q.answer.trim(),
           sourceText: originals.get(q.key)?.text ?? `${q.title}\n${q.answer}`,
           contentHash: itemHash,
+          createdAt: ts,
+          updatedAt: ts,
         })
         .onConflictDoNothing()
         .returning({ id: questions.id });

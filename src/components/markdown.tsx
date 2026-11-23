@@ -46,12 +46,12 @@ function CodeBlock({ children }: { children?: ReactNode }) {
       <button
         type="button"
         className={`code-copy-btn ${copied ? "is-copied" : ""}`}
+        title={copied ? "已复制" : "复制代码"}
         aria-label={copied ? "已复制代码" : "复制代码"}
         onMouseDown={(event) => event.stopPropagation()}
         onClick={() => void handleCopy()}
       >
-        {copied ? <Check size={13} /> : <Copy size={13} />}
-        <span>{copied ? "已复制" : "复制"}</span>
+        {copied ? <Check size={14} /> : <Copy size={14} />}
       </button>
       <pre ref={preRef}>{children}</pre>
     </div>

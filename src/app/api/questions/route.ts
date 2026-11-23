@@ -4,7 +4,11 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import { decks, questions, studyCards, user as users } from "@/db/schema";
 import { body, route } from "@/server/api";
-import { accessibleQuestion, ownedDeck } from "@/server/workspace";
+import {
+  accessibleQuestion,
+  nextQuestionBaseMs,
+  ownedDeck,
+} from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
@@ -120,6 +124,7 @@ async function insertOwnedQuestion(
       )
       .limit(1);
     if (duplicate.length) throw new AppError(409, params.duplicateMessage);
+    const ts = new Date(await nextQuestionBaseMs(tx, params.userId));
     return tx
       .insert(questions)
       .values({
@@ -133,6 +138,8 @@ async function insertOwnedQuestion(
         sourceText: params.sourceText,
         contentHash: hash,
         needsEditing: !params.answer.trim(),
+        createdAt: ts,
+        updatedAt: ts,
       })
       .onConflictDoNothing()
       .returning();

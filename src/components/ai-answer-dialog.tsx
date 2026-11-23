@@ -16,7 +16,7 @@ export function AiAnswerDialog({
       onOpenChange={(open) => {
         if (!open) draft.close();
       }}
-      title="AI 参考答案"
+      title="AI 生成答案"
       className="answer-composer-dialog"
     >
       <h3 className="answer-composer-question">{draft.question?.title}</h3>
@@ -36,10 +36,10 @@ export function AiAnswerDialog({
         {draft.busy ? (
           <span role="status">
             <Loader2 size={15} className="spin" />
-            正在写参考答案…
+            正在生成答案…
           </span>
         ) : (
-          <span>参考答案草稿</span>
+          <span>{draft.editing ? "编辑答案" : "答案预览"}</span>
         )}
         {!!draft.answer && (
           <Button
@@ -75,7 +75,7 @@ export function AiAnswerDialog({
           </div>
         ) : (
           <p className="quiet-empty">
-            尚未生成参考答案草稿。你可以先点开上方「补充要求」写明偏好语言栈或详略程度，再点击下方「生成答案」；生成后可直接编辑或直接入库。
+            可在上方填写偏好要求，再点击「生成答案」；生成后可直接修改并保存。
           </p>
         )}
       </div>
@@ -114,7 +114,7 @@ export function AiAnswerDialog({
           ) : (
             <Sparkles size={15} />
           )}
-          保存为参考答案
+          保存答案
         </Button>
       </div>
     </Dialog>

@@ -107,7 +107,7 @@ export function CreateDeckDialog({
         setDescription("");
         onClose();
         onCreated(deck.id);
-        toast.success("新的题库已经准备好。");
+        toast.success("题库已创建");
       }
     } finally {
       setBusy(false);
@@ -119,8 +119,8 @@ export function CreateDeckDialog({
       onOpenChange={(v) => {
         if (!v) onClose();
       }}
-      title="新建一个题库"
-      description="按技术栈或面试专题归类题目。"
+      title="新建题库"
+      description="按专题整理题目"
     >
       <div className="dialog-form">
         <label className="field">
@@ -224,7 +224,6 @@ export function EditDeckDialog({
         if (!v && !busy) onClose();
       }}
       title="编辑题库"
-      description="修改题库名称、简介或标识色。"
     >
       <div className="dialog-form">
         <label className="field">
@@ -463,7 +462,7 @@ export function PublishDialog({
         const share = new URL("/", window.location.origin);
         share.searchParams.set("subscribe", deck.id);
         setLink(share.href);
-        toast.success(`已发布 v${result.version}，订阅者将自动收到新版本。`);
+        toast.success("已发布更新，订阅者将自动同步");
       }
     } finally {
       setBusy(false);
@@ -522,10 +521,7 @@ export function PublishDialog({
         )}
       </div>
       <div className="dialog-footer">
-        <span className="muted small">
-          {deck?.count ?? 0} 道题 · 下个版本 v
-          {(deck?.publishedVersion ?? 0) + 1}
-        </span>
+        <span className="muted small">共 {deck?.count ?? 0} 道题</span>
         {link ? (
           <Button onClick={onClose}>完成</Button>
         ) : (
@@ -534,7 +530,7 @@ export function PublishDialog({
             onClick={() => void publish()}
           >
             {busy ? <Loader2 size={16} className="spin" /> : <Rss size={16} />}{" "}
-            发布版本
+            发布
           </Button>
         )}
       </div>

@@ -4,7 +4,7 @@ import { getDb } from "@/db";
 import { decks, imports, questions, user } from "@/db/schema";
 import type { ContentValidation } from "@/lib/content-validation";
 import { contentHash } from "./crypto";
-import { ensureWorkspace } from "./workspace";
+import { ensureWorkspace, nextQuestionBaseMs } from "./workspace";
 
 export type LibraryDocument = {
   path: string;
@@ -66,6 +66,8 @@ export async function importLibrary(
         .where(and(eq(decks.id, value.id), eq(decks.ownerId, ownerId)));
       if (!deck) throw new Error("题库归属不匹配，已停止导入。");
     }
+    const baseMs = await nextQuestionBaseMs(tx, ownerId);
+    let insertSeq = 0;
     let added = 0;
     let duplicates = 0;
     const imported: {
@@ -99,6 +101,7 @@ export async function importLibrary(
             .where(eq(questions.id, id));
           duplicates++;
         } else {
+          const ts = new Date(baseMs + insertSeq++);
           const inserted = await tx
             .insert(questions)
             .values({
@@ -111,6 +114,8 @@ export async function importLibrary(
               tags: document.tags,
               contentHash: contentHash(document.title, document.raw),
               validation: document.validation,
+              createdAt: ts,
+              updatedAt: ts,
             })
             .onConflictDoNothing()
             .returning({ id: questions.id });

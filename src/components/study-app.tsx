@@ -30,6 +30,7 @@ import {
   Moon,
   X,
   ArrowLeft,
+  Plug,
   Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -1415,7 +1416,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   <span className="topbar-crumb-sep" aria-hidden="true">
                     /
                   </span>
-                  <strong>{currentQuestion?.title ?? "学习卡"}</strong>
+                  <strong>{currentQuestion?.deckTitle ?? "学习卡"}</strong>
                 </>
               ) : displayedView === "library" ? (
                 <strong>我的题库</strong>
@@ -1466,21 +1467,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 {pending ? "正在同步" : syncError ? "连接中断" : "已同步"}
               </span>
             </span>
-            {!aiHiddenInReview && (
-              <button
-                type="button"
-                className={cn(
-                  "icon-button mobile-ai-trigger",
-                  aiMode !== "collapsed" && "is-active",
-                  aiBusy && "is-busy",
-                )}
-                aria-label={aiMode !== "collapsed" ? "收起 AI 助手" : "打开 AI 助手"}
-                onClick={() => toggleAi()}
-              >
-                <Sparkles size={18} />
-                {aiBusy && <span className="ai-trigger-dot" aria-hidden="true" />}
-              </button>
-            )}
             <button
               type="button"
               className="icon-button mobile-search-trigger"
@@ -1490,17 +1476,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               <Search size={18} />
             </button>
             {displayedView !== "today" && displayedView !== "library" && (
-                <button
-                  type="button"
-                  className="button button-ghost button-sm topbar-import-btn"
-                  aria-label="快速导入"
-                  title="导入题目"
-                  onClick={openImport}
-                >
-                  <Upload size={14} />
-                  <span>导入</span>
-                </button>
-              )}
+              <button
+                type="button"
+                className="icon-button topbar-import-btn"
+                aria-label="导入题目"
+                title="导入题目"
+                onClick={openImport}
+              >
+                <Upload size={16} />
+              </button>
+            )}
             <span className="topbar-divider" />
             <div className="topbar-cluster" role="group" aria-label="外观切换">
               <button
@@ -1532,7 +1517,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     }}
                   />
                 </span>
-                <span>{palette === "forest" ? "青瓷" : "熏衣"}</span>
               </button>
               <button
                 type="button"
@@ -1564,8 +1548,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               aria-controls="settings-floating-card"
               title={
                 data.settings.hasKey
-                  ? `AI 模型配置：${data.settings.model || "已连接"}`
-                  : "配置 OpenAI 兼容模型接口"
+                  ? `AI 模型连接：${data.settings.model || "已连接"}`
+                  : "配置 AI 模型连接"
               }
               onClick={(event) =>
                 openSettings({
@@ -1575,17 +1559,30 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 })
               }
             >
+              <Plug size={15} />
               <span className="ai-status-dot" aria-hidden="true" />
-              <Sparkles size={13} />
-              <span>AI 配置</span>
             </button>
-            <button
-              className="icon-button logout-button"
-              aria-label="退出登录"
-              onClick={signOutPrompt}
-            >
-              <LogOut size={16} />
-            </button>
+            {!aiHiddenInReview && (
+              <button
+                type="button"
+                className={cn(
+                  "icon-button topbar-ai-trigger",
+                  aiMode !== "collapsed" && "is-active",
+                  aiBusy && "is-busy",
+                )}
+                title={
+                  aiMode !== "collapsed"
+                    ? "收起 AI 助手 (Ctrl/⌘ + J)"
+                    : "AI 助手 (Ctrl/⌘ + J)"
+                }
+                aria-label={aiMode !== "collapsed" ? "收起 AI 助手" : "打开 AI 助手"}
+                aria-pressed={aiMode !== "collapsed"}
+                onClick={() => toggleAi()}
+              >
+                <Sparkles size={16} />
+                {aiBusy && <span className="ai-trigger-dot" aria-hidden="true" />}
+              </button>
+            )}
           </div>
         </header>
         <div className="workspace-content">
@@ -1660,7 +1657,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                       open: true,
                       title: "取消订阅题库",
                       description:
-                        "取消订阅后停止接收更新，已有个人笔记和复习历史仍保留。确定继续？",
+                        "取消订阅后不再接收更新，已有的个人笔记和复习记录仍会保留。",
                       confirmLabel: "取消订阅",
                       variant: "danger",
                       action: async () => {
@@ -2073,7 +2070,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         onDockWidthChange={handleAiDockWidthChange}
         onResizingDockChange={setAiDockResizing}
         onModeChange={handleAiModeChange}
-        onOpen={() => toggleAi(true)}
         onOpenQuestion={(target) => openQuestion(target, [])}
         onSettings={(anchor) =>
           openSettings({ mode: "ai", anchor, toggle: true })

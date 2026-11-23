@@ -647,7 +647,7 @@ export function SettingsCard({
                 }
                 onClick={() => void savePreferences()}
               >
-                保存学习偏好
+                保存
               </Button>
             </>
           ) : (
@@ -657,8 +657,7 @@ export function SettingsCard({
               </div>
               <h3>你的积累，随时带走。</h3>
               <p className="muted">
-                导出题库、笔记、复习记录、原文与 AI 对话的 JSON 备份（不含 API
-                Key）。
+                导出题库、笔记、复习记录与 AI 对话（JSON，不含 API Key）。
               </p>
               <Button
                 variant="outline"
@@ -668,7 +667,7 @@ export function SettingsCard({
                 <Download size={16} /> 导出我的数据
               </Button>
               <p className="muted small">
-                当前支持导出备份文件，暂不支持导入恢复。
+                仅用于本地备份，暂不支持导入恢复。
               </p>
             </div>
           )}

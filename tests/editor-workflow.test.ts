@@ -11,7 +11,9 @@ import {
   replaceWithBlock,
 } from "../src/lib/editor-document";
 import { splitBySourceBoundaries } from "../src/lib/import-preview";
+import { splitFrontmatter } from "../src/lib/markdown-source";
 import { studyDocument } from "../src/lib/study-document";
+import { BlockMath, InlineMath } from "../src/lib/tiptap-math";
 import type { Workspace } from "../src/lib/types";
 import type { ImportPreview } from "../src/lib/import-preview";
 Object.assign(process.env, {
@@ -353,6 +355,70 @@ test("stale or foreign replacement identities cannot write any part of a split b
     ).status,
     400,
   );
+});
+
+test("splitFrontmatter isolates exact YAML metadata prefix without touching horizontal rules", () => {
+  const crlfSource = "---\r\ntags:\r\n  - RAG\r\n---\r\n\r\n正文";
+  const crlf = splitFrontmatter(crlfSource);
+  assert.equal(crlf.prefix, "---\r\ntags:\r\n  - RAG\r\n---\r\n");
+  assert.equal(crlf.metadata, "tags:\r\n  - RAG");
+  assert.equal(crlf.body, "\r\n正文");
+  assert.equal(crlf.prefix + crlf.body, crlfSource);
+
+  const bomSource = "\uFEFF---\ntags:\n  - Retrieval\n---\n正文";
+  const bom = splitFrontmatter(bomSource);
+  assert.equal(bom.prefix, "\uFEFF---\ntags:\n  - Retrieval\n---\n");
+  assert.equal(bom.metadata, "tags:\n  - Retrieval");
+  assert.equal(bom.body, "正文");
+  assert.equal(bom.prefix + bom.body, bomSource);
+
+  const hrSource = "---\n\n正文";
+  const hr = splitFrontmatter(hrSource);
+  assert.equal(hr.prefix, "");
+  assert.equal(hr.metadata, "");
+  assert.equal(hr.body, hrSource);
+});
+
+test("MarkdownManager round-trips inline/block KaTeX math, tables, code blocks, and followup callouts cleanly", () => {
+  const manager = new MarkdownManager({
+    extensions: [StarterKit, TableKit, BlockMath, InlineMath],
+  });
+
+  const sample = [
+    "## 核心推导",
+    "",
+    "向量点积满足 $a_i + b_j = \\frac{1}{k}$。",
+    "",
+    "$$",
+    "\\sum_{i=1}^n x_i",
+    "$$",
+    "",
+    "| 指标 | 说明 |",
+    "| --- | --- |",
+    "| Recall | Top-K 召回率 |",
+    "",
+    "```ts",
+    "const score = (a: number, b: number) => a + b;",
+    "```",
+    "",
+    "> [!question] 追问",
+    "> Q：为什么不用纯 BM25？",
+    "> A：因为同义词召回不足。",
+  ].join("\n");
+
+  const parsed = manager.parse(sample);
+  const serialized = manager.serialize(parsed);
+
+  assert.match(serialized, /\$a_i \+ b_j = \\frac\{1\}\{k\}\$/);
+  assert.doesNotMatch(serialized, /\\_/);
+  assert.match(serialized, /\$\$\n\\sum_\{i=1\}\^n x_i\n\$\$/);
+  assert.match(serialized, /\|\s*指标\s*\|\s*说明\s*\|/);
+  assert.match(serialized, /\|\s*Recall\s*\|\s*Top-K 召回率\s*\|/);
+  assert.match(serialized, /```ts\nconst score = \(a: number, b: number\) => a \+ b;\n```/);
+
+  const parsedDoc = studyDocument(serialized);
+  assert.equal(parsedDoc.followups.length, 1);
+  assert.match(parsedDoc.followups[0]?.question ?? "", /为什么不用纯 BM25/);
 });
 
 after(async () => {

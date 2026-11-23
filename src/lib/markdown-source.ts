@@ -45,15 +45,32 @@ export function parseTagListInput(value: string) {
   ).slice(0, MAX_NOTE_TAGS);
 }
 
+/** Split Obsidian YAML frontmatter while keeping exact raw prefix bytes intact. */
+export function splitFrontmatter(source: string): {
+  prefix: string;
+  metadata: string;
+  body: string;
+} {
+  const match = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  const valid =
+    !!match && /^[A-Za-z0-9_\u4e00-\u9fa5-]+:\s*/m.test(match[1]);
+  if (!valid || !match) {
+    return { prefix: "", metadata: "", body: source };
+  }
+  return {
+    prefix: match[0],
+    metadata: match[1],
+    body: source.slice(match[0].length),
+  };
+}
+
 /** Display Obsidian frontmatter properties without rewriting the source kept in the database. */
 export function markdownDocument(source: string): {
   body: string;
   tags: string[];
   properties: NoteProperty[];
 } {
-  const match = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  const valid = !!match && /^[A-Za-z0-9_\u4e00-\u9fa5-]+:\s*/m.test(match[1]);
-  const metadata = valid ? match[1] : "";
+  const { metadata, body } = splitFrontmatter(source);
   const rawEntries: { key: string; rawValue: string | string[] }[] = [];
   if (metadata) {
     let currentKey: string | null = null;
@@ -146,7 +163,7 @@ export function markdownDocument(source: string): {
   }
 
   return {
-    body: valid && match ? source.slice(match[0].length) : source,
+    body,
     tags,
     properties,
   };

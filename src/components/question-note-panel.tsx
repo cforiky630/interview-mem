@@ -1,11 +1,17 @@
 "use client";
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, Eye, Loader2, PencilLine, PenLine } from "lucide-react";
+import dynamic from "next/dynamic";
+import { Check, Loader2, PencilLine, PenLine } from "lucide-react";
 import { toast } from "sonner";
 import type { QuestionView } from "@/lib/types";
 import type { Mutate } from "./dialogs";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
+
+const Editor = dynamic(() => import("./editor").then((m) => m.Editor), {
+  ssr: false,
+  loading: () => <div className="editor-loading">正在加载编辑器…</div>,
+});
 
 export function QuestionNotePanel({
   question,
@@ -27,7 +33,7 @@ export function QuestionNotePanel({
   const [noteDirty, setNoteDirty] = useState(false);
   const [noteBusy, setNoteBusy] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [noteView, setNoteView] = useState<"write" | "preview">("write");
+  const [noteView, setNoteView] = useState<"rich" | "source">("rich");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -61,7 +67,7 @@ export function QuestionNotePanel({
       setNoteBase(detail.version);
       setNoteDirty(false);
       setEditing(false);
-      setNoteView("write");
+      setNoteView("rich");
       setConfirmDiscard(false);
       if (detail.switchToNotes) onSwitchToNotes();
     }
@@ -81,7 +87,7 @@ export function QuestionNotePanel({
       setNoteBase(question.noteVersion);
       setNoteDirty(false);
       setEditing(false);
-      setNoteView("write");
+      setNoteView("rich");
       return;
     }
     try {
@@ -126,12 +132,9 @@ export function QuestionNotePanel({
   }, [question.note, question.noteVersion, noteDirty, draftKey]);
 
   function enterEdit() {
-    setNoteView("write");
+    setNoteView("rich");
     setConfirmDiscard(false);
     setEditing(true);
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus({ preventScroll: true });
-    });
   }
 
   function discardAndClose() {
@@ -144,7 +147,7 @@ export function QuestionNotePanel({
     setNoteBase(question.noteVersion);
     setNoteDirty(false);
     setConfirmDiscard(false);
-    setNoteView("write");
+    setNoteView("rich");
     setEditing(false);
   }
 
@@ -192,7 +195,7 @@ export function QuestionNotePanel({
         setNoteBase(Number(result.version));
         setNoteDirty(false);
         setConfirmDiscard(false);
-        setNoteView("write");
+        setNoteView("rich");
         setEditing(false);
         toast.success("笔记已保存。");
       }
@@ -207,37 +210,33 @@ export function QuestionNotePanel({
         <div className="personal-notes-head">
           <h2>我的笔记</h2>
           {note.trim() && (
-            <Button
+            <button
               type="button"
-              variant="outline"
-              size="sm"
+              className="icon-button note-edit-btn"
+              title="编辑笔记"
+              aria-label="编辑笔记"
               onClick={enterEdit}
             >
-              <PencilLine size={14} /> 编辑
-            </Button>
+              <PencilLine size={16} />
+            </button>
           )}
         </div>
         {note.trim() ? (
-          <>
-            <div
-              className="note-markdown-view"
-              onDoubleClick={(event) => {
-                if (
-                  (event.target as Element).closest(
-                    "a, button, pre, .code-copy-btn",
-                  )
+          <div
+            className="note-markdown-view"
+            onDoubleClick={(event) => {
+              if (
+                (event.target as Element).closest(
+                  "a, button, pre, .code-copy-btn",
                 )
-                  return;
-                if (window.getSelection()?.toString().trim()) return;
-                enterEdit();
-              }}
-            >
-              <Markdown>{note}</Markdown>
-            </div>
-            <p className="note-view-hint">
-              支持 Markdown、代码与公式 · 双击正文可原地编辑
-            </p>
-          </>
+              )
+                return;
+              if (window.getSelection()?.toString().trim()) return;
+              enterEdit();
+            }}
+          >
+            <Markdown>{note}</Markdown>
+          </div>
         ) : (
           <button
             type="button"
@@ -245,7 +244,7 @@ export function QuestionNotePanel({
             onClick={enterEdit}
           >
             <PenLine size={20} strokeWidth={1.5} />
-            <span>记下你的第一反应、易混边界或项目话术（支持 Markdown）</span>
+            <span>记下理解要点、易混点或项目案例</span>
             <strong>
               <PencilLine size={14} /> 开始写笔记
             </strong>
@@ -262,20 +261,25 @@ export function QuestionNotePanel({
       <div className="personal-notes-head">
         <div className="personal-notes-head-left">
           <h2>我的笔记</h2>
-          <div className="segmented-control" role="group" aria-label="笔记视图">
+          <div className="segmented-control" role="group" aria-label="编辑方式">
             <button
               type="button"
-              aria-pressed={noteView === "write"}
-              onClick={() => setNoteView("write")}
+              aria-pressed={noteView === "rich"}
+              onClick={() => setNoteView("rich")}
             >
-              <PencilLine size={13} /> 编辑
+              排版
             </button>
             <button
               type="button"
-              aria-pressed={noteView === "preview"}
-              onClick={() => setNoteView("preview")}
+              aria-pressed={noteView === "source"}
+              onClick={() => {
+                setNoteView("source");
+                requestAnimationFrame(() => {
+                  textareaRef.current?.focus({ preventScroll: true });
+                });
+              }}
             >
-              <Eye size={13} /> 预览
+              源码
             </button>
           </div>
         </div>
@@ -294,19 +298,16 @@ export function QuestionNotePanel({
               else discardAndClose();
             }}
           >
-            {!isModified ? "取消" : confirmDiscard ? "确认放弃" : "放弃修改"}
+            {!isModified ? "取消" : confirmDiscard ? "确定放弃" : "放弃"}
           </Button>
           <Button
             type="button"
             size="sm"
+            title="保存笔记 (Ctrl/⌘ + Enter)"
             disabled={noteBusy || !isModified}
             onClick={() => void saveNote()}
           >
-            {noteBusy ? (
-              <Loader2 size={13} className="spin" />
-            ) : (
-              <Check size={13} />
-            )}{" "}
+            {noteBusy && <Loader2 size={13} className="spin" />}
             保存笔记
           </Button>
         </div>
@@ -316,7 +317,7 @@ export function QuestionNotePanel({
         <div className="note-conflict">
           <strong>云端笔记已有更新</strong>
           <details>
-            <summary>查看云端版本，再合并到下方草稿</summary>
+            <summary>查看最新笔记</summary>
             <Markdown>{question.note || "云端笔记为空。"}</Markdown>
           </details>
           <Button
@@ -325,12 +326,32 @@ export function QuestionNotePanel({
             disabled={noteBusy}
             onClick={() => void saveNote(note, question.noteVersion)}
           >
-            已合并，保存到最新版本
+            覆盖保存
           </Button>
         </div>
       )}
 
-      {noteView === "write" ? (
+      {noteView === "rich" ? (
+        <div className="note-rich-surface">
+          <Editor
+            key={`note-doc:${question.id}`}
+            value={note}
+            onChange={(next) => {
+              if (next.length <= 50_000) updateDraft(next);
+            }}
+            ariaLabel="个人笔记编辑器"
+            placeholder="记下你的理解要点、易混边界、代码块或 $公式$…"
+            autoFocus
+            disabled={noteBusy}
+            onSaveShortcut={() => {
+              if (!noteBusy && note !== question.note) void saveNote();
+            }}
+            onEscapeKey={() => {
+              if (!noteBusy && note === question.note) discardAndClose();
+            }}
+          />
+        </div>
+      ) : (
         <>
           <label htmlFor={noteInputId} className="sr-only">
             个人笔记（支持 Markdown）
@@ -365,21 +386,24 @@ export function QuestionNotePanel({
             }}
           />
         </>
-      ) : (
-        <div className="note-preview-surface">
-          {note.trim() ? (
-            <Markdown>{note}</Markdown>
-          ) : (
-            <p className="quiet-empty">
-              还没有输入内容，切回「编辑」即可编写 Markdown 笔记。
-            </p>
-          )}
-        </div>
       )}
 
       <div className="notes-footer">
-        <span>
-          {isModified ? "本地草稿 · Ctrl/⌘ + Enter 保存" : "已与云端同步"}
+        <span
+          className={`note-save-state ${isModified ? "is-dirty" : "is-saved"}`}
+          role="status"
+          title={
+            isModified
+              ? "有未保存的修改（Ctrl/⌘ + Enter 保存）"
+              : "已保存"
+          }
+          aria-label={isModified ? "有未保存的修改" : "已保存"}
+        >
+          {isModified ? (
+            <i className="note-dirty-dot" aria-hidden="true" />
+          ) : (
+            <Check size={14} aria-hidden="true" />
+          )}
         </span>
         <div className="notes-footer-actions">
           <Button
@@ -396,20 +420,17 @@ export function QuestionNotePanel({
               else discardAndClose();
             }}
           >
-            {!isModified ? "收起" : confirmDiscard ? "确认放弃" : "放弃修改"}
+            {!isModified ? "收起" : confirmDiscard ? "确定放弃" : "放弃"}
           </Button>
           <Button
             type="button"
             variant="outline"
             size="sm"
+            title="保存笔记 (Ctrl/⌘ + Enter)"
             disabled={noteBusy || !isModified}
             onClick={() => void saveNote()}
           >
-            {noteBusy ? (
-              <Loader2 size={13} className="spin" />
-            ) : (
-              <Check size={13} />
-            )}{" "}
+            {noteBusy && <Loader2 size={13} className="spin" />}
             保存笔记
           </Button>
         </div>

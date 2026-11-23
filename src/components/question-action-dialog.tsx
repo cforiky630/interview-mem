@@ -89,7 +89,7 @@ export function QuestionActionDialog({
           ) : (
             <FolderInput size={15} />
           )}{" "}
-          {action === "delete" ? "移入回收站" : "确认移动"}
+          {action === "delete" ? "移入回收站" : "移动"}
         </Button>
       </div>
     </Dialog>

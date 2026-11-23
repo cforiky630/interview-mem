@@ -5,7 +5,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { imports, questions, decks } from "@/db/schema";
 import { body, route } from "@/server/api";
-import { ownedDeck } from "@/server/workspace";
+import { nextQuestionBaseMs, ownedDeck } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { parseQuestions, type ParsedQuestion } from "@/lib/importer";
 import { aiCredential, providerRequest, acquireAi } from "@/server/ai";
@@ -148,11 +148,14 @@ export const POST = route(async (request, user) => {
             ).map((q) => normalizeTitle(q.title))
           : [],
       );
+      const baseMs = await nextQuestionBaseMs(tx, user.id);
+      let insertSeq = 0;
       for (const q of parsed) {
         if (knownTitles.has(normalizeTitle(q.title))) {
           duplicates++;
           continue;
         }
+        const ts = new Date(baseMs + insertSeq++);
         const inserted = await tx
           .insert(questions)
           .values({
@@ -166,6 +169,8 @@ export const POST = route(async (request, user) => {
             needsEditing: q.needsEditing,
             sourceText: q.title + "\n" + q.answer,
             contentHash: contentHash(q.title, q.answer),
+            createdAt: ts,
+            updatedAt: ts,
           })
           .onConflictDoNothing()
           .returning({ id: questions.id });

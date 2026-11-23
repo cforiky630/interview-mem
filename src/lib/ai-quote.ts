@@ -43,15 +43,15 @@ export function formatThreadLabel(
     thread.messages.find((m) => m.role === "user")?.content ?? "";
   if (scope === "question") {
     if (thread.attempt.trim()) {
-      return `[作答点评] ${formatQuotePreview(firstUser || "默写点评", 22)} · v${thread.questionRevision}`;
+      return `[作答点评] ${formatQuotePreview(firstUser || "默写点评", 24)}`;
     }
     if (
       thread.quote.trim() &&
       !isFullAnswerQuote(thread.quote, thread.answerSnapshot || fallbackAnswer)
     ) {
-      return `划选：${formatQuotePreview(thread.quote, 22)} · v${thread.questionRevision}`;
+      return `划选：${formatQuotePreview(thread.quote, 24)}`;
     }
-    return `${formatQuotePreview(firstUser, 26) || "题目问答"} · v${thread.questionRevision}`;
+    return formatQuotePreview(firstUser, 28) || "题目问答";
   }
   return (
     formatQuotePreview(firstUser, 32) ||

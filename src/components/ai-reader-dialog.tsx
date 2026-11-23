@@ -53,11 +53,10 @@ export function AiReaderDialog({
   applyingKey: string | null;
   copyBusy: boolean;
   onApplyEdit: (edit: ChatEdit, keyId: string) => Promise<void>;
-  onSaveToNote?: (message: ChatMessage) => Promise<void>;
-  onSaveAsCard?: (message: ChatMessage) => Promise<void>;
+  onSaveToNote?: (message: ChatMessage) => void;
+  onSaveAsCard?: (message: ChatMessage) => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [noteBusy, setNoteBusy] = useState(false);
   const [editView, setEditView] = useState<"diff" | "preview">("diff");
 
   const targetKey =
@@ -87,7 +86,7 @@ export function AiReaderDialog({
         });
       }
       return {
-        heading: "题目修改建议对比",
+        heading: "修改题目",
         applyLabel: "应用到题目",
         metaRows,
         beforeText:
@@ -97,7 +96,7 @@ export function AiReaderDialog({
     }
     if (edit.target === "note") {
       return {
-        heading: "个人笔记修改建议对比",
+        heading: "修改笔记",
         applyLabel: "应用到笔记",
         metaRows: [] as { label: string; before: string; after: string }[],
         beforeText: question.note,
@@ -120,7 +119,7 @@ export function AiReaderDialog({
       });
     }
     return {
-      heading: "题库信息修改建议",
+      heading: "修改题库",
       applyLabel: "应用到题库",
       metaRows,
       beforeText: undefined,
@@ -155,10 +154,10 @@ export function AiReaderDialog({
     try {
       await navigator.clipboard.writeText(copyPayload);
       setCopied(true);
-      toast.success("已复制到剪贴板。");
+      toast.success("已复制");
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      toast.error("复制失败，请手动选中文本复制。");
+      toast.error("复制失败，请手动复制");
     }
   }
 
@@ -169,15 +168,15 @@ export function AiReaderDialog({
 
   const dialogTitle =
     target?.kind === "message"
-      ? target.title || "AI 回答阅读"
-      : (editMeta?.heading ?? "修改建议对比");
+      ? target.title || "AI 回答"
+      : (editMeta?.heading ?? "修改对比");
 
   const dialogDescription =
     target?.kind === "message"
-      ? `Markdown 宽屏阅读，共 ${target.message.content.length} 字`
+      ? `共 ${target.message.content.length} 字`
       : editMeta?.afterText !== undefined
-        ? `修改前后内容对照与预览（${editMeta.afterText.length} 字）`
-        : "修改字段前后对比";
+        ? `共 ${editMeta.afterText.length} 字`
+        : undefined;
 
   return (
     <Dialog
@@ -220,22 +219,9 @@ export function AiReaderDialog({
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={noteBusy}
-                  onClick={async () => {
-                    if (noteBusy) return;
-                    setNoteBusy(true);
-                    try {
-                      await onSaveToNote(target.message);
-                    } finally {
-                      setNoteBusy(false);
-                    }
-                  }}
+                  onClick={() => onSaveToNote(target.message)}
                 >
-                  {noteBusy ? (
-                    <Loader2 size={14} className="spin" />
-                  ) : (
-                    <BookmarkPlus size={14} />
-                  )}
+                  <BookmarkPlus size={14} />
                   存为笔记
                 </Button>
               )}
@@ -245,7 +231,7 @@ export function AiReaderDialog({
                   size="sm"
                   variant="outline"
                   disabled={copyBusy}
-                  onClick={() => void onSaveAsCard(target.message)}
+                  onClick={() => onSaveAsCard(target.message)}
                 >
                   {copyBusy ? (
                     <Loader2 size={14} className="spin" />
@@ -280,7 +266,7 @@ export function AiReaderDialog({
                   onClick={() => setEditView("diff")}
                 >
                   <FileDiff size={14} />
-                  变更对比
+                  对比
                   {diff && (
                     <span className="ai-diff-stats">
                       <em className="is-add">+{diff.added}</em>
@@ -296,18 +282,18 @@ export function AiReaderDialog({
                   onClick={() => setEditView("preview")}
                 >
                   <FileText size={14} />
-                  渲染预览
+                  预览
                 </button>
               </div>
-              <Button
+              <button
                 type="button"
-                size="sm"
-                variant="ghost"
+                className={`icon-button ai-reader-copy-btn ${copied ? "is-copied" : ""}`}
+                title={copied ? "已复制" : "复制内容"}
+                aria-label={copied ? "已复制" : "复制内容"}
                 onClick={() => void handleCopy()}
               >
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-                {copied ? "已复制" : "复制建议文本"}
-              </Button>
+                {copied ? <Check size={15} /> : <Copy size={15} />}
+              </button>
             </div>
           )}
 
@@ -319,11 +305,15 @@ export function AiReaderDialog({
                     <span className="ai-reader-meta-label">{row.label}</span>
                     <div className="ai-reader-meta-values">
                       <div className="is-old">
-                        <small>改前</small>
+                        <small className="ai-meta-sign" aria-label="改前">
+                          −
+                        </small>
                         <span>{row.before || "（空）"}</span>
                       </div>
                       <div className="is-new">
-                        <small>改后</small>
+                        <small className="ai-meta-sign" aria-label="改后">
+                          +
+                        </small>
                         <span>{row.after}</span>
                       </div>
                     </div>
@@ -388,10 +378,10 @@ export function AiReaderDialog({
               ) : (
                 <span className="muted small" role="status">
                   {editState === "matched"
-                    ? "当前内容已应用或与建议一致"
+                    ? "已应用"
                     : editState === "stale"
-                      ? "内容已在别处更新，请重新生成建议"
-                      : "当前无法编辑这项内容"}
+                      ? "原题已改动，请重新让 AI 生成"
+                      : "仅自有题库支持直接应用"}
                 </span>
               )}
             </div>

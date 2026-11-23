@@ -8,11 +8,14 @@ import {
   BookmarkPlus,
   Check,
   ChevronDown,
-  ChevronRight,
-  ChevronUp,
   Copy,
+  FileText,
+  Folder,
+  Globe,
+  History,
   KeyRound,
   Layers2,
+  Link2,
   Loader2,
   Maximize2,
   PanelRight,
@@ -32,6 +35,15 @@ import {
   formatThreadLabel,
   isFullAnswerQuote,
 } from "@/lib/ai-quote";
+import {
+  appendToStoredNote,
+  buildChatUrl,
+  buildScopeKey,
+  clampAiDockWidth,
+  parseSseBlocks,
+  suggestCardTitle,
+  type AiScope,
+} from "@/lib/ai-stream";
 import type {
   ChatEdit,
   ChatMessage,
@@ -41,13 +53,15 @@ import type {
   Workspace,
 } from "@/lib/types";
 import { AiReaderDialog, type AiReaderTarget } from "./ai-reader-dialog";
+import { AiSaveDialog, type AiSaveTarget } from "./ai-save-dialog";
+import { ReasoningDisclosure, ScopeLauncher } from "./ai-scope-launcher";
 import { ChatEditCard, chatEditState } from "./chat-edit-card";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
 import { useDiscretePresence } from "./use-discrete-presence";
 import type { Mutate } from "./dialogs";
 
-export type AiScope = "question" | "deck" | "workspace";
+export { clampAiDockWidth, type AiScope };
 export type AiIslandMode = "collapsed" | "floating" | "docked";
 export type AiTrigger = {
   quote: string;
@@ -55,315 +69,6 @@ export type AiTrigger = {
   attempt?: string;
   nonce: number;
 };
-
-export function clampAiDockWidth(
-  width: number,
-  viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1440,
-): number {
-  const maxWidth = Math.min(620, Math.max(380, Math.floor(viewportWidth * 0.45)));
-  return Math.min(maxWidth, Math.max(360, Math.round(width)));
-}
-
-type DeckFilter = "all" | "needsEditing" | "due";
-
-type ParsedSseEvent = {
-  event: string;
-  payload: Record<string, unknown>;
-};
-
-function parseSseBlocks(
-  rawPending: string,
-  flushAll: boolean,
-): { events: ParsedSseEvent[]; rest: string } {
-  const normalized = rawPending.replace(/\r\n?/g, "\n");
-  const parts = normalized.split("\n\n");
-  const rest = flushAll ? "" : (parts.pop() ?? "");
-  const events: ParsedSseEvent[] = [];
-
-  for (const block of parts) {
-    if (!block.trim()) continue;
-    let event = "message";
-    const dataLines: string[] = [];
-    for (const line of block.split("\n")) {
-      if (line.startsWith("event:")) {
-        event = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-    if (!dataLines.length) continue;
-    const rawJson = dataLines.join("\n").trim();
-    if (!rawJson || rawJson === "[DONE]") continue;
-    try {
-      const payload = JSON.parse(rawJson);
-      if (payload && typeof payload === "object") {
-        events.push({ event, payload: payload as Record<string, unknown> });
-      }
-    } catch {
-      /* Ignore malformed JSON chunk from upstream. */
-    }
-  }
-
-  return { events, rest };
-}
-
-function buildScopeKey(
-  scope: AiScope,
-  userId: string,
-  questionId?: string,
-  deckId?: string,
-) {
-  if (scope === "question" && questionId) return `q:${questionId}`;
-  if (scope === "deck" && deckId) return `d:${deckId}`;
-  return `w:${userId}`;
-}
-
-function buildChatUrl(
-  scope: AiScope,
-  questionId?: string,
-  deckId?: string,
-) {
-  if (scope === "question" && questionId) {
-    return `/api/chat?scope=question&questionId=${encodeURIComponent(questionId)}`;
-  }
-  if (scope === "deck" && deckId) {
-    return `/api/chat?scope=deck&deckId=${encodeURIComponent(deckId)}`;
-  }
-  return "/api/chat?scope=workspace";
-}
-
-function ReasoningDisclosure({
-  reasoning,
-  hasContent,
-  busy,
-}: {
-  reasoning: string;
-  hasContent: boolean;
-  busy: boolean;
-}) {
-  const [open, setOpen] = useState(!hasContent && busy);
-  const userToggledRef = useRef(false);
-
-  useEffect(() => {
-    if ((hasContent || !busy) && !userToggledRef.current) {
-      setOpen(false);
-    }
-  }, [hasContent, busy]);
-
-  return (
-    <details
-      className="ai-reasoning-box"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary
-        onClick={() => {
-          userToggledRef.current = true;
-        }}
-      >
-        <span className="ai-reasoning-marker" aria-hidden="true">
-          <ChevronRight size={13} />
-        </span>
-        <span className="ai-reasoning-label">
-          {!hasContent && busy
-            ? "正在深度思考…"
-            : `思考过程 · ${reasoning.length} 字`}
-        </span>
-      </summary>
-      <div className="ai-reasoning-body">
-        <pre>{reasoning}</pre>
-      </div>
-    </details>
-  );
-}
-
-function appendToStoredNote(
-  userId: string,
-  question: QuestionView,
-  addition: string,
-): { nextNote: string; expectedVersion: number } {
-  const draftKey = `shiyi:note:${userId}:${question.id}`;
-  let baseNote = question.note;
-  let expectedVersion = question.noteVersion;
-  let rawDraft: string | null = null;
-  try {
-    rawDraft = localStorage.getItem(draftKey);
-  } catch {
-    rawDraft = null;
-  }
-  if (rawDraft !== null) {
-    try {
-      const saved = JSON.parse(rawDraft);
-      if (
-        typeof saved.content === "string" &&
-        Number.isInteger(saved.version)
-      ) {
-        baseNote = saved.content;
-        expectedVersion = saved.version;
-      }
-    } catch {
-      baseNote = rawDraft;
-      expectedVersion = question.noteVersion;
-    }
-  }
-  return { nextNote: baseNote + addition, expectedVersion };
-}
-
-function ScopeLauncher({
-  scope,
-  data,
-  deck,
-  recentQuestion,
-  onOpenQuestion,
-}: {
-  scope: "deck" | "workspace";
-  data: Workspace;
-  deck?: DeckView;
-  recentQuestion?: QuestionView;
-  onOpenQuestion: (question: QuestionView) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<DeckFilter>("all");
-
-  const activePool = useMemo(
-    () =>
-      data.questions.filter(
-        (q) => !q.archived && (scope === "workspace" || q.deckId === deck?.id),
-      ),
-    [data.questions, scope, deck?.id],
-  );
-
-  const stats = useMemo(() => {
-    const now = Date.now();
-    let due = 0;
-    let needsEditing = 0;
-    for (const q of activePool) {
-      if (q.needsEditing) needsEditing += 1;
-      if (q.fsrs && new Date(q.fsrs.due).getTime() <= now) due += 1;
-    }
-    return { total: activePool.length, due, needsEditing };
-  }, [activePool]);
-
-  const matches = useMemo(() => {
-    const now = Date.now();
-    const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return activePool
-      .filter((q) => {
-        if (filter === "needsEditing" && !q.needsEditing) return false;
-        if (
-          filter === "due" &&
-          (!q.fsrs || new Date(q.fsrs.due).getTime() > now)
-        )
-          return false;
-        if (!terms.length) return true;
-        const haystack = `${q.title}\n${q.tags.join(" ")}\n${q.deckTitle}\n${q.answer.slice(0, 600)}`.toLowerCase();
-        return terms.every((term) => haystack.includes(term));
-      })
-      .sort((a, b) => {
-        if (a.needsEditing !== b.needsEditing) return a.needsEditing ? -1 : 1;
-        return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-      })
-      .slice(0, 24);
-  }, [activePool, query, filter]);
-
-  return (
-    <div className="ai-launcher">
-      <div className="ai-scope-summary">
-        <div className="ai-scope-summary-head">
-          <BookOpen size={15} />
-          <strong>
-            {scope === "deck" && deck ? deck.title : "全部题库工作区"}
-          </strong>
-        </div>
-        <div className="ai-scope-metrics">
-          <span>{stats.total} 题</span>
-          <span>{stats.due} 待复习</span>
-          {stats.needsEditing > 0 && <span>{stats.needsEditing} 待完善</span>}
-        </div>
-      </div>
-
-      {scope === "workspace" && recentQuestion && (
-        <button
-          type="button"
-          className="ai-recent-question-btn"
-          onClick={() => onOpenQuestion(recentQuestion)}
-        >
-          <Sparkles size={14} />
-          <span>回到刚才浏览：{recentQuestion.title}</span>
-        </button>
-      )}
-
-      <div className="ai-launcher-search">
-        <Search size={14} />
-        <input
-          type="search"
-          aria-label={
-            scope === "deck" ? "检索当前题库题目" : "检索全局题库题目"
-          }
-          placeholder={
-            scope === "deck"
-              ? "筛选当前题库标题、标签或正文…"
-              : "搜索全库题目、标签或关键词…"
-          }
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </div>
-
-      <div className="ai-launcher-filters" role="group" aria-label="状态筛选">
-        {(
-          [
-            { id: "all", label: "全部" },
-            { id: "due", label: "待复习" },
-            { id: "needsEditing", label: "待完善" },
-          ] as const
-        ).map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={filter === item.id ? "is-active" : ""}
-            aria-pressed={filter === item.id}
-            onClick={() => setFilter(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="ai-launcher-list">
-        {matches.length ? (
-          matches.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="ai-launcher-item"
-              onClick={() => onOpenQuestion(item)}
-            >
-              <span className="ai-launcher-item-title">{item.title}</span>
-              <span className="ai-launcher-item-meta">
-                {scope === "workspace" && <span>{item.deckTitle}</span>}
-                {item.needsEditing && (
-                  <span className="ai-launcher-tag is-warn">需完善</span>
-                )}
-                {!item.fsrs && (
-                  <span className="ai-launcher-tag">未学</span>
-                )}
-              </span>
-            </button>
-          ))
-        ) : (
-          <p className="ai-launcher-empty">
-            没有匹配的题目，换个关键词或筛选条件试试。
-          </p>
-        )}
-      </div>
-
-      <p className="ai-launcher-hint">
-        点击任意题目直达阅读页；需要跨题库检索、查重或复习规划请切换上方「AI 整理」。
-      </p>
-    </div>
-  );
-}
 
 export function AiIsland({
   data,
@@ -377,7 +82,6 @@ export function AiIsland({
   onDockWidthChange,
   onResizingDockChange,
   onModeChange,
-  onOpen,
   onOpenQuestion,
   onSettings,
   onBusyChange,
@@ -394,7 +98,6 @@ export function AiIsland({
   onDockWidthChange?: (width: number | null) => void;
   onResizingDockChange?: (resizing: boolean) => void;
   onModeChange: (next: AiIslandMode) => void;
-  onOpen?: () => void;
   onOpenQuestion: (question: QuestionView) => void;
   onSettings: (anchor?: HTMLElement | null) => void;
   onBusyChange?: (busy: boolean) => void;
@@ -414,6 +117,7 @@ export function AiIsland({
   const [scopedView, setScopedView] = useState<"chat" | "launcher">("chat");
   const [threads, setThreads] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [items, setItems] = useState<ChatMessage[]>([]);
   const [quote, setQuote] = useState("");
   const [quoteExpanded, setQuoteExpanded] = useState(false);
@@ -424,11 +128,14 @@ export function AiIsland({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [applying, setApplying] = useState<string | null>(null);
+  const [noteSaveBusy, setNoteSaveBusy] = useState(false);
   const [copyBusy, setCopyBusy] = useState(false);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [readerTarget, setReaderTarget] = useState<AiReaderTarget | null>(null);
+  const [saveTarget, setSaveTarget] = useState<AiSaveTarget | null>(null);
   const [dragY, setDragY] = useState(0);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const historyWrapRef = useRef<HTMLDivElement>(null);
 
   const sheetTouch = useRef<{
     x: number;
@@ -508,6 +215,33 @@ export function AiIsland({
       setDragY(0);
     }
   }, [mode]);
+
+  useEffect(() => {
+    setHistoryOpen(false);
+  }, [scopeKey, mode]);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    function onPointerDown(event: PointerEvent) {
+      if (
+        historyWrapRef.current &&
+        !historyWrapRef.current.contains(event.target as Node)
+      ) {
+        setHistoryOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setHistoryOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [historyOpen]);
 
   useEffect(() => {
     if (effectiveScope === "question" && !question?.id) return;
@@ -620,7 +354,7 @@ export function AiIsland({
     if (!question) return;
     if (inFlight.current) {
       lastTrigger.current = trigger.nonce;
-      toast.info("请先等当前回答完成，或停止回答后再选择新的内容。");
+      toast.info("当前回答还未结束，请稍候或先停止");
       return;
     }
     lastTrigger.current = trigger.nonce;
@@ -662,6 +396,7 @@ export function AiIsland({
   function selectThread(id: string) {
     const thread = threads.find((t) => t.id === id);
     setActiveId(thread?.id ?? null);
+    setHistoryOpen(false);
     setQuote(thread?.quote ?? "");
     setQuoteExpanded(false);
     setAttempt("");
@@ -943,7 +678,7 @@ export function AiIsland({
           tags: question.tags,
           ...edit.fields,
         });
-        if (result) toast.success("题目修改已保存。");
+        if (result) toast.success("已应用到题目");
       } else if (edit.target === "note") {
         const result = await mutate("/api/questions", {
           action: "note",
@@ -966,7 +701,7 @@ export function AiIsland({
               },
             }),
           );
-          toast.success("个人笔记已更新。");
+          toast.success("已更新笔记");
         }
       } else {
         const result = await mutate("/api/decks", {
@@ -976,7 +711,7 @@ export function AiIsland({
           ...edit.expected,
           ...edit.fields,
         });
-        if (result) toast.success("题库修改已保存。");
+        if (result) toast.success("已更新题库");
       }
     } finally {
       editInFlight.current = false;
@@ -984,14 +719,19 @@ export function AiIsland({
     }
   }
 
-  async function appendAssistantToNote(content: string) {
-    if (!question || editInFlight.current) return;
+  async function appendAssistantToNote(
+    content: string,
+    heading = "AI 补充",
+  ): Promise<boolean> {
+    if (!question || editInFlight.current) return false;
     editInFlight.current = true;
+    setNoteSaveBusy(true);
     try {
       const { nextNote, expectedVersion } = appendToStoredNote(
         data.user.id,
         question,
-        `\n\n### AI 补充\n${content}`,
+        content,
+        heading,
       );
       const result = await mutate("/api/questions", {
         action: "note",
@@ -1015,10 +755,13 @@ export function AiIsland({
             },
           }),
         );
-        toast.success("已追加到个人笔记。");
+        toast.success("已存为笔记");
+        return true;
       }
+      return false;
     } finally {
       editInFlight.current = false;
+      setNoteSaveBusy(false);
     }
   }
 
@@ -1027,39 +770,34 @@ export function AiIsland({
     try {
       await navigator.clipboard.writeText(message.content);
       setCopiedMsgId(message.id);
-      toast.success("已复制到剪贴板。");
+      toast.success("已复制");
       window.setTimeout(() => {
         setCopiedMsgId((curr) => (curr === message.id ? null : curr));
       }, 1800);
     } catch {
-      toast.error("复制失败，请手动选中文本复制。");
+      toast.error("复制失败，请手动复制");
     }
   }
 
-  async function saveMessageAsCard(message: ChatMessage) {
-    if (!question || copyBusy) return;
+  async function saveMessageAsCard(
+    message: ChatMessage,
+    options: { title: string; deckId: string | null },
+  ): Promise<boolean> {
+    if (!question || copyBusy) return false;
     setCopyBusy(true);
     try {
-      const target =
-        data.decks.find((d) => d.isOwner && d.id === question.deckId) ??
-        data.decks.find((d) => d.isOwner);
-      const idx = items.findIndex((m) => m.id === message.id);
-      const rawPrev =
-        (idx >= 0 ? items.slice(0, idx) : [...items])
-          .reverse()
-          .find((m) => m.role === "user")?.content ?? "";
-      const topicSuffix =
-        !rawPrev || rawPrev.includes("点评我的本次作答")
-          ? "作答点评要点"
-          : rawPrev;
       const response = await mutate("/api/questions", {
         action: "copy",
         id: question.id,
-        deckId: target?.id ?? null,
-        title: `${question.title} · ${topicSuffix}`.slice(0, 200),
+        deckId: options.deckId,
+        title: options.title.trim().slice(0, 200),
         answer: message.content,
       });
-      if (response) toast.success("已保存为独立复习卡片。");
+      if (response) {
+        toast.success("已存为卡片");
+        return true;
+      }
+      return false;
     } finally {
       setCopyBusy(false);
     }
@@ -1119,20 +857,10 @@ export function AiIsland({
     }
   }, [mode, allowDock]);
 
-  const pillPresence = useDiscretePresence<HTMLButtonElement>(
-    !hidden && mode === "collapsed",
-  );
   const backdropPresence = useDiscretePresence<HTMLButtonElement>(isOpen);
   const panelPresence = useDiscretePresence<HTMLElement>(isOpen);
 
   if (hidden) return null;
-
-  const pillScopeLabel =
-    effectiveScope === "question"
-      ? "当前题目"
-      : effectiveScope === "deck" && contextDeck
-        ? contextDeck.title
-        : "全局题库";
 
   const recentQuestion =
     !question && lastQuestionIdRef.current
@@ -1148,29 +876,11 @@ export function AiIsland({
   ];
 
   const isDocked = isOpen ? isDockedNow : lastOpenSurface === "docked";
+  const showThreadActions =
+    effectiveScope !== "question" ? scopedView === "chat" : Boolean(question);
 
   return (
     <>
-      <button
-        ref={pillPresence.ref}
-        type="button"
-        hidden={pillPresence.isHidden}
-        data-closing={pillPresence.isClosing ? "" : undefined}
-        aria-hidden={isOpen}
-        inert={isOpen || pillPresence.isClosing}
-        className={`ai-island-pill ${busy ? "is-busy" : ""}`}
-        aria-label={`打开 AI 助手（${pillScopeLabel}，快捷键 Ctrl/Cmd + J）`}
-        onClick={() => (onOpen ? onOpen() : onModeChange("docked"))}
-      >
-        <span className="ai-island-pill-icon">
-          <Sparkles size={15} />
-        </span>
-        <span className="ai-island-pill-title">
-          {busy ? "AI 正在生成…" : "AI 助手"}
-        </span>
-        <span className="ai-scope-chip">{pillScopeLabel}</span>
-        {busy && <span className="ai-live-dot" aria-hidden="true" />}
-      </button>
       <button
         ref={backdropPresence.ref}
         type="button"
@@ -1208,6 +918,7 @@ export function AiIsland({
           />
         )}
         <div
+          ref={historyWrapRef}
           className="ai-panel-sheet-handle"
           onTouchStart={(event) => {
             if (event.touches.length !== 1) return;
@@ -1266,7 +977,21 @@ export function AiIsland({
               <span className={`ai-live-dot ${busy ? "is-pulsing" : ""}`} />
             </div>
             <div className="ai-panel-controls">
-              {(effectiveScope !== "question" ? scopedView === "chat" : Boolean(question)) && (
+              {showThreadActions && threads.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={historyOpen ? "is-active" : undefined}
+                  title="历史对话"
+                  aria-label="历史对话"
+                  aria-expanded={historyOpen}
+                  disabled={busy}
+                  onClick={() => setHistoryOpen((open) => !open)}
+                >
+                  <History size={16} />
+                </Button>
+              )}
+              {showThreadActions && (
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1275,6 +1000,7 @@ export function AiIsland({
                   disabled={busy}
                   onClick={() => {
                     setActiveId(null);
+                    setHistoryOpen(false);
                     setQuote("");
                     setQuoteExpanded(false);
                     setAttempt("");
@@ -1346,6 +1072,50 @@ export function AiIsland({
               </Button>
             </div>
           </div>
+          {historyOpen && showThreadActions && threads.length > 0 && (
+            <div
+              className="ai-history-popover"
+              role="menu"
+              aria-label="历史对话列表"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className={!activeId ? "is-active" : undefined}
+                disabled={busy}
+                onClick={() => {
+                  setActiveId(null);
+                  setHistoryOpen(false);
+                  setQuote("");
+                  setQuoteExpanded(false);
+                  setAttempt("");
+                  setAttemptExpanded(false);
+                  setItems([]);
+                  setInput("");
+                  setError("");
+                }}
+              >
+                <Plus size={14} aria-hidden="true" />
+                <span>新对话</span>
+                {!activeId && <Check size={14} className="ai-history-check" aria-hidden="true" />}
+              </button>
+              {threads.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="menuitem"
+                  className={activeId === t.id ? "is-active" : undefined}
+                  disabled={busy}
+                  onClick={() => selectThread(t.id)}
+                >
+                  <span>{formatThreadLabel(t, effectiveScope, question?.answer)}</span>
+                  {activeId === t.id && (
+                    <Check size={14} className="ai-history-check" aria-hidden="true" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {scopeTabs.length > 1 && (
@@ -1402,7 +1172,7 @@ export function AiIsland({
         ) : effectiveScope !== "question" || question ? (
           <>
             <div
-              className="ai-context-chip"
+              className={`ai-context-chip ${effectiveScope === "question" ? "is-question-scope" : ""}`}
               title={
                 effectiveScope === "question" && question
                   ? question.title
@@ -1411,7 +1181,15 @@ export function AiIsland({
                     : "全局题库"
               }
             >
-              <span>{effectiveScope === "question" ? "正在围绕" : "当前范围"}</span>
+              <span className="ai-context-icon" aria-hidden="true">
+                {effectiveScope === "question" ? (
+                  <FileText size={13} />
+                ) : effectiveScope === "deck" ? (
+                  <Folder size={13} />
+                ) : (
+                  <Globe size={13} />
+                )}
+              </span>
               <strong>
                 {effectiveScope === "question" && question
                   ? question.title
@@ -1422,26 +1200,15 @@ export function AiIsland({
               {effectiveScope === "question" &&
                 question?.answer.trim() &&
                 !quote.trim() && (
-                  <span className="ai-context-ref">已引用参考答案</span>
+                  <span
+                    className="ai-context-ref"
+                    title="已关联参考答案"
+                    aria-label="已关联参考答案"
+                  >
+                    <Link2 size={13} aria-hidden="true" />
+                  </span>
                 )}
             </div>
-            {threads.length > 0 && (
-              <div className="thread-selector">
-                <select
-                  aria-label="选择历史对话"
-                  value={activeId ?? ""}
-                  disabled={busy}
-                  onChange={(e) => selectThread(e.target.value)}
-                >
-                  <option value="">新的疑问，新的理解</option>
-                  {threads.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {formatThreadLabel(t, effectiveScope, question?.answer)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
             {effectiveScope === "question" &&
               quote.trim() &&
               (() => {
@@ -1468,7 +1235,7 @@ export function AiIsland({
                         }
                       >
                         {fullAnswerQuoted
-                          ? `已引用参考答案 · ${trimmedQuote.length} 字`
+                          ? "已引用参考答案"
                           : inlineHighlight
                             ? trimmedQuote
                             : `引用片段 · ${trimmedQuote.length} 字`}
@@ -1476,22 +1243,20 @@ export function AiIsland({
                       {!inlineHighlight && (
                         <button
                           type="button"
-                          className="ai-attempt-toggle"
+                          className="icon-button ai-collapse-toggle"
                           aria-expanded={quoteExpanded}
+                          aria-label={quoteExpanded ? "收起引用" : "展开引用"}
+                          title={quoteExpanded ? "收起" : "展开"}
                           onClick={() => setQuoteExpanded((v) => !v)}
                         >
-                          {quoteExpanded ? "收起" : "查看原文"}
-                          {quoteExpanded ? (
-                            <ChevronUp size={13} />
-                          ) : (
-                            <ChevronDown size={13} />
-                          )}
+                          <ChevronDown size={14} />
                         </button>
                       )}
                       {!busy && !activeId && (
                         <button
                           type="button"
                           aria-label="移除引用"
+                          title="移除引用"
                           className="icon-button"
                           onClick={() => {
                             setQuote("");
@@ -1518,26 +1283,23 @@ export function AiIsland({
                 <div className="ai-attempt-head">
                   <PenLine size={14} />
                   <span>
-                    {activeId ? "本轮默写作答" : "已附带本次默写作答"} ·{" "}
-                    {visibleAttempt.length} 字
+                    本次默写 · {visibleAttempt.length} 字
                   </span>
                   <button
                     type="button"
-                    className="ai-attempt-toggle"
+                    className="icon-button ai-collapse-toggle"
                     aria-expanded={attemptExpanded}
+                    aria-label={attemptExpanded ? "收起作答" : "展开作答"}
+                    title={attemptExpanded ? "收起" : "展开"}
                     onClick={() => setAttemptExpanded((v) => !v)}
                   >
-                    {attemptExpanded ? "收起" : "查看原文"}
-                    {attemptExpanded ? (
-                      <ChevronUp size={13} />
-                    ) : (
-                      <ChevronDown size={13} />
-                    )}
+                    <ChevronDown size={14} />
                   </button>
                   {!busy && !activeId && (
                     <button
                       type="button"
                       aria-label="移除默写作答"
+                      title="移除默写作答"
                       className="icon-button"
                       onClick={() => {
                         setAttempt("");
@@ -1553,24 +1315,10 @@ export function AiIsland({
                 )}
               </div>
             )}
-            {effectiveScope === "question" &&
-              question &&
-              active &&
-              active.questionRevision !== question.revision && (
-                <details className="quote-version">
-                  <summary>
-                    引用的是 v{active.questionRevision}，题目当前为 v
-                    {question.revision}
-                  </summary>
-                  <div className="old-snapshot">
-                    <Markdown>{active.answerSnapshot}</Markdown>
-                  </div>
-                </details>
-              )}
             <div className="ai-messages" ref={scroll}>
               {loading && !items.length && (
                 <div className="ai-loading">
-                  <Loader2 size={17} className="spin" /> 正在读取你的对话…
+                  <Loader2 size={17} className="spin" /> 正在读取对话…
                 </div>
               )}
               {!items.length && !loading && (
@@ -1588,13 +1336,11 @@ export function AiIsland({
                   <p>
                     {effectiveScope === "question" && question
                       ? question.isOwner
-                        ? ownedDeck
-                          ? "可以围绕本题提问，也可以请我修改本题、个人笔记或所属题库。"
-                          : "可以围绕本题提问，也可以请我修改本题或个人笔记。"
-                        : "结合本题与参考答案拆解疑问，划选正文即可追问。"
+                        ? "围绕本题提问，或让我帮你润色答案、整理笔记。"
+                        : "围绕本题提问，也可以划选正文追问。"
                       : effectiveScope === "deck" && contextDeck
-                        ? `只读检索「${contextDeck.title}」中的真实题目，支持查重、结构梳理与复习排期。`
-                        : "检索全库真实题目、排查重复内容，或制定今天的优先复习清单。"}
+                        ? `围绕「${contextDeck.title}」查找题目、排查重复或安排复习。`
+                        : "跨题库查重、梳理知识结构，或安排今天的复习顺序。"}
                   </p>
                   {data.settings.hasKey ? (
                     <div className="prompt-suggestions">
@@ -1625,16 +1371,14 @@ export function AiIsland({
                   ) : (
                     <div className="ai-key-prompt">
                       <KeyRound size={18} />
-                      <p>
-                        请先在设置中配置 OpenAI 兼容模型接口，即可开启划词追问与题库分析。
-                      </p>
+                      <p>配置模型接口后即可开始提问与划词追问。</p>
                       <Button
                         variant="outline"
                         size="sm"
                         data-settings-trigger="true"
                         onClick={(event) => onSettings(event.currentTarget)}
                       >
-                        去配置连接
+                        配置 AI
                       </Button>
                     </div>
                   )}
@@ -1741,6 +1485,8 @@ export function AiIsland({
                           message.content.length >= 120) && (
                           <button
                             type="button"
+                            title="宽屏阅读"
+                            aria-label="宽屏阅读"
                             onClick={() =>
                               setReaderTarget({
                                 kind: "message",
@@ -1754,39 +1500,48 @@ export function AiIsland({
                               })
                             }
                           >
-                            <Maximize2 size={13} />
-                            宽屏阅读
+                            <Maximize2 size={14} />
                           </button>
                         )}
                         <button
                           type="button"
+                          className={
+                            copiedMsgId === message.id ? "is-done" : undefined
+                          }
+                          title={copiedMsgId === message.id ? "已复制" : "复制"}
+                          aria-label={
+                            copiedMsgId === message.id ? "已复制" : "复制回答"
+                          }
                           onClick={() => void copyMessageContent(message)}
                         >
                           {copiedMsgId === message.id ? (
-                            <Check size={13} />
+                            <Check size={14} />
                           ) : (
-                            <Copy size={13} />
+                            <Copy size={14} />
                           )}
-                          {copiedMsgId === message.id ? "已复制" : "复制"}
                         </button>
                         {question && !message.edits?.length && (
                           <>
                             <button
                               type="button"
+                              title="存为笔记"
+                              aria-label="存为笔记"
                               onClick={() =>
-                                void appendAssistantToNote(message.content)
+                                setSaveTarget({ kind: "note", message })
                               }
                             >
-                              <BookmarkPlus size={13} />
-                              存为笔记
+                              <BookmarkPlus size={14} />
                             </button>
                             <button
                               type="button"
+                              title="存为卡片"
+                              aria-label="存为卡片"
                               disabled={copyBusy}
-                              onClick={() => void saveMessageAsCard(message)}
+                              onClick={() =>
+                                setSaveTarget({ kind: "card", message })
+                              }
                             >
-                              <Layers2 size={13} />
-                              存为卡片
+                              <Layers2 size={14} />
                             </button>
                           </>
                         )}
@@ -1807,14 +1562,14 @@ export function AiIsland({
                   aria-label="给 AI 助手发消息"
                   placeholder={
                     !data.settings.hasKey
-                      ? "请先配置模型 API Key 后提问"
+                      ? "请先配置 AI 模型后提问"
                       : effectiveScope === "question" && question
                         ? question.isOwner
-                          ? "输入问题，或请我优化答案、笔记与题库（Enter 发送，Shift + Enter 换行）…"
-                          : "围绕当前题目或选中段落追问（Enter 发送，Shift + Enter 换行）…"
+                          ? "提问，或让我帮你优化答案和笔记…"
+                          : "围绕本题或划选内容追问…"
                         : effectiveScope === "deck"
-                          ? "围绕当前题库提问：查重、归纳考点、规划复习（Enter 发送，Shift + Enter 换行）…"
-                          : "围绕全库提问：盘点方向、找重复题、安排复习（Enter 发送，Shift + Enter 换行）…"
+                          ? "查重、归纳考点或安排本组复习…"
+                          : "全库搜题、查重或制定复习计划…"
                   }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -1854,7 +1609,9 @@ export function AiIsland({
                   </button>
                   {busy ? (
                     <button
+                      type="button"
                       className="send-button"
+                      title="停止回答"
                       aria-label="停止回答"
                       onClick={() => abort.current?.abort()}
                     >
@@ -1862,7 +1619,9 @@ export function AiIsland({
                     </button>
                   ) : (
                     <button
+                      type="button"
                       className="send-button"
+                      title="发送 (Enter · Shift+Enter 换行)"
                       aria-label="发送问题"
                       disabled={!input.trim() || !data.settings.hasKey}
                       onClick={() => void send()}
@@ -1872,11 +1631,6 @@ export function AiIsland({
                   )}
                 </div>
               </div>
-              <p>
-                {effectiveScope === "question"
-                  ? "AI 回答结合当前题目上下文生成，请对照自己的理解沉淀为个人笔记"
-                  : "AI 仅在当前用户题库内只读检索与去重，点击引用题目可直达原文"}
-              </p>
             </div>
           </>
         ) : null}
@@ -1889,9 +1643,44 @@ export function AiIsland({
         copyBusy={copyBusy}
         onApplyEdit={applyEdit}
         onSaveToNote={
-          question ? (m) => appendAssistantToNote(m.content) : undefined
+          question
+            ? (message) => setSaveTarget({ kind: "note", message })
+            : undefined
         }
-        onSaveAsCard={question ? saveMessageAsCard : undefined}
+        onSaveAsCard={
+          question
+            ? (message) => setSaveTarget({ kind: "card", message })
+            : undefined
+        }
+      />
+      <AiSaveDialog
+        target={saveTarget}
+        question={question}
+        ownedDecks={data.decks.filter((d) => d.isOwner)}
+        defaultCardTitle={
+          question && saveTarget?.kind === "card"
+            ? suggestCardTitle(question.title, items, saveTarget.message)
+            : ""
+        }
+        defaultDeckId={
+          (
+            data.decks.find(
+              (d) => d.isOwner && d.id === question?.deckId,
+            ) ?? data.decks.find((d) => d.isOwner)
+          )?.id ?? null
+        }
+        busy={noteSaveBusy || copyBusy}
+        onClose={() => setSaveTarget(null)}
+        onConfirmNote={(heading) =>
+          saveTarget?.kind === "note"
+            ? appendAssistantToNote(saveTarget.message.content, heading)
+            : Promise.resolve(false)
+        }
+        onConfirmCard={(options) =>
+          saveTarget?.kind === "card"
+            ? saveMessageAsCard(saveTarget.message, options)
+            : Promise.resolve(false)
+        }
       />
     </>
   );

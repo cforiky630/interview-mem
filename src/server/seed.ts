@@ -1,7 +1,7 @@
 import { getDb } from "@/db";
 import { decks, questions } from "@/db/schema";
 import { contentHash } from "./crypto";
-import { ensureWorkspace } from "./workspace";
+import { ensureWorkspace, nextQuestionBaseMs } from "./workspace";
 import { and, eq } from "drizzle-orm";
 
 const samples = [
@@ -92,6 +92,8 @@ export async function seedSamples(userId: string) {
         ),
       );
     if (existing.length) return { added: 0 };
+    const baseMs = await nextQuestionBaseMs(tx, userId);
+    let insertSeq = 0;
     let added = 0;
     for (const sample of samples) {
       const deckId = crypto.randomUUID();
@@ -103,6 +105,7 @@ export async function seedSamples(userId: string) {
         color: sample.color,
       });
       for (const q of sample.items) {
+        const ts = new Date(baseMs + insertSeq++);
         await tx.insert(questions).values({
           id: crypto.randomUUID(),
           deckId,
@@ -112,6 +115,8 @@ export async function seedSamples(userId: string) {
           tags: q.tags,
           sourceText: q.title + "\n" + q.answer,
           contentHash: contentHash(q.title, q.answer),
+          createdAt: ts,
+          updatedAt: ts,
         });
         added++;
       }

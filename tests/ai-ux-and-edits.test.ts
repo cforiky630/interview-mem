@@ -25,6 +25,12 @@ const {
 const { formatQuotePreview, formatThreadLabel, isFullAnswerQuote } =
   await import("../src/lib/ai-quote");
 const { computeLineDiff } = await import("../src/lib/text-diff");
+const {
+  clampAiDockWidth,
+  formatNoteAppendSection,
+  parseSseBlocks,
+  suggestCardTitle,
+} = await import("../src/lib/ai-stream");
 const deckRoute = await import("../src/app/api/decks/route");
 const questionRoute = await import("../src/app/api/questions/route");
 const settingsRoute = await import("../src/app/api/settings/route");
@@ -544,3 +550,45 @@ test("question chat supports multi-turn tool calling across apply/revision updat
 function requestWithParams(user: UserContext, path: string) {
   return makeRequest(user, path);
 }
+
+test("ai-stream helpers parse SSE blocks, clamp dock widths, format note sections, and suggest card titles cleanly", () => {
+  const { events, rest } = parseSseBlocks(
+    'event: delta\ndata: {"text":"hi"}\r\n\r\nevent: partial\ndata: {"x":',
+    false,
+  );
+  assert.deepEqual(events, [{ event: "delta", payload: { text: "hi" } }]);
+  assert.equal(rest, 'event: partial\ndata: {"x":');
+
+  const flushed = parseSseBlocks('event: done\ndata: {"id":"1"}', true);
+  assert.deepEqual(flushed.events, [{ event: "done", payload: { id: "1" } }]);
+  assert.equal(flushed.rest, "");
+
+  assert.equal(clampAiDockWidth(200, 1440), 360);
+  assert.equal(clampAiDockWidth(800, 1440), 620);
+  assert.equal(clampAiDockWidth(540, 1280), 540);
+  assert.equal(clampAiDockWidth(540, 1000), 450);
+
+  assert.equal(
+    formatNoteAppendSection("", "要点内容", "核心结论"),
+    "### 核心结论\n要点内容",
+  );
+  assert.equal(
+    formatNoteAppendSection("已有笔记\n", "新增内容", "  "),
+    "已有笔记\n\n### AI 补充\n新增内容",
+  );
+
+  const msgs = [
+    { id: "u1", role: "user", content: "请从面试官视角点评我的本次作答。", createdAt: "" },
+    { id: "a1", role: "assistant", content: "点评要点", createdAt: "" },
+    { id: "u2", role: "user", content: "对比   PyMuPDF   与 MinerU", createdAt: "" },
+    { id: "a2", role: "assistant", content: "对比详情", createdAt: "" },
+  ];
+  assert.equal(
+    suggestCardTitle("文档解析", msgs, msgs[1]),
+    "文档解析 · 作答点评要点",
+  );
+  assert.equal(
+    suggestCardTitle("文档解析", msgs, msgs[3]),
+    "文档解析 · 对比 PyMuPDF 与 MinerU",
+  );
+});

@@ -15,6 +15,7 @@ import {
   FolderInput,
   PenLine,
   PencilLine,
+  Play,
   Tags,
   X,
   ChevronDown,
@@ -89,6 +90,7 @@ export function Library({
   const [sortBy, setSortBy] = useState<SortKey>("default");
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [tagsExpanded, setTagsExpanded] = useState(false);
+  const [mobileTagsOpen, setMobileTagsOpen] = useState(false);
   const [hasTagOverflow, setHasTagOverflow] = useState(false);
   const [section, setSection] = useState("decks");
   const [visibleCount, setVisibleCount] = useState(40);
@@ -110,11 +112,11 @@ export function Library({
   useEffect(() => {
     setSelectedTag(null);
     setTagsExpanded(false);
-  }, [deckId, filter]);
+    setMobileTagsOpen(false);
+  }, [deckId, filter, section]);
   const root = deckId === undefined && !filter;
   const unfiled = deckId === null || (root && section === "unfiled");
   const archived = filter === "archived" || (root && section === "archived");
-  const inboxTab = root && section === "inbox";
   const listVisible = !root || (section !== "decks" && section !== "trash");
   useEffect(() => {
     if (!listVisible) return;
@@ -151,10 +153,10 @@ export function Library({
         if (unfiled && (!q.isOwner || q.deckId !== null)) return false;
         if (archived ? !q.archived : q.archived) return false;
         if (filter === "favorites" && !q.favorite) return false;
-        if ((filter === "inbox" || inboxTab) && !q.needsEditing) return false;
+        if (filter === "inbox" && !q.needsEditing) return false;
         return true;
       }),
-    [data.questions, deckId, unfiled, archived, filter, inboxTab],
+    [data.questions, deckId, unfiled, archived, filter],
   );
   const tagsByQuestionId = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -232,7 +234,13 @@ export function Library({
     [scopedQuestions, tagsByQuestionId, selectedTag, status, query],
   );
   const sorted = useMemo(() => {
-    if (sortBy === "default") return filtered;
+    if (sortBy === "default") {
+      return [...filtered].sort((a, b) => {
+        const diff =
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        return diff !== 0 ? diff : a.id.localeCompare(b.id);
+      });
+    }
     const now = Date.now();
     const withMeta = filtered.map((q) => ({
       q,
@@ -420,7 +428,6 @@ export function Library({
           {[
             ["decks", "题库"],
             ["questions", "全部题目"],
-            ["inbox", "待整理"],
             ["unfiled", "未分类"],
             ["archived", "已归档"],
             ["trash", "回收站"],
@@ -629,10 +636,12 @@ export function Library({
                 </Button>
               )}
               {ownedFiltered.length > 0 && (
-                <Button
-                  variant={batchMode ? "secondary" : "ghost"}
-                  size="sm"
-                  className="batch-toggle-btn"
+                <button
+                  type="button"
+                  className={`icon-button batch-toggle-btn ${batchMode ? "is-active" : ""}`}
+                  title={batchMode ? "退出批量整理" : "批量整理"}
+                  aria-label={batchMode ? "退出批量整理" : "批量整理"}
+                  aria-pressed={batchMode}
                   onClick={() => {
                     if (batchMode) {
                       setBatchMode(false);
@@ -642,14 +651,25 @@ export function Library({
                     }
                   }}
                 >
-                  <CheckSquare size={14} />
-                  {batchMode ? "退出整理" : "批量整理"}
-                </Button>
+                  <CheckSquare size={15} />
+                </button>
+              )}
+              {availableTags.length > 0 && (
+                <button
+                  type="button"
+                  className={`icon-button mobile-tag-toggle ${mobileTagsOpen || selectedTag ? "is-active" : ""}`}
+                  title="按标签筛选"
+                  aria-label="按标签筛选"
+                  aria-expanded={mobileTagsOpen || Boolean(selectedTag)}
+                  onClick={() => setMobileTagsOpen((v) => !v)}
+                >
+                  <Tags size={15} />
+                </button>
               )}
             </div>
             {availableTags.length > 0 && (
               <div
-                className={`library-tag-bar ${tagsExpanded ? "is-expanded" : ""} ${hasTagOverflow && !tagsExpanded ? "has-overflow" : ""}`}
+                className={`library-tag-bar ${tagsExpanded ? "is-expanded" : ""} ${hasTagOverflow && !tagsExpanded ? "has-overflow" : ""} ${mobileTagsOpen || selectedTag ? "is-mobile-open" : ""}`}
                 role="region"
                 aria-label="按标签筛选"
               >
@@ -694,10 +714,20 @@ export function Library({
                     type="button"
                     className="tag-bar-toggle"
                     aria-expanded={tagsExpanded}
+                    title={
+                      tagsExpanded
+                        ? "收起标签"
+                        : `展开全部 ${availableTags.length} 个标签`
+                    }
+                    aria-label={
+                      tagsExpanded
+                        ? "收起标签"
+                        : `展开全部 ${availableTags.length} 个标签`
+                    }
                     onClick={() => setTagsExpanded((open) => !open)}
                   >
-                    {tagsExpanded ? "收起" : `展开 (${availableTags.length})`}
-                    <ChevronDown size={14} />
+                    {!tagsExpanded && <span>+{availableTags.length}</span>}
+                    <ChevronDown size={13} />
                   </button>
                 )}
               </div>
@@ -885,20 +915,32 @@ export function Library({
                         (!q.archived && q.answer.trim() && onPractice ? (
                           <button
                             type="button"
-                            className="button button-ghost button-sm row-action-btn"
+                            className="icon-button row-action-btn is-practice"
+                            title="开始答题"
+                            aria-label={`开始答题：${q.title}`}
                             onClick={() => onPractice(q)}
                           >
-                            <PenLine size={13} /> 答题
+                            <Play size={14} />
+                          </button>
+                        ) : !q.archived && !q.answer.trim() ? (
+                          <button
+                            type="button"
+                            className="icon-button row-action-btn"
+                            title="补全答案"
+                            aria-label={`补全答案：${q.title}`}
+                            onClick={() => onQuestion(q, orderedIds)}
+                          >
+                            <PencilLine size={14} />
                           </button>
                         ) : (
                           <button
                             type="button"
-                            className="button button-ghost button-sm row-action-btn"
+                            className="icon-button row-action-btn"
+                            title="查看题目"
+                            aria-label={`查看题目：${q.title}`}
                             onClick={() => onQuestion(q, orderedIds)}
                           >
-                            {!q.archived && !q.answer.trim()
-                              ? "补全答案"
-                              : "查看"}
+                            <ArrowUpRight size={15} />
                           </button>
                         ))}
                     </div>
@@ -930,7 +972,7 @@ export function Library({
                     ? "归档的题目存放在这里，随时可恢复练习。"
                     : filter === "favorites"
                       ? "在题目页点击星标收藏重点题，方便集中复习。"
-                      : filter === "inbox" || inboxTab
+                      : filter === "inbox"
                         ? "当前没有缺答案的题目；导入「只有题目」的清单会汇集到这里。"
                         : "导入 Markdown / txt 笔记，自动识别题目与 Obsidian 标签。"}
               </p>
@@ -1042,7 +1084,7 @@ export function Library({
           if (!open && !batchBusy) setBatchDialog(null);
         }}
         title={batchDialog === "delete" ? "批量删除题目" : "批量移动题目"}
-        description={`已选择 ${activeSelectedIds.length} 道自有题目`}
+        description={`已选 ${activeSelectedIds.length} 道题`}
       >
         <div className="dialog-form">
           {batchDialog === "delete" ? (
@@ -1052,7 +1094,7 @@ export function Library({
             </p>
           ) : (
             <label className="field">
-              移动到目标题库
+              目标题库
               <select
                 aria-label="批量移动目标题库"
                 value={batchTargetDeckId}
@@ -1094,7 +1136,7 @@ export function Library({
             ) : (
               <FolderInput size={15} />
             )}{" "}
-            {batchDialog === "delete" ? "移入回收站" : "确认移动"}
+            {batchDialog === "delete" ? "移入回收站" : "移动"}
           </Button>
         </div>
       </Dialog>

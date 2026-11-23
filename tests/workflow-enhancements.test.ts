@@ -613,6 +613,73 @@ test("conversations persist attempt into Turn-2 prompt with note edit proposals 
   }
 });
 
+test("workspace.questions places newly created and batch-imported questions at the end across multiple decks", async () => {
+  const importRoute = await import("../src/app/api/import/route");
+
+  // Ensure alice has two decks: default first deck + a newer second deck
+  const secondDeckRes = await decks.POST(
+    request(alice, "/api/decks", {
+      action: "create",
+      title: "第二题库",
+      description: "测试排序",
+      color: "sand",
+    }),
+  );
+  assert.equal(secondDeckRes.status, 200);
+  const { id: secondDeckId } = (await secondDeckRes.json()) as { id: string };
+
+  const inSecond = await questions.POST(
+    request(alice, "/api/questions", {
+      action: "create",
+      deckId: secondDeckId,
+      title: "第二题库先创建的问题",
+      answer: "答案 A",
+      tags: [],
+    }),
+  );
+  assert.equal(inSecond.status, 200);
+  const { id: secondDeckQId } = (await inSecond.json()) as { id: string };
+
+  // Create a new question inside alice's FIRST deck: must still land at the END of workspace.questions
+  const inFirstLater = await questions.POST(
+    request(alice, "/api/questions", {
+      action: "create",
+      deckId: alice.deckId,
+      title: "第一题库后追加的问题",
+      answer: "答案 B",
+      tags: [],
+    }),
+  );
+  assert.equal(inFirstLater.status, 200);
+  const { id: appendedFirstDeckQId } = (await inFirstLater.json()) as { id: string };
+
+  const afterCreate = await state(alice);
+  assert.equal(afterCreate.questions.at(-1)?.id, appendedFirstDeckQId);
+  const secondIdx = afterCreate.questions.findIndex((q) => q.id === secondDeckQId);
+  const firstLaterIdx = afterCreate.questions.findIndex((q) => q.id === appendedFirstDeckQId);
+  assert.ok(secondIdx >= 0 && firstLaterIdx > secondIdx);
+
+  // Batch import multiple questions: must preserve input order and sit strictly at the END
+  const importRes = await importRoute.POST(
+    request(alice, "/api/import", {
+      batchId: randomUUID(),
+      deckId: alice.deckId,
+      inputType: "questions",
+      mode: "rules",
+      raw: "批量题一：什么是MVCC？\n批量题二：什么是WAL？\n批量题三：什么是B+树？",
+    }),
+  );
+  assert.equal(importRes.status, 200);
+
+  const afterImport = await state(alice);
+  const tailTitles = afterImport.questions.slice(-3).map((q) => q.title);
+  assert.deepEqual(tailTitles, [
+    "批量题一：什么是MVCC？",
+    "批量题二：什么是WAL？",
+    "批量题三：什么是B+树？",
+  ]);
+});
+
 after(async () => {
   const globalState = globalThis as unknown as {
     interviewDatabase?: Promise<{ close: () => Promise<void> }>;

@@ -123,11 +123,16 @@
   }
   .mobile-menu,
   .mobile-back-btn,
-  .mobile-ai-trigger,
   .mobile-search-trigger {
     display: inline-flex;
   }
-  .mobile-ai-trigger.is-active,
+  .topbar-actions > .icon-button.topbar-ai-trigger {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .topbar-ai-trigger.is-active,
+  .topbar-actions > .icon-button.topbar-ai-trigger.is-active,
   .reader-mobile-ai-btn.is-active {
     background: var(--accent-soft);
     color: var(--accent-dark);
@@ -157,8 +162,7 @@
   }
   .sync-state.sync-idle,
   .palette-quick-btn,
-  .topbar-ai-config-btn,
-  .logout-button {
+  .topbar-ai-config-btn {
     display: none;
   }
   .topbar-cluster {
@@ -167,15 +171,6 @@
   .topbar-theme-btn {
     width: 36px;
     height: 36px;
-  }
-  .topbar-import-btn > span {
-    display: none;
-  }
-  .topbar-import-btn {
-    min-width: 40px;
-    width: 40px;
-    min-height: 40px;
-    padding: 0;
   }
 
   /* —— 可左滑关闭的侧边抽屉 —— */
@@ -468,10 +463,24 @@
     min-height: 44px;
     touch-action: manipulation;
   }
-  .button.row-action-btn,
+  .icon-button.row-action-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+  }
   .ai-model-label-row > .button {
     min-height: 36px;
     padding: 6px 11px;
+  }
+  .message-actions button {
+    width: 34px;
+    height: 34px;
+  }
+  .oral-timer-btn {
+    width: 34px;
+    height: 34px;
   }
 
   /* —— 今日首页：首屏进度条 + 可滑动练习卡 —— */
@@ -660,7 +669,8 @@
   .library-page .page-heading {
     flex-direction: column;
     align-items: stretch;
-    gap: 12px;
+    gap: 10px;
+    margin-bottom: 12px;
   }
   .topbar.has-mobile-back + div .library-page .page-heading .back-link {
     display: none;
@@ -695,7 +705,7 @@
     display: flex;
     width: 100%;
     gap: 4px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
     scroll-snap-type: x proximity;
   }
   .library-sections > button {
@@ -808,9 +818,28 @@
     font-size: 0.875rem;
     line-height: 20px;
   }
-  .cram-trigger-btn,
-  .batch-toggle-btn {
-    min-height: 38px;
+  .cram-trigger-btn {
+    min-height: 36px;
+  }
+  .batch-toggle-btn,
+  .mobile-tag-toggle {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    color: var(--subtle);
+    flex-shrink: 0;
+  }
+  .batch-toggle-btn.is-active,
+  .mobile-tag-toggle.is-active {
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+    border-color: var(--border-accent);
+  }
+  .library-filter-dock {
+    margin-bottom: 14px;
+  }
+  .library-tag-bar:not(.is-mobile-open) {
+    display: none;
   }
   .batch-check-btn {
     width: 44px;
@@ -1175,9 +1204,6 @@
   .app-shell.ai-pushed .workspace-content {
     margin-right: 0;
   }
-  .ai-island-pill {
-    display: none;
-  }
   .ai-sheet-backdrop {
     display: block;
     position: fixed;
@@ -1215,6 +1241,9 @@
     height: calc(min(85dvh, 740px) + 48px);
     max-height: calc(100dvh - 36px - env(safe-area-inset-top) + 48px);
     padding-bottom: 48px;
+    background: var(--surface-floating-card);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     border: 1px solid var(--border);
     border-bottom: 0;
     border-radius: 22px 22px 0 0;
@@ -1486,13 +1515,26 @@
     padding: 14px;
     min-block-size: 12lh;
   }
-  .inline-editor-surface .tiptap-content {
+  .inline-editor-surface .tiptap-content,
+  .note-rich-surface .tiptap-content {
     padding: 14px;
+    font-size: 1rem;
   }
-  .inline-editor-surface .editor-toolbar {
+  .editor.is-empty .tiptap-content::before {
+    top: 23px;
+    left: 14px;
+    right: 14px;
+  }
+  .tiptap-math-inline-input,
+  .tiptap-math-block-editor > textarea {
+    font-size: 1rem;
+  }
+  .inline-editor-surface .editor-toolbar,
+  .note-rich-surface .editor-toolbar {
     padding-inline: 5px;
   }
-  .inline-editor-surface .editor-toolbar .button {
+  .inline-editor-surface .editor-toolbar .button,
+  .note-rich-surface .editor-toolbar .button {
     width: 31px;
     height: 32px;
     padding: 5px;
@@ -1548,7 +1590,6 @@
   .reader-layout,
   .followup-card,
   .ai-island-panel,
-  .ai-island-pill,
   .ai-live-dot.is-pulsing,
   .action-sheet-card,
   .dialog-content {

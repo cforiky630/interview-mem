@@ -1,5 +1,5 @@
 "use client";
-import { Loader2, Maximize2 } from "lucide-react";
+import { CheckCircle2, Loader2, Maximize2 } from "lucide-react";
 import type { ChatEdit, DeckView, QuestionView } from "@/lib/types";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
@@ -83,12 +83,11 @@ export function ChatEditCard({
       : edit.target === "note"
         ? edit.fields.note
         : undefined;
-  const detailSummary =
-    edit.target === "note" ? "查看建议笔记" : "查看建议答案";
+  const detailSummary = "展开预览";
   const detailEmpty = edit.target === "note" ? "清空个人笔记" : "清空答案";
   return (
     <div className="chat-edit-card">
-      <strong>{target}修改建议</strong>
+      <strong>建议修改{applyTarget}</strong>
       {rows.map(
         ([label, value]) =>
           value !== undefined && (
@@ -114,25 +113,32 @@ export function ChatEditCard({
             {applying && <Loader2 size={14} className="spin" />}
             应用到{applyTarget}
           </Button>
+        ) : state === "matched" ? (
+          <span
+            className="chat-edit-applied"
+            role="status"
+            title="已应用"
+            aria-label="已应用"
+          >
+            <CheckCircle2 size={16} aria-hidden="true" />
+          </span>
         ) : (
           <small className="muted" role="status">
-            {state === "matched"
-              ? "当前内容已符合建议"
-              : state === "stale"
-                ? "内容已更新，请重新生成建议"
-                : "当前无法编辑这项内容"}
+            {state === "stale"
+              ? "原题已改动，请重新让 AI 生成"
+              : "仅自有题库支持直接应用"}
           </small>
         )}
         {onInspect && (detailContent !== undefined || rows.length > 0) && (
-          <Button
+          <button
             type="button"
-            size="sm"
-            variant="ghost"
+            className="icon-button chat-edit-inspect-btn"
+            title={detailContent !== undefined ? "宽屏对比" : "查看详情"}
+            aria-label={detailContent !== undefined ? "宽屏对比" : "查看详情"}
             onClick={onInspect}
           >
-            <Maximize2 size={13} />
-            {detailContent !== undefined ? "宽屏对比" : "查看详情"}
-          </Button>
+            <Maximize2 size={14} />
+          </button>
         )}
       </div>
     </div>
