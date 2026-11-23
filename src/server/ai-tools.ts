@@ -1,6 +1,7 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { decks, questions, releases, studyCards, subscriptions } from "@/db/schema";
+import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import type { ProviderTool } from "./ai";
 import { AppError } from "./errors";
 import { accessibleQuestion } from "./workspace";
@@ -18,11 +19,18 @@ type ScopedQuestionItem = {
   deckTitle: string;
   isOwner: boolean;
   title: string;
-  answer: string;
+  answerSnippet: string;
+  hasAnswer: boolean;
+  noteSnippet: string;
   tags: string[];
   needsEditing: boolean;
   due: string | null;
   updatedAt: string;
+};
+
+export type ScopedPool = {
+  pool: ScopedQuestionItem[];
+  deckRows: { id: string | null; title: string; isOwner: boolean }[];
 };
 
 export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
@@ -31,7 +39,7 @@ export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
     function: {
       name: "search_questions",
       description:
-        "按关键词、标签或学习状态检索当前范围（当前题库或全部题库）内的相关面试题。",
+        "按关键词、标签、笔记或学习状态检索当前范围（当前题库或全部题库）内的相关面试题。",
       parameters: {
         type: "object",
         properties: {
@@ -127,21 +135,24 @@ function charBigrams(text: string): Set<string> {
   return grams;
 }
 
-function diceSimilarity(a: string, b: string): number {
-  const na = normalizeForSimilarity(a);
-  const nb = normalizeForSimilarity(b);
-  if (!na || !nb) return 0;
-  if (na === nb) return 1;
-  if (na.length >= 4 && nb.length >= 4 && (na.includes(nb) || nb.includes(na))) {
+function precomputedDiceSimilarity(
+  a: { norm: string; grams: Set<string> },
+  b: { norm: string; grams: Set<string> },
+): number {
+  if (!a.norm || !b.norm) return 0;
+  if (a.norm === b.norm) return 1;
+  if (
+    a.norm.length >= 4 &&
+    b.norm.length >= 4 &&
+    (a.norm.includes(b.norm) || b.norm.includes(a.norm))
+  ) {
     return 0.86;
   }
-  const ga = charBigrams(na);
-  const gb = charBigrams(nb);
   let overlap = 0;
-  for (const gram of ga) {
-    if (gb.has(gram)) overlap += 1;
+  for (const gram of a.grams) {
+    if (b.grams.has(gram)) overlap += 1;
   }
-  return (2 * overlap) / (ga.size + gb.size);
+  return (2 * overlap) / (a.grams.size + b.grams.size);
 }
 
 export async function assertDeckChatAccess(userId: string, deckId: string) {
@@ -178,20 +189,57 @@ export async function assertDeckChatAccess(userId: string, deckId: string) {
   return { ...sub, isOwner: false };
 }
 
-async function loadScopedPool(
+async function resolveDeckTitle(
+  userId: string,
+  deckId: string | null,
+  isOwner: boolean,
+): Promise<string> {
+  if (!deckId) return "未分类";
+  const db = await getDb();
+  if (isOwner) {
+    const [own] = await db
+      .select({ title: decks.title })
+      .from(decks)
+      .where(
+        and(
+          eq(decks.id, deckId),
+          eq(decks.ownerId, userId),
+          isNull(decks.deletedAt),
+        ),
+      );
+    return own?.title ?? "未分类";
+  }
+  const [rel] = await db
+    .select({ title: releases.title })
+    .from(releases)
+    .innerJoin(
+      decks,
+      and(
+        eq(releases.deckId, decks.id),
+        eq(releases.version, decks.publishedVersion),
+      ),
+    )
+    .where(eq(releases.deckId, deckId));
+  return rel?.title ?? "订阅题库";
+}
+
+export async function loadScopedPool(
   userId: string,
   scope: "deck" | "workspace",
   deckId: string | null,
-): Promise<{
-  pool: ScopedQuestionItem[];
-  deckRows: { id: string | null; title: string; isOwner: boolean }[];
-}> {
+): Promise<ScopedPool> {
   const db = await getDb();
   const [ownDecks, subs, studyRows] = await Promise.all([
     db
       .select({ id: decks.id, title: decks.title })
       .from(decks)
-      .where(and(eq(decks.ownerId, userId), isNull(decks.deletedAt))),
+      .where(
+        and(
+          eq(decks.ownerId, userId),
+          isNull(decks.deletedAt),
+          scope === "deck" && deckId ? eq(decks.id, deckId) : undefined,
+        ),
+      ),
     db
       .select({
         deckId: decks.id,
@@ -199,11 +247,19 @@ async function loadScopedPool(
       })
       .from(subscriptions)
       .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-      .where(eq(subscriptions.userId, userId)),
+      .where(
+        and(
+          eq(subscriptions.userId, userId),
+          scope === "deck" && deckId
+            ? eq(subscriptions.deckId, deckId)
+            : undefined,
+        ),
+      ),
     db
       .select({
         questionId: studyCards.questionId,
         fsrs: studyCards.fsrs,
+        noteSnippet: sql<string>`left(${studyCards.note}, 1000)`,
       })
       .from(studyCards)
       .where(eq(studyCards.userId, userId)),
@@ -211,7 +267,7 @@ async function loadScopedPool(
 
   const deckTitleMap = new Map<string, { title: string; isOwner: boolean }>();
   for (const d of ownDecks) deckTitleMap.set(d.id, { title: d.title, isOwner: true });
-  const fsrsMap = new Map(studyRows.map((s) => [s.questionId, s.fsrs]));
+  const studyMap = new Map(studyRows.map((s) => [s.questionId, s]));
   const pool: ScopedQuestionItem[] = [];
 
   if (!deckId || deckTitleMap.has(deckId)) {
@@ -220,10 +276,10 @@ async function loadScopedPool(
         id: questions.id,
         deckId: questions.deckId,
         title: questions.title,
-        answer: questions.answer,
+        answerSnippet: sql<string>`left(${questions.answer}, 2000)`,
+        hasAnswer: sql<boolean>`btrim(${questions.answer}) <> ''`,
         tags: questions.tags,
         needsEditing: questions.needsEditing,
-        archived: questions.archived,
         updatedAt: questions.updatedAt,
       })
       .from(questions)
@@ -237,7 +293,11 @@ async function loadScopedPool(
         ),
       );
     for (const q of ownedRows) {
-      const card = fsrsMap.get(q.id);
+      const study = studyMap.get(q.id);
+      const mergedTags = mergeQuestionTags(
+        q.tags,
+        markdownDocument(q.answerSnippet).tags,
+      );
       pool.push({
         id: q.id,
         deckId: q.deckId,
@@ -246,19 +306,18 @@ async function loadScopedPool(
           : "未分类",
         isOwner: true,
         title: q.title,
-        answer: q.answer,
-        tags: q.tags,
+        answerSnippet: q.answerSnippet,
+        hasAnswer: Boolean(q.hasAnswer),
+        noteSnippet: study?.noteSnippet ?? "",
+        tags: mergedTags,
         needsEditing: q.needsEditing,
-        due: card?.due ? String(card.due) : null,
+        due: study?.fsrs?.due ? String(study.fsrs.due) : null,
         updatedAt: q.updatedAt.toISOString(),
       });
     }
   }
 
-  const subIds =
-    scope === "deck" && deckId
-      ? subs.filter((s) => s.deckId === deckId).map((s) => s.deckId)
-      : subs.map((s) => s.deckId);
+  const subIds = subs.map((s) => s.deckId);
 
   if (subIds.length) {
     const published = await db
@@ -276,17 +335,24 @@ async function loadScopedPool(
       deckTitleMap.set(release.deckId, { title: release.title, isOwner: false });
       for (const q of release.questions) {
         if (q.archived) continue;
-        const card = fsrsMap.get(q.id);
+        const study = studyMap.get(q.id);
+        const snippet = q.answer.slice(0, 2000);
+        const mergedTags = mergeQuestionTags(
+          q.tags,
+          markdownDocument(snippet).tags,
+        );
         pool.push({
           id: q.id,
           deckId: release.deckId,
           deckTitle: release.title,
           isOwner: false,
           title: q.title,
-          answer: q.answer,
-          tags: q.tags,
+          answerSnippet: snippet,
+          hasAnswer: Boolean(q.answer.trim()),
+          noteSnippet: study?.noteSnippet ?? "",
+          tags: mergedTags,
           needsEditing: q.needsEditing,
-          due: card?.due ? String(card.due) : null,
+          due: study?.fsrs?.due ? String(study.fsrs.due) : null,
           updatedAt: q.updatedAt,
         });
       }
@@ -313,6 +379,7 @@ export async function executeWorkspaceTool(
   deckId: string | null,
   name: string,
   rawArgs: string,
+  cachedPool?: Promise<ScopedPool>,
 ): Promise<{
   output: unknown;
   label: string;
@@ -322,7 +389,9 @@ export async function executeWorkspaceTool(
   if (rawArgs.trim()) {
     try {
       const parsed = JSON.parse(rawArgs);
-      if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") {
+        args = parsed as Record<string, unknown>;
+      }
     } catch {
       args = {};
     }
@@ -332,10 +401,21 @@ export async function executeWorkspaceTool(
     const questionId =
       typeof args.questionId === "string" ? args.questionId.trim() : "";
     if (!questionId) {
-      return { output: { error: "缺少 questionId 参数。" }, label: "读取题目详情", refs: [] };
+      return {
+        output: { error: "缺少 questionId 参数。" },
+        label: "读取题目详情",
+        refs: [],
+      };
     }
     try {
       const q = await accessibleQuestion(userId, questionId);
+      if (q.archived) {
+        return {
+          output: { error: "该题目已归档。" },
+          label: "题目已归档",
+          refs: [],
+        };
+      }
       if (scope === "deck" && deckId && q.deckId !== deckId) {
         return {
           output: { error: "该题目不属于当前题库范围。" },
@@ -344,22 +424,28 @@ export async function executeWorkspaceTool(
         };
       }
       const db = await getDb();
-      const [study] = await db
-        .select({ note: studyCards.note })
-        .from(studyCards)
-        .where(
-          and(
-            eq(studyCards.userId, userId),
-            eq(studyCards.questionId, q.id),
+      const [[study], deckTitle] = await Promise.all([
+        db
+          .select({ note: studyCards.note })
+          .from(studyCards)
+          .where(
+            and(
+              eq(studyCards.userId, userId),
+              eq(studyCards.questionId, q.id),
+            ),
           ),
-        );
+        resolveDeckTitle(userId, q.deckId, q.isOwner),
+      ]);
+      const tags = mergeQuestionTags(q.tags, markdownDocument(q.answer).tags);
       return {
         label: `已读取「${q.title.slice(0, 20)}」`,
-        refs: [{ id: q.id, title: q.title, deckTitle: q.deckId ?? "" }],
+        refs: [{ id: q.id, title: q.title, deckTitle }],
         output: {
           id: q.id,
+          deckTitle,
+          isOwner: q.isOwner,
           title: q.title,
-          tags: q.tags,
+          tags,
           revision: q.revision,
           needsEditing: q.needsEditing,
           answer: q.answer.slice(0, 6000),
@@ -375,10 +461,11 @@ export async function executeWorkspaceTool(
     }
   }
 
-  const { pool, deckRows } = await loadScopedPool(userId, scope, deckId);
-  const now = Date.now();
+  const getPool = () => cachedPool ?? loadScopedPool(userId, scope, deckId);
 
   if (name === "list_workspace_overview") {
+    const { pool, deckRows } = await getPool();
+    const now = Date.now();
     const summary = deckRows.map((d) => {
       const items = pool.filter((q) => q.deckId === d.id);
       return {
@@ -386,7 +473,9 @@ export async function executeWorkspaceTool(
         title: d.title,
         isOwner: d.isOwner,
         total: items.length,
-        due: items.filter((q) => q.due && Date.parse(q.due) <= now).length,
+        due: items.filter(
+          (q) => q.hasAnswer && q.due && Date.parse(q.due) <= now,
+        ).length,
         needsEditing: items.filter((q) => q.needsEditing).length,
       };
     });
@@ -398,35 +487,63 @@ export async function executeWorkspaceTool(
   }
 
   if (name === "find_duplicate_questions") {
-    const limit = Math.min(
-      15,
-      Math.max(1, Number(args.limit) || 8),
-    );
+    const { pool } = await getPool();
+    const limit = Math.min(15, Math.max(1, Number(args.limit) || 8));
     const capped = [...pool]
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .slice(0, 280);
+    const prepared = capped.map((item) => {
+      const norm = normalizeForSimilarity(item.title);
+      return { item, norm, grams: charBigrams(norm) };
+    });
+
     const pairs: {
       similarity: number;
-      a: { id: string; title: string; deckTitle: string; tags: string[] };
-      b: { id: string; title: string; deckTitle: string; tags: string[] };
+      a: {
+        id: string;
+        title: string;
+        deckTitle: string;
+        tags: string[];
+        isOwner: boolean;
+      };
+      b: {
+        id: string;
+        title: string;
+        deckTitle: string;
+        tags: string[];
+        isOwner: boolean;
+      };
     }[] = [];
-    for (let i = 0; i < capped.length; i++) {
-      for (let j = i + 1; j < capped.length; j++) {
-        const qa = capped[i];
-        const qb = capped[j];
-        const titleSim = diceSimilarity(qa.title, qb.title);
+
+    for (let i = 0; i < prepared.length; i++) {
+      for (let j = i + 1; j < prepared.length; j++) {
+        const pa = prepared[i];
+        const pb = prepared[j];
+        const titleSim = precomputedDiceSimilarity(pa, pb);
         const tagBonus =
-          qa.tags.length && qb.tags.length
-            ? qa.tags.some((t) => qb.tags.includes(t))
-              ? 0.06
-              : 0
+          pa.item.tags.length &&
+          pb.item.tags.length &&
+          pa.item.tags.some((t) => pb.item.tags.includes(t))
+            ? 0.06
             : 0;
         const score = Math.min(1, Math.round((titleSim + tagBonus) * 100) / 100);
         if (score >= 0.48) {
           pairs.push({
             similarity: score,
-            a: { id: qa.id, title: qa.title, deckTitle: qa.deckTitle, tags: qa.tags },
-            b: { id: qb.id, title: qb.title, deckTitle: qb.deckTitle, tags: qb.tags },
+            a: {
+              id: pa.item.id,
+              title: pa.item.title,
+              deckTitle: pa.item.deckTitle,
+              tags: pa.item.tags,
+              isOwner: pa.item.isOwner,
+            },
+            b: {
+              id: pb.item.id,
+              title: pb.item.title,
+              deckTitle: pb.item.deckTitle,
+              tags: pb.item.tags,
+              isOwner: pb.item.isOwner,
+            },
           });
         }
       }
@@ -435,8 +552,16 @@ export async function executeWorkspaceTool(
     const topPairs = pairs.slice(0, limit);
     const refsMap = new Map<string, ToolQuestionRef>();
     for (const pair of topPairs) {
-      refsMap.set(pair.a.id, { id: pair.a.id, title: pair.a.title, deckTitle: pair.a.deckTitle });
-      refsMap.set(pair.b.id, { id: pair.b.id, title: pair.b.title, deckTitle: pair.b.deckTitle });
+      refsMap.set(pair.a.id, {
+        id: pair.a.id,
+        title: pair.a.title,
+        deckTitle: pair.a.deckTitle,
+      });
+      refsMap.set(pair.b.id, {
+        id: pair.b.id,
+        title: pair.b.title,
+        deckTitle: pair.b.deckTitle,
+      });
     }
     return {
       label: topPairs.length
@@ -450,81 +575,101 @@ export async function executeWorkspaceTool(
     };
   }
 
-  // Default: search_questions
-  const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
-  const filter =
-    args.filter === "due" ||
-    args.filter === "needsEditing" ||
-    args.filter === "new"
-      ? args.filter
-      : "all";
-  const limit = Math.min(20, Math.max(1, Number(args.limit) || 10));
-  const terms = query.split(/\s+/).filter(Boolean);
+  if (name === "search_questions") {
+    const { pool } = await getPool();
+    const now = Date.now();
+    const query =
+      typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
+    const filter =
+      args.filter === "due" ||
+      args.filter === "needsEditing" ||
+      args.filter === "new"
+        ? args.filter
+        : "all";
+    const limit = Math.min(20, Math.max(1, Number(args.limit) || 10));
+    const terms = query.split(/\s+/).filter(Boolean);
 
-  const ranked = pool
-    .filter((q) => {
-      if (filter === "needsEditing") return q.needsEditing;
-      if (filter === "due") return !!q.due && Date.parse(q.due) <= now;
-      if (filter === "new") return !q.due;
-      return true;
-    })
-    .map((q) => {
-      if (!terms.length) return { item: q, score: 1 };
-      const titleLower = q.title.toLowerCase();
-      const tagsLower = q.tags.join(" ").toLowerCase();
-      const deckLower = q.deckTitle.toLowerCase();
-      const ansLower = q.answer.slice(0, 1200).toLowerCase();
-      let score = 0;
-      for (const term of terms) {
-        let hit = false;
-        if (titleLower.includes(term)) {
-          score += 5;
-          hit = true;
+    const ranked = pool
+      .filter((q) => {
+        if (filter === "needsEditing") return q.needsEditing;
+        if (filter === "due")
+          return q.hasAnswer && !!q.due && Date.parse(q.due) <= now;
+        if (filter === "new") return q.hasAnswer && !q.due;
+        return true;
+      })
+      .map((q) => {
+        if (!terms.length) return { item: q, score: 1 };
+        const titleLower = q.title.toLowerCase();
+        const tagsLower = q.tags.join(" ").toLowerCase();
+        const deckLower = q.deckTitle.toLowerCase();
+        const ansLower = q.answerSnippet.slice(0, 1200).toLowerCase();
+        const noteLower = q.noteSnippet.toLowerCase();
+        let score = 0;
+        for (const term of terms) {
+          let hit = false;
+          if (titleLower.includes(term)) {
+            score += 5;
+            hit = true;
+          }
+          if (tagsLower.includes(term)) {
+            score += 3;
+            hit = true;
+          }
+          if (deckLower.includes(term)) {
+            score += 2;
+            hit = true;
+          }
+          if (noteLower.includes(term)) {
+            score += 2;
+            hit = true;
+          }
+          if (ansLower.includes(term)) {
+            score += 1;
+            hit = true;
+          }
+          if (!hit) return null;
         }
-        if (tagsLower.includes(term)) {
-          score += 3;
-          hit = true;
-        }
-        if (deckLower.includes(term)) {
-          score += 2;
-          hit = true;
-        }
-        if (ansLower.includes(term)) {
-          score += 1;
-          hit = true;
-        }
-        if (!hit) return null;
-      }
-      return { item: q, score };
-    })
-    .filter((entry): entry is { item: ScopedQuestionItem; score: number } => !!entry)
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        Date.parse(b.item.updatedAt) - Date.parse(a.item.updatedAt),
-    )
-    .slice(0, limit);
+        return { item: q, score };
+      })
+      .filter(
+        (entry): entry is { item: ScopedQuestionItem; score: number } =>
+          !!entry,
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          Date.parse(b.item.updatedAt) - Date.parse(a.item.updatedAt),
+      )
+      .slice(0, limit);
 
-  const items = ranked.map(({ item }) => ({
-    id: item.id,
-    title: item.title,
-    deckTitle: item.deckTitle,
-    tags: item.tags,
-    needsEditing: item.needsEditing,
-    due: item.due,
-    snippet: item.answer.replace(/\s+/g, " ").trim().slice(0, 160),
-  }));
+    const items = ranked.map(({ item }) => ({
+      id: item.id,
+      title: item.title,
+      deckTitle: item.deckTitle,
+      isOwner: item.isOwner,
+      tags: item.tags,
+      needsEditing: item.needsEditing,
+      due: item.due,
+      snippet: item.answerSnippet.replace(/\s+/g, " ").trim().slice(0, 160),
+    }));
+
+    return {
+      label: items.length
+        ? `已检索到 ${items.length} 道相关题目`
+        : "未检索到匹配题目",
+      refs: items.slice(0, 8).map((q) => ({
+        id: q.id,
+        title: q.title,
+        deckTitle: q.deckTitle,
+      })),
+      output: { totalInScope: pool.length, matches: items },
+    };
+  }
 
   return {
-    label: items.length
-      ? `已检索到 ${items.length} 道相关题目`
-      : "未检索到匹配题目",
-    refs: items.slice(0, 8).map((q) => ({
-      id: q.id,
-      title: q.title,
-      deckTitle: q.deckTitle,
-    })),
-    output: { totalInScope: pool.length, matches: items },
+    label: `未知工具：${name}`,
+    refs: [],
+    output: { error: `Unknown tool: ${name}` },
   };
 }
 
@@ -532,8 +677,10 @@ export async function buildFallbackScopeSummary(
   userId: string,
   scope: "deck" | "workspace",
   deckId: string | null,
+  cachedPool?: Promise<ScopedPool>,
 ) {
-  const { pool, deckRows } = await loadScopedPool(userId, scope, deckId);
+  const { pool, deckRows } = await (cachedPool ??
+    loadScopedPool(userId, scope, deckId));
   const top = [...pool]
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .slice(0, 25)

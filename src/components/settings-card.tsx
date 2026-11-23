@@ -3,6 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Check, Download, Moon, Sun, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
+import { syncDocumentTheme } from "@/lib/theme";
+import { userInitials } from "@/lib/user-display";
 import type { Workspace } from "@/lib/types";
 import { AiConnectionForm } from "./ai-connection-form";
 import type { Mutate } from "./dialogs";
@@ -45,6 +47,18 @@ export function SettingsCard({
   );
   const [isMobile, setIsMobile] = useState(false);
   const [dragY, setDragY] = useState(0);
+  const [aiSessionSeq, setAiSessionSeq] = useState(0);
+
+  const wasOpenRef = useRef(false);
+  const prevModeRef = useRef(mode);
+  const justSavedRef = useRef(false);
+  const openBaselineRef = useRef<{
+    theme: "light" | "dark";
+    palette: "forest" | "lavender";
+  }>({
+    theme: data.settings.theme === "dark" ? "dark" : "light",
+    palette,
+  });
 
   const sheetTouch = useRef<{
     x: number;
@@ -57,37 +71,63 @@ export function SettingsCard({
   const cardPresence = useDiscretePresence<HTMLElement>(open);
 
   useEffect(() => {
-    if (open) {
+    const justOpened = open && !wasOpenRef.current;
+    const justClosed = !open && wasOpenRef.current;
+    const switchedOutOfAccount =
+      open && prevModeRef.current === "account" && mode !== "account";
+    const enteredAi =
+      open &&
+      mode === "ai" &&
+      (!wasOpenRef.current || prevModeRef.current !== "ai");
+
+    if (justOpened) {
+      justSavedRef.current = false;
+      const baseTheme =
+        document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+      const basePalette =
+        document.documentElement.dataset.palette === "lavender"
+          ? "lavender"
+          : "forest";
+      openBaselineRef.current = { theme: baseTheme, palette: basePalette };
       setGoal(data.settings.dailyGoal);
       setNewLimit(data.settings.dailyNewLimit);
-      setTheme(data.settings.theme);
-      setDraftPalette(palette);
+      setTheme(baseTheme);
+      setDraftPalette(basePalette);
       setDragY(0);
     }
+    if (enteredAi) {
+      setAiSessionSeq((s) => s + 1);
+    }
+    if ((justClosed || switchedOutOfAccount) && !justSavedRef.current) {
+      syncDocumentTheme(
+        openBaselineRef.current.theme,
+        openBaselineRef.current.palette,
+      );
+      setTheme(openBaselineRef.current.theme);
+      setDraftPalette(openBaselineRef.current.palette);
+    }
+    if (justClosed) {
+      justSavedRef.current = false;
+    }
+
+    wasOpenRef.current = open;
+    prevModeRef.current = mode;
   }, [
     open,
-    palette,
+    mode,
     data.settings.dailyGoal,
     data.settings.dailyNewLimit,
-    data.settings.theme,
   ]);
 
   const closeWithRollback = useCallback(() => {
-    document.documentElement.dataset.theme = data.settings.theme;
-    document.documentElement.dataset.palette = palette;
+    if (!justSavedRef.current) {
+      syncDocumentTheme(
+        openBaselineRef.current.theme,
+        openBaselineRef.current.palette,
+      );
+    }
     onClose();
-  }, [data.settings.theme, palette, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const mq = window.matchMedia("(max-width: 760px)");
-    if (!mq.matches) return;
-    const previous = document.documentElement.style.overflow;
-    document.documentElement.style.overflow = "hidden";
-    return () => {
-      document.documentElement.style.overflow = previous;
-    };
-  }, [open]);
+  }, [onClose]);
 
   useLayoutEffect(() => {
     const card = cardPresence.ref.current;
@@ -245,7 +285,12 @@ export function SettingsCard({
       event.preventDefault();
       event.stopPropagation();
       closeWithRollback();
-      if (anchor && anchor.isConnected) {
+      if (
+        anchor &&
+        anchor.isConnected &&
+        getComputedStyle(anchor).visibility !== "hidden" &&
+        getComputedStyle(anchor).display !== "none"
+      ) {
         requestAnimationFrame(() => anchor.focus({ preventScroll: true }));
       }
     };
@@ -260,15 +305,24 @@ export function SettingsCard({
   async function savePreferences() {
     setBusy(true);
     try {
-      onPaletteChange?.(draftPalette);
+      const targetTheme: "light" | "dark" = theme === "dark" ? "dark" : "light";
       const result = await mutate("/api/settings", {
         action: "preferences",
         dailyGoal: Number(goal),
         dailyNewLimit: Number(newLimit),
-        theme,
+        theme: targetTheme,
         timeZone: data.settings.timeZone,
       });
-      if (result) toast.success("学习偏好已保存。");
+      if (result) {
+        justSavedRef.current = true;
+        openBaselineRef.current = {
+          theme: targetTheme,
+          palette: draftPalette,
+        };
+        onPaletteChange?.(draftPalette);
+        syncDocumentTheme(targetTheme, draftPalette);
+        toast.success("学习偏好已保存。");
+      }
     } finally {
       setBusy(false);
     }
@@ -370,9 +424,10 @@ export function SettingsCard({
             const endY = event.changedTouches[0]?.clientY ?? state.y;
             const dy = endY - state.y;
             const velocity = dy / Math.max(1, Date.now() - state.time);
-            setDragY(0);
             if (dy > 90 || velocity > 0.45) {
               closeWithRollback();
+            } else {
+              setDragY(0);
             }
           }}
           onTouchCancel={() => {
@@ -397,7 +452,7 @@ export function SettingsCard({
             ) : (
               <div className="settings-account-hero">
                 <span className="settings-account-avatar" aria-hidden="true">
-                  {data.user.name.slice(0, 1).toUpperCase()}
+                  {userInitials(data.user.name)}
                 </span>
                 <div className="settings-account-meta">
                   <h2 id="settings-card-title">{data.user.name}</h2>
@@ -451,6 +506,7 @@ export function SettingsCard({
         <div className="settings-card-body">
           {mode === "ai" ? (
             <AiConnectionForm
+              key={aiSessionSeq}
               userId={data.user.id}
               settings={data.settings}
               mutate={mutate}
@@ -496,7 +552,10 @@ export function SettingsCard({
                     aria-pressed={draftPalette === "forest"}
                     onClick={() => {
                       setDraftPalette("forest");
-                      document.documentElement.dataset.palette = "forest";
+                      syncDocumentTheme(
+                        theme === "dark" ? "dark" : "light",
+                        "forest",
+                      );
                     }}
                   >
                     {draftPalette === "forest" && (
@@ -521,7 +580,10 @@ export function SettingsCard({
                     aria-pressed={draftPalette === "lavender"}
                     onClick={() => {
                       setDraftPalette("lavender");
-                      document.documentElement.dataset.palette = "lavender";
+                      syncDocumentTheme(
+                        theme === "dark" ? "dark" : "light",
+                        "lavender",
+                      );
                     }}
                   >
                     {draftPalette === "lavender" && (
@@ -551,7 +613,7 @@ export function SettingsCard({
                     aria-pressed={theme === "light"}
                     onClick={() => {
                       setTheme("light");
-                      document.documentElement.dataset.theme = "light";
+                      syncDocumentTheme("light", draftPalette);
                     }}
                   >
                     {theme === "light" && (
@@ -567,7 +629,7 @@ export function SettingsCard({
                     aria-pressed={theme === "dark"}
                     onClick={() => {
                       setTheme("dark");
-                      document.documentElement.dataset.theme = "dark";
+                      syncDocumentTheme("dark", draftPalette);
                     }}
                   >
                     {theme === "dark" && (

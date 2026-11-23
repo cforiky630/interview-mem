@@ -99,7 +99,6 @@ export function ActionMenu({
     // The top layer avoids clipping inside scrollable dialogs and cards.
     const floating = typeof menu.showPopover === "function";
     if (floating && !menu.matches(":popover-open")) menu.showPopover();
-    let previousOverflow: string | null = null;
     const viewport = window.visualViewport;
     const place = () => {
       if (window.matchMedia("(max-width: 760px)").matches) {
@@ -150,10 +149,6 @@ export function ActionMenu({
       }
       menu.style.transformOrigin = opensAbove ? "bottom right" : "top right";
     };
-    if (isMobile) {
-      previousOverflow = document.documentElement.style.overflow;
-      document.documentElement.style.overflow = "hidden";
-    }
     place();
     if (focusFirstOnOpenRef.current) {
       focusFirstOnOpenRef.current = false;
@@ -194,9 +189,6 @@ export function ActionMenu({
     viewport?.addEventListener("resize", place);
     if (!isMobile) viewport?.addEventListener("scroll", place);
     return () => {
-      if (previousOverflow !== null) {
-        document.documentElement.style.overflow = previousOverflow;
-      }
       if (floating && !closingRef.current && menu.matches(":popover-open")) {
         menu.hidePopover();
       }

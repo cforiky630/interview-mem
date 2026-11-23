@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, KeyRound, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/lib/client";
 import type { Workspace } from "@/lib/types";
 import {
@@ -33,6 +34,7 @@ export function AiConnectionForm({
   const [busy, setBusy] = useState<"save" | "test" | "delete" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tested, setTested] = useState(false);
+  const [manualModelInput, setManualModelInput] = useState(false);
   const modelRequest = useRef<AbortController | null>(null);
   const presetId = aiPresetFor(baseUrl);
   const canKeepKey =
@@ -49,6 +51,8 @@ export function AiConnectionForm({
   const modelOptions = Array.from(
     new Set([...(model.trim() ? [model.trim()] : []), ...models]),
   );
+  const showManualInput =
+    manualModelInput || (modelOptions.length === 0 && !loadingModels);
   const changed =
     !!key.trim() ||
     !sameAiEndpoint(baseUrl, settings.baseUrl) ||
@@ -144,23 +148,32 @@ export function AiConnectionForm({
     if (!canConnect || busy) return;
     setBusy(action === "saveConnection" ? "save" : "test");
     try {
-      const result = await mutate("/api/settings", {
+      const payload = {
         action,
         baseUrl,
         model,
         ...(key.trim() ? { key: key.trim() } : {}),
-      });
+      };
+      if (action === "testConnection") {
+        await api("/api/settings", payload, { userId });
+        setTested(true);
+        toast.success("模型连接测试通过。");
+        return;
+      }
+      const result = await mutate("/api/settings", payload);
       if (!result) {
         setTested(false);
         return;
       }
-      if (action === "saveConnection") {
-        setBaseUrl(normalizeAiBaseUrl(baseUrl));
-        setModel(model.trim());
-        setKey("");
-      } else {
-        setTested(true);
-      }
+      setBaseUrl(normalizeAiBaseUrl(baseUrl));
+      setModel(model.trim());
+      setKey("");
+      toast.success("模型连接配置已保存。");
+    } catch (error) {
+      setTested(false);
+      toast.error(
+        error instanceof Error ? error.message : "请求未完成，请稍后重试。",
+      );
     } finally {
       setBusy(null);
     }
@@ -243,54 +256,92 @@ export function AiConnectionForm({
       <div className="field">
         <div className="ai-model-label-row">
           <label htmlFor="ai-model-select">模型</label>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={!canFetchModels || loadingModels || !!busy}
-            onClick={() => void fetchModels(false)}
-          >
-            {loadingModels ? (
-              <Loader2 size={13} className="spin" />
-            ) : (
-              <RefreshCw size={13} />
+          <div className="ai-model-actions">
+            {modelOptions.length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!!busy || loadingModels}
+                onClick={() => setManualModelInput((v) => !v)}
+              >
+                {manualModelInput ? "列表选择" : "手动输入"}
+              </Button>
             )}
-            {loadingModels ? "获取中…" : "获取模型"}
-          </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!canFetchModels || loadingModels || !!busy}
+              onClick={() => void fetchModels(false)}
+            >
+              {loadingModels ? (
+                <Loader2 size={13} className="spin" />
+              ) : (
+                <RefreshCw size={13} />
+              )}
+              {loadingModels ? "获取中…" : "获取模型"}
+            </Button>
+          </div>
         </div>
-        <select
-          id="ai-model-select"
-          aria-label="模型"
-          value={model}
-          disabled={!!busy || loadingModels || modelOptions.length === 0}
-          onChange={(event) => {
-            setModel(event.target.value);
-            setTested(false);
-          }}
-        >
-          <option value="" disabled hidden={modelOptions.length > 0 && !!model}>
-            {loadingModels
-              ? "正在获取模型列表…"
-              : modelOptions.length
-                ? `请选择模型（共 ${modelOptions.length} 个）`
-                : "请先获取模型列表"}
-          </option>
-          {modelOptions.map((item) => (
-            <option key={item} value={item}>
-              {item}
+        {showManualInput ? (
+          <input
+            id="ai-model-select"
+            type="text"
+            aria-label="模型"
+            value={model}
+            maxLength={160}
+            autoComplete="off"
+            spellCheck={false}
+            autoCapitalize="none"
+            disabled={!!busy}
+            placeholder="例如 deepseek-chat、deepseek-reasoner 或 gpt-4.1-mini"
+            onChange={(event) => {
+              setModel(event.target.value);
+              setTested(false);
+            }}
+          />
+        ) : (
+          <select
+            id="ai-model-select"
+            aria-label="模型"
+            value={model}
+            disabled={!!busy || loadingModels || modelOptions.length === 0}
+            onChange={(event) => {
+              setModel(event.target.value);
+              setTested(false);
+            }}
+          >
+            <option
+              value=""
+              disabled
+              hidden={modelOptions.length > 0 && !!model}
+            >
+              {loadingModels
+                ? "正在获取模型列表…"
+                : `请选择模型（共 ${modelOptions.length} 个）`}
             </option>
-          ))}
-        </select>
+            {modelOptions.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        )}
         {modelFeedback ? (
           <small
-            className={modelFeedback.type === "error" ? "form-error-inline" : "muted"}
+            className={
+              modelFeedback.type === "error" ? "form-error-inline" : "muted"
+            }
             role={modelFeedback.type === "error" ? "alert" : "status"}
           >
             {modelFeedback.text}
           </small>
         ) : (
           <small className="muted">
-            填好地址与 Key 后点击「获取模型」可从 /models 拉取可用列表。
+            {showManualInput
+              ? "可直接输入任意模型 ID，或点击「获取模型」从接口拉取列表。"
+              : "填好地址与 Key 后点击「获取模型」可从 /models 拉取可用列表。"}
           </small>
         )}
       </div>
@@ -330,7 +381,9 @@ export function AiConnectionForm({
                     });
                     if (result) {
                       setKey("");
+                      setModel("");
                       setModels([]);
+                      setManualModelInput(false);
                       setTested(false);
                       setModelFeedback(null);
                       setConfirmDelete(false);

@@ -168,6 +168,9 @@ export function useWorkspaceSync(sessionId: string) {
   const pendingCount = useRef(0);
   pendingCount.current = pending;
   const lifetime = useRef<AbortController | null>(null);
+  const refreshAbort = useRef<AbortController | null>(null);
+  const refreshSeq = useRef(0);
+  const mutationEpoch = useRef(0);
   const lastSyncedAt = useRef(0);
 
   useEffect(() => {
@@ -175,14 +178,21 @@ export function useWorkspaceSync(sessionId: string) {
     lifetime.current = controller;
     return () => {
       controller.abort();
+      refreshAbort.current?.abort();
       lifetime.current = null;
     };
   }, []);
 
   const refresh = useCallback(
     async (silent = false) => {
-      const signal = lifetime.current?.signal;
-      if (!signal || signal.aborted) return null;
+      const lifeSignal = lifetime.current?.signal;
+      if (!lifeSignal || lifeSignal.aborted) return null;
+      refreshAbort.current?.abort();
+      const controller = new AbortController();
+      refreshAbort.current = controller;
+      const seq = ++refreshSeq.current;
+      const startEpoch = mutationEpoch.current;
+      const signal = AbortSignal.any([lifeSignal, controller.signal]);
       try {
         const result = await api<Workspace>("/api/workspace", undefined, {
           userId: sessionId,
@@ -192,13 +202,21 @@ export function useWorkspaceSync(sessionId: string) {
           window.location.reload();
           return null;
         }
+        if (seq !== refreshSeq.current || startEpoch !== mutationEpoch.current) {
+          return null;
+        }
         lastSyncedAt.current = Date.now();
         setData(result);
         setError("");
         setSyncError(false);
         return result;
       } catch (e) {
-        if (signal.aborted) return null;
+        if (
+          signal.aborted ||
+          (e instanceof DOMException && e.name === "AbortError")
+        ) {
+          return null;
+        }
         if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
           window.location.reload();
           return null;
@@ -212,6 +230,10 @@ export function useWorkspaceSync(sessionId: string) {
           setError(e instanceof Error ? e.message : "题库暂时无法读取。");
         }
         return null;
+      } finally {
+        if (refreshAbort.current === controller) {
+          refreshAbort.current = null;
+        }
       }
     },
     [sessionId],
@@ -256,20 +278,28 @@ export function useWorkspaceSync(sessionId: string) {
           userId: sessionId,
           signal,
         });
-        const canPatch =
-          dataRef.current !== null &&
-          applyLocalWorkspacePatch(dataRef.current, url, payload, result) !==
-            null;
-        if (canPatch) {
-          setData(
-            (prev) => applyLocalWorkspacePatch(prev, url, payload, result) ?? prev,
-          );
+        mutationEpoch.current += 1;
+        refreshAbort.current?.abort();
+        const patched =
+          dataRef.current !== null
+            ? applyLocalWorkspacePatch(dataRef.current, url, payload, result)
+            : null;
+        if (patched) {
+          lastSyncedAt.current = Date.now();
+          setData(patched);
         } else {
-          await refresh(true);
+          const refreshed = await refresh(true);
+          if (!refreshed && !signal.aborted) {
+            toast.warning("操作已保存，但刷新列表失败，请稍后重试同步。");
+          }
         }
         return result;
       } catch (e) {
         if (signal.aborted) return null;
+        if (e instanceof RequestError && e.status === 401) {
+          window.location.reload();
+          return null;
+        }
         if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
           window.location.reload();
           return null;

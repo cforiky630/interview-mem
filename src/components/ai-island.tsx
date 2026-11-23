@@ -1,15 +1,20 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeftToLine,
+  ArrowRightFromLine,
   ArrowUp,
   BookOpen,
   BookmarkPlus,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Copy,
   KeyRound,
   Layers2,
   Loader2,
+  Maximize2,
   PanelRight,
   PenLine,
   PictureInPicture2,
@@ -22,16 +27,20 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
+import {
+  formatQuotePreview,
+  formatThreadLabel,
+  isFullAnswerQuote,
+} from "@/lib/ai-quote";
 import type {
   ChatEdit,
   ChatMessage,
-  ChatQuestionReference,
-  ChatToolStep,
   Conversation,
   DeckView,
   QuestionView,
   Workspace,
 } from "@/lib/types";
+import { AiReaderDialog, type AiReaderTarget } from "./ai-reader-dialog";
 import { ChatEditCard, chatEditState } from "./chat-edit-card";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
@@ -47,12 +56,56 @@ export type AiTrigger = {
   nonce: number;
 };
 
+export function clampAiDockWidth(
+  width: number,
+  viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1440,
+): number {
+  const maxWidth = Math.min(620, Math.max(380, Math.floor(viewportWidth * 0.45)));
+  return Math.min(maxWidth, Math.max(360, Math.round(width)));
+}
+
 type DeckFilter = "all" | "needsEditing" | "due";
-type LiveAssistantMeta = {
-  reasoning?: string;
-  toolSteps?: ChatToolStep[];
-  references?: ChatQuestionReference[];
+
+type ParsedSseEvent = {
+  event: string;
+  payload: Record<string, unknown>;
 };
+
+function parseSseBlocks(
+  rawPending: string,
+  flushAll: boolean,
+): { events: ParsedSseEvent[]; rest: string } {
+  const normalized = rawPending.replace(/\r\n?/g, "\n");
+  const parts = normalized.split("\n\n");
+  const rest = flushAll ? "" : (parts.pop() ?? "");
+  const events: ParsedSseEvent[] = [];
+
+  for (const block of parts) {
+    if (!block.trim()) continue;
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (!dataLines.length) continue;
+    const rawJson = dataLines.join("\n").trim();
+    if (!rawJson || rawJson === "[DONE]") continue;
+    try {
+      const payload = JSON.parse(rawJson);
+      if (payload && typeof payload === "object") {
+        events.push({ event, payload: payload as Record<string, unknown> });
+      }
+    } catch {
+      /* Ignore malformed JSON chunk from upstream. */
+    }
+  }
+
+  return { events, rest };
+}
 
 function buildScopeKey(
   scope: AiScope,
@@ -92,10 +145,10 @@ function ReasoningDisclosure({
   const userToggledRef = useRef(false);
 
   useEffect(() => {
-    if (hasContent && !userToggledRef.current) {
+    if ((hasContent || !busy) && !userToggledRef.current) {
       setOpen(false);
     }
-  }, [hasContent]);
+  }, [hasContent, busy]);
 
   return (
     <details
@@ -132,7 +185,12 @@ function appendToStoredNote(
   const draftKey = `shiyi:note:${userId}:${question.id}`;
   let baseNote = question.note;
   let expectedVersion = question.noteVersion;
-  const rawDraft = localStorage.getItem(draftKey);
+  let rawDraft: string | null = null;
+  try {
+    rawDraft = localStorage.getItem(draftKey);
+  } catch {
+    rawDraft = null;
+  }
   if (rawDraft !== null) {
     try {
       const saved = JSON.parse(rawDraft);
@@ -301,7 +359,7 @@ function ScopeLauncher({
       </div>
 
       <p className="ai-launcher-hint">
-        点击任意题目即可直达阅读页并开启单题 AI 对话；跨题库检索、查重与批量整理工具将在下一阶段接入。
+        点击任意题目直达阅读页；需要跨题库检索、查重或复习规划请切换上方「AI 整理」。
       </p>
     </div>
   );
@@ -315,6 +373,9 @@ export function AiIsland({
   allowDock = false,
   hidden = false,
   trigger,
+  dockWidth = null,
+  onDockWidthChange,
+  onResizingDockChange,
   onModeChange,
   onOpen,
   onOpenQuestion,
@@ -329,6 +390,9 @@ export function AiIsland({
   allowDock?: boolean;
   hidden?: boolean;
   trigger: AiTrigger | null;
+  dockWidth?: number | null;
+  onDockWidthChange?: (width: number | null) => void;
+  onResizingDockChange?: (resizing: boolean) => void;
   onModeChange: (next: AiIslandMode) => void;
   onOpen?: () => void;
   onOpenQuestion: (question: QuestionView) => void;
@@ -352,6 +416,7 @@ export function AiIsland({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [items, setItems] = useState<ChatMessage[]>([]);
   const [quote, setQuote] = useState("");
+  const [quoteExpanded, setQuoteExpanded] = useState(false);
   const [attempt, setAttempt] = useState("");
   const [attemptExpanded, setAttemptExpanded] = useState(false);
   const [input, setInput] = useState("");
@@ -359,7 +424,11 @@ export function AiIsland({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [applying, setApplying] = useState<string | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [readerTarget, setReaderTarget] = useState<AiReaderTarget | null>(null);
   const [dragY, setDragY] = useState(0);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
 
   const sheetTouch = useRef<{
     x: number;
@@ -372,11 +441,12 @@ export function AiIsland({
     userId: string;
   }>({ key: "", userId: data.user.id });
   const lastQuestionIdRef = useRef<string | null>(question?.id ?? null);
-  const threadMetaRef = useRef<Record<string, LiveAssistantMeta>>({});
+  const inFlightTargetKeyRef = useRef("");
   const lastAutoKey = useRef("");
   const lastTrigger = useRef(0);
   const editInFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
+  const loadAbort = useRef<AbortController | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
@@ -407,6 +477,12 @@ export function AiIsland({
         ? "deck"
         : "workspace";
 
+  useEffect(() => {
+    if (effectiveScope === "question") {
+      setScopedView("chat");
+    }
+  }, [effectiveScope]);
+
   const scopeKey = buildScopeKey(
     effectiveScope,
     data.user.id,
@@ -418,19 +494,20 @@ export function AiIsland({
     onBusyChange?.(busy);
   }, [busy, onBusyChange]);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(
+    () => () => {
+      abort.current?.abort();
+      loadAbort.current?.abort();
+      resizeCleanupRef.current?.();
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (mode === "collapsed" || hidden) return;
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(max-width: 760px)");
-    if (!mq.matches) return;
-    const previous = document.documentElement.style.overflow;
-    document.documentElement.style.overflow = "hidden";
-    return () => {
-      document.documentElement.style.overflow = previous;
-    };
-  }, [mode, hidden]);
+    if (mode !== "collapsed") {
+      setDragY(0);
+    }
+  }, [mode]);
 
   useEffect(() => {
     if (effectiveScope === "question" && !question?.id) return;
@@ -442,12 +519,15 @@ export function AiIsland({
       return;
     }
     if (mode === "collapsed") {
-      if (!inFlight.current) {
+      if (!inFlight.current || inFlightTargetKeyRef.current !== scopeKey) {
         loadedTargetRef.current = { key: "", userId: data.user.id };
+      }
+      if (!inFlight.current) {
         setThreads([]);
         setActiveId(null);
         setItems([]);
         setQuote("");
+        setQuoteExpanded(false);
         setAttempt("");
         setAttemptExpanded(false);
         setError("");
@@ -458,38 +538,55 @@ export function AiIsland({
       key: scopeKey,
       userId: data.user.id,
     };
-    abort.current?.abort();
+    loadAbort.current?.abort();
+    if (abort.current) {
+      abort.current.abort();
+      abort.current = null;
+    }
     inFlight.current = false;
+    inFlightTargetKeyRef.current = "";
     setBusy(false);
     setThreads([]);
     setActiveId(null);
     setItems([]);
     setQuote("");
+    setQuoteExpanded(false);
     setAttempt("");
     setAttemptExpanded(false);
     setError("");
-    let canceled = false;
+    const controller = new AbortController();
+    loadAbort.current = controller;
     setLoading(true);
     void api<Conversation[]>(
       buildChatUrl(effectiveScope, question?.id, contextDeck?.id),
       undefined,
-      { userId: data.user.id },
+      { userId: data.user.id, signal: controller.signal },
     )
       .then((rows) => {
-        if (!canceled) {
-          setThreads(
-            rows.map((row) => mergeThreadMeta(row, threadMetaRef.current)),
-          );
+        if (!controller.signal.aborted) {
+          setThreads(rows);
         }
       })
       .catch((e) => {
-        if (!canceled) setError(e.message);
+        if (
+          !controller.signal.aborted &&
+          !(e instanceof DOMException && e.name === "AbortError")
+        ) {
+          setError(e.message);
+        }
       })
       .finally(() => {
-        if (!canceled) setLoading(false);
+        if (loadAbort.current === controller) {
+          loadAbort.current = null;
+          setLoading(false);
+        }
       });
     return () => {
-      canceled = true;
+      controller.abort();
+      if (loadAbort.current === controller) {
+        loadAbort.current = null;
+      }
+      setLoading(false);
     };
   }, [
     scopeKey,
@@ -506,10 +603,16 @@ export function AiIsland({
       (effectiveScope !== "question" && scopedView !== "chat")
     )
       return;
-    scroll.current?.scrollTo({
-      top: scroll.current.scrollHeight,
-      behavior: "smooth",
-    });
+    const container = scroll.current;
+    if (!container) return;
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceFromBottom < 96) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: "auto",
+      });
+    }
   }, [items, busy, mode, effectiveScope, scopedView]);
 
   useEffect(() => {
@@ -521,56 +624,46 @@ export function AiIsland({
       return;
     }
     lastTrigger.current = trigger.nonce;
+    loadAbort.current?.abort();
+    loadAbort.current = null;
+    setLoading(false);
     loadedTargetRef.current = {
       key: `q:${question.id}`,
       userId: data.user.id,
     };
     setScope("question");
+    if (!data.settings.hasKey) {
+      return;
+    }
     const nextAttempt = trigger.attempt ?? "";
     setQuote(trigger.quote);
+    setQuoteExpanded(false);
     setAttempt(nextAttempt);
     setAttemptExpanded(false);
     setActiveId(null);
     setItems([]);
     setInput(trigger.prompt);
-    if (data.settings.hasKey) {
-      if (trigger.prompt.trim()) {
-        void send(
-          trigger.prompt,
-          trigger.quote,
-          null,
-          true,
-          nextAttempt,
-          "question",
-          question.id,
-          undefined,
-        );
-      } else {
-        requestAnimationFrame(() => composerRef.current?.focus());
-      }
+    if (trigger.prompt.trim()) {
+      void send(
+        trigger.prompt,
+        trigger.quote,
+        null,
+        true,
+        nextAttempt,
+        "question",
+        question.id,
+        undefined,
+      );
+    } else {
+      requestAnimationFrame(() => composerRef.current?.focus());
     }
   }, [trigger?.nonce]); // selection or critique trigger intentionally starts a fresh thread
-
-  function mergeThreadMeta(
-    thread: Conversation,
-    cache: Record<string, LiveAssistantMeta>,
-  ): Conversation {
-    const meta = cache[thread.id];
-    if (!meta || !thread.messages.length) return thread;
-    const nextMessages = [...thread.messages];
-    for (let i = nextMessages.length - 1; i >= 0; i--) {
-      if (nextMessages[i].role === "assistant") {
-        nextMessages[i] = { ...nextMessages[i], ...meta };
-        break;
-      }
-    }
-    return { ...thread, messages: nextMessages };
-  }
 
   function selectThread(id: string) {
     const thread = threads.find((t) => t.id === id);
     setActiveId(thread?.id ?? null);
     setQuote(thread?.quote ?? "");
+    setQuoteExpanded(false);
     setAttempt("");
     setAttemptExpanded(false);
     setItems(thread?.messages ?? []);
@@ -597,7 +690,10 @@ export function AiIsland({
       targetQuestionId,
       targetDeckId,
     );
+    const controller = new AbortController();
+    abort.current = controller;
     inFlight.current = true;
+    inFlightTargetKeyRef.current = targetKey;
     setBusy(true);
     setInput("");
     setError("");
@@ -618,10 +714,10 @@ export function AiIsland({
         createdAt: new Date().toISOString(),
       },
     ]);
-    const controller = new AbortController();
-    abort.current = controller;
+
+    const threadUrl = buildChatUrl(targetScope, targetQuestionId, targetDeckId);
     let resolvedId = conversationId;
-    const liveMeta: LiveAssistantMeta = {};
+    let sawTerminalEvent = false;
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -649,108 +745,132 @@ export function AiIsland({
         signal: controller.signal,
       });
       if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.error ?? "AI 请求未完成。");
+        const rawText = await response.text();
+        let message = "AI 请求未完成。";
+        try {
+          const parsed = JSON.parse(rawText) as { error?: string };
+          if (typeof parsed.error === "string" && parsed.error) {
+            message = parsed.error;
+          }
+        } catch {
+          /* Non-JSON proxy error page. */
+        }
+        throw new Error(message);
       }
       if (!response.body) throw new Error("浏览器未能读取回答。");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        pending += done
-          ? decoder.decode()
-          : decoder.decode(value, { stream: true });
-        const blocks = pending.split("\n\n");
-        pending = blocks.pop() ?? "";
-        for (const block of blocks) {
-          const event = block.match(/^event: (.+)$/m)?.[1];
-          const json = block.match(/^data: (.+)$/m)?.[1];
-          if (!json) continue;
-          const payload = JSON.parse(json);
-          if (event === "meta") {
-            resolvedId = payload.conversationId;
-            if (loadedTargetRef.current.key === targetKey) {
-              setActiveId(resolvedId);
-            }
-          } else if (event === "reasoning") {
-            const textChunk =
-              typeof payload.text === "string" ? payload.text : "";
-            if (textChunk) {
-              liveMeta.reasoning = (liveMeta.reasoning ?? "") + textChunk;
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          pending += done
+            ? decoder.decode()
+            : decoder.decode(value, { stream: true });
+          const { events, rest } = parseSseBlocks(pending, done);
+          pending = rest;
+          for (const { event, payload } of events) {
+            if (event === "meta") {
+              resolvedId =
+                typeof payload.conversationId === "string"
+                  ? payload.conversationId
+                  : resolvedId;
               if (loadedTargetRef.current.key === targetKey) {
+                setActiveId(resolvedId);
+              }
+            } else if (event === "reasoning") {
+              const textChunk =
+                typeof payload.text === "string" ? payload.text : "";
+              if (textChunk && loadedTargetRef.current.key === targetKey) {
                 setItems((previous) =>
                   previous.map((m) =>
                     m.id === assistantId
-                      ? { ...m, reasoning: liveMeta.reasoning }
+                      ? { ...m, reasoning: (m.reasoning ?? "") + textChunk }
                       : m,
                   ),
                 );
               }
-            }
-          } else if (event === "tool") {
-            const step = {
-              name: String(payload.name ?? ""),
-              label: String(payload.label ?? ""),
-            };
-            liveMeta.toolSteps = [...(liveMeta.toolSteps ?? []), step];
-            if (loadedTargetRef.current.key === targetKey) {
-              setItems((previous) =>
-                previous.map((m) =>
-                  m.id === assistantId
-                    ? { ...m, toolSteps: liveMeta.toolSteps }
-                    : m,
-                ),
-              );
-            }
-          } else if (event === "references") {
-            if (Array.isArray(payload.refs)) {
-              liveMeta.references = payload.refs;
+            } else if (event === "tool") {
+              const step = {
+                name: String(payload.name ?? ""),
+                label: String(payload.label ?? ""),
+              };
               if (loadedTargetRef.current.key === targetKey) {
                 setItems((previous) =>
                   previous.map((m) =>
                     m.id === assistantId
-                      ? { ...m, references: liveMeta.references }
+                      ? { ...m, toolSteps: [...(m.toolSteps ?? []), step] }
                       : m,
                   ),
                 );
               }
-            }
-          } else if (event === "delta") {
-            if (loadedTargetRef.current.key === targetKey) {
-              setItems((previous) =>
-                previous.map((m) =>
-                  m.id === assistantId
-                    ? { ...m, content: m.content + payload.text }
-                    : m,
-                ),
+            } else if (event === "references") {
+              if (
+                Array.isArray(payload.refs) &&
+                loadedTargetRef.current.key === targetKey
+              ) {
+                setItems((previous) =>
+                  previous.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          references: payload.refs as ChatMessage["references"],
+                        }
+                      : m,
+                  ),
+                );
+              }
+            } else if (event === "edits") {
+              if (
+                Array.isArray(payload.edits) &&
+                loadedTargetRef.current.key === targetKey
+              ) {
+                setItems((previous) =>
+                  previous.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, edits: payload.edits as ChatEdit[] }
+                      : m,
+                  ),
+                );
+              }
+            } else if (event === "delta") {
+              const textChunk =
+                typeof payload.text === "string" ? payload.text : "";
+              if (textChunk && loadedTargetRef.current.key === targetKey) {
+                setItems((previous) =>
+                  previous.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: m.content + textChunk }
+                      : m,
+                  ),
+                );
+              }
+            } else if (event === "done") {
+              sawTerminalEvent = true;
+            } else if (event === "error") {
+              sawTerminalEvent = true;
+              throw new Error(
+                typeof payload.error === "string"
+                  ? payload.error
+                  : "回答未完成。",
               );
             }
-          } else if (event === "error") {
-            throw new Error(payload.error);
           }
+          if (done) break;
         }
-        if (done) break;
+      } finally {
+        await reader.cancel().catch(() => {});
       }
-      if (
-        resolvedId &&
-        (liveMeta.reasoning ||
-          liveMeta.toolSteps?.length ||
-          liveMeta.references?.length)
-      ) {
-        threadMetaRef.current[resolvedId] = { ...liveMeta };
+      if (!sawTerminalEvent && !controller.signal.aborted) {
+        throw new Error("连接在回答结束前意外断开。");
       }
-      const rows = await api<Conversation[]>(
-        buildChatUrl(targetScope, targetQuestionId, targetDeckId),
-        undefined,
-        { userId: data.user.id, signal: controller.signal },
-      );
+      const rows = await api<Conversation[]>(threadUrl, undefined, {
+        userId: data.user.id,
+        signal: controller.signal,
+      });
       if (loadedTargetRef.current.key === targetKey) {
-        const merged = rows.map((row) =>
-          mergeThreadMeta(row, threadMetaRef.current),
-        );
-        setThreads(merged);
-        const current = merged.find((t) => t.id === resolvedId);
+        setThreads(rows);
+        const current = rows.find((t) => t.id === resolvedId);
         if (current) {
           setItems(current.messages);
           setAttempt("");
@@ -763,6 +883,17 @@ export function AiIsland({
             (m) => m.id !== assistantId || m.content.trim().length > 0,
           ),
         );
+        if (resolvedId) {
+          void api<Conversation[]>(threadUrl, undefined, {
+            userId: data.user.id,
+          })
+            .then((rows) => {
+              if (loadedTargetRef.current.key === targetKey) {
+                setThreads(rows);
+              }
+            })
+            .catch(() => {});
+        }
       }
       if (!(e instanceof DOMException && e.name === "AbortError")) {
         const message = e instanceof Error ? e.message : "回答未完成。";
@@ -770,9 +901,12 @@ export function AiIsland({
         toast.error(message);
       }
     } finally {
-      setBusy(false);
-      inFlight.current = false;
-      abort.current = null;
+      if (abort.current === controller) {
+        setBusy(false);
+        inFlight.current = false;
+        inFlightTargetKeyRef.current = "";
+        abort.current = null;
+      }
     }
   }
 
@@ -781,6 +915,12 @@ export function AiIsland({
     ? data.decks.find((d) => d.id === question.deckId && d.isOwner)
     : undefined;
   const visibleAttempt = (active ? active.attempt : attempt).trim();
+  const resolvedReaderTarget: AiReaderTarget | null =
+    readerTarget?.kind === "edit"
+      ? question && question.id === readerTarget.question.id
+        ? { ...readerTarget, question, deck: ownedDeck }
+        : readerTarget
+      : readerTarget;
 
   async function applyEdit(edit: ChatEdit, key: string) {
     if (
@@ -812,7 +952,11 @@ export function AiIsland({
           expectedVersion: edit.expectedVersion,
         });
         if (result) {
-          localStorage.removeItem(`shiyi:note:${data.user.id}:${edit.id}`);
+          try {
+            localStorage.removeItem(`shiyi:note:${data.user.id}:${edit.id}`);
+          } catch {
+            /* Ignore storage restrictions. */
+          }
           window.dispatchEvent(
             new CustomEvent("shiyi:note-updated", {
               detail: {
@@ -856,7 +1000,11 @@ export function AiIsland({
         expectedVersion,
       });
       if (result) {
-        localStorage.removeItem(`shiyi:note:${data.user.id}:${question.id}`);
+        try {
+          localStorage.removeItem(`shiyi:note:${data.user.id}:${question.id}`);
+        } catch {
+          /* Ignore storage restrictions. */
+        }
         window.dispatchEvent(
           new CustomEvent("shiyi:note-updated", {
             detail: {
@@ -872,6 +1020,92 @@ export function AiIsland({
     } finally {
       editInFlight.current = false;
     }
+  }
+
+  async function copyMessageContent(message: ChatMessage) {
+    if (!message.content.trim()) return;
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMsgId(message.id);
+      toast.success("已复制到剪贴板。");
+      window.setTimeout(() => {
+        setCopiedMsgId((curr) => (curr === message.id ? null : curr));
+      }, 1800);
+    } catch {
+      toast.error("复制失败，请手动选中文本复制。");
+    }
+  }
+
+  async function saveMessageAsCard(message: ChatMessage) {
+    if (!question || copyBusy) return;
+    setCopyBusy(true);
+    try {
+      const target =
+        data.decks.find((d) => d.isOwner && d.id === question.deckId) ??
+        data.decks.find((d) => d.isOwner);
+      const idx = items.findIndex((m) => m.id === message.id);
+      const rawPrev =
+        (idx >= 0 ? items.slice(0, idx) : [...items])
+          .reverse()
+          .find((m) => m.role === "user")?.content ?? "";
+      const topicSuffix =
+        !rawPrev || rawPrev.includes("点评我的本次作答")
+          ? "作答点评要点"
+          : rawPrev;
+      const response = await mutate("/api/questions", {
+        action: "copy",
+        id: question.id,
+        deckId: target?.id ?? null,
+        title: `${question.title} · ${topicSuffix}`.slice(0, 200),
+        answer: message.content,
+      });
+      if (response) toast.success("已保存为独立复习卡片。");
+    } finally {
+      setCopyBusy(false);
+    }
+  }
+
+  function startDockResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (
+      !allowDock ||
+      !isDocked ||
+      !onDockWidthChange ||
+      window.matchMedia("(max-width: 1239px)").matches
+    ) {
+      return;
+    }
+    event.preventDefault();
+    resizeCleanupRef.current?.();
+    onResizingDockChange?.(true);
+    const rightInset = window.innerWidth >= 1600 ? 20 : 16;
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const candidate = window.innerWidth - rightInset - moveEvent.clientX;
+      onDockWidthChange(clampAiDockWidth(candidate, window.innerWidth));
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      resizeCleanupRef.current = null;
+      onResizingDockChange?.(false);
+    };
+
+    resizeCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  }
+
+  function handleOpenQuestion(target: QuestionView) {
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 760px)").matches
+    ) {
+      onModeChange("collapsed");
+    }
+    onOpenQuestion(target);
   }
 
   const isOpen = !hidden && mode !== "collapsed";
@@ -962,6 +1196,17 @@ export function AiIsland({
             : undefined
         }
       >
+        {allowDock && isDocked && onDockWidthChange && (
+          <div
+            className="ai-dock-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="拖拽调整 AI 面板宽度，双击恢复默认"
+            title="拖拽调整宽度，双击恢复默认"
+            onDoubleClick={() => onDockWidthChange(null)}
+            onPointerDown={startDockResize}
+          />
+        )}
         <div
           className="ai-panel-sheet-handle"
           onTouchStart={(event) => {
@@ -1000,9 +1245,10 @@ export function AiIsland({
             const endY = event.changedTouches[0]?.clientY ?? state.y;
             const dy = endY - state.y;
             const velocity = dy / Math.max(1, Date.now() - state.time);
-            setDragY(0);
             if (dy > 90 || velocity > 0.45) {
               onModeChange("collapsed");
+            } else {
+              setDragY(0);
             }
           }}
           onTouchCancel={() => {
@@ -1030,6 +1276,7 @@ export function AiIsland({
                   onClick={() => {
                     setActiveId(null);
                     setQuote("");
+                    setQuoteExpanded(false);
                     setAttempt("");
                     setAttemptExpanded(false);
                     setItems([]);
@@ -1038,6 +1285,36 @@ export function AiIsland({
                   }}
                 >
                   <Plus size={17} />
+                </Button>
+              )}
+              {allowDock && isDocked && onDockWidthChange && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="ai-width-toggle"
+                  title={
+                    dockWidth !== null && dockWidth >= 480
+                      ? "恢复默认宽度"
+                      : "加宽阅读面板"
+                  }
+                  aria-label={
+                    dockWidth !== null && dockWidth >= 480
+                      ? "恢复默认宽度"
+                      : "加宽阅读面板"
+                  }
+                  onClick={() =>
+                    onDockWidthChange(
+                      dockWidth !== null && dockWidth >= 480
+                        ? null
+                        : clampAiDockWidth(540),
+                    )
+                  }
+                >
+                  {dockWidth !== null && dockWidth >= 480 ? (
+                    <ArrowRightFromLine size={16} />
+                  ) : (
+                    <ArrowLeftToLine size={16} />
+                  )}
                 </Button>
               )}
               {allowDock && (
@@ -1120,7 +1397,7 @@ export function AiIsland({
             data={data}
             deck={contextDeck}
             recentQuestion={recentQuestion}
-            onOpenQuestion={onOpenQuestion}
+            onOpenQuestion={handleOpenQuestion}
           />
         ) : effectiveScope !== "question" || question ? (
           <>
@@ -1142,6 +1419,11 @@ export function AiIsland({
                     ? contextDeck.title
                     : "全局题库工作区"}
               </strong>
+              {effectiveScope === "question" &&
+                question?.answer.trim() &&
+                !quote.trim() && (
+                  <span className="ai-context-ref">已引用参考答案</span>
+                )}
             </div>
             {threads.length > 0 && (
               <div className="thread-selector">
@@ -1152,44 +1434,85 @@ export function AiIsland({
                   onChange={(e) => selectThread(e.target.value)}
                 >
                   <option value="">新的疑问，新的理解</option>
-                  {threads.map((t) => {
-                    const firstUser =
-                      t.messages.find((m) => m.role === "user")?.content ?? "";
-                    const label =
-                      effectiveScope === "question"
-                        ? `${
-                            t.attempt.trim()
-                              ? `[作答点评] ${(firstUser || "默写点评").slice(0, 22)}`
-                              : t.quote
-                                ? `划选：${t.quote.slice(0, 24)}`
-                                : firstUser.slice(0, 28) || "题目问答"
-                          } · v${t.questionRevision}`
-                        : firstUser.slice(0, 32) ||
-                          (effectiveScope === "deck" ? "题库整理" : "全库问答");
-                    return (
-                      <option key={t.id} value={t.id}>
-                        {label}
-                      </option>
-                    );
-                  })}
+                  {threads.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {formatThreadLabel(t, effectiveScope, question?.answer)}
+                    </option>
+                  ))}
                 </select>
               </div>
             )}
-            {effectiveScope === "question" && quote && (
-              <div className="ai-quote">
-                <Quote size={14} />
-                <p>{quote}</p>
-                {!busy && !activeId && (
-                  <button
-                    aria-label="移除引用"
-                    className="icon-button"
-                    onClick={() => setQuote("")}
+            {effectiveScope === "question" &&
+              quote.trim() &&
+              (() => {
+                const trimmedQuote = quote.trim();
+                const fullAnswerQuoted = isFullAnswerQuote(
+                  trimmedQuote,
+                  active?.answerSnapshot || question?.answer,
+                );
+                const inlineHighlight =
+                  !fullAnswerQuoted &&
+                  trimmedQuote.length <= 44 &&
+                  !trimmedQuote.includes("\n");
+                return (
+                  <div
+                    className={`ai-quote-card ${inlineHighlight ? "is-inline" : ""}`}
                   >
-                    <X size={13} />
-                  </button>
-                )}
-              </div>
-            )}
+                    <div className="ai-quote-head">
+                      <Quote size={14} />
+                      <span
+                        className={
+                          inlineHighlight
+                            ? "ai-quote-inline"
+                            : "ai-quote-meta"
+                        }
+                      >
+                        {fullAnswerQuoted
+                          ? `已引用参考答案 · ${trimmedQuote.length} 字`
+                          : inlineHighlight
+                            ? trimmedQuote
+                            : `引用片段 · ${trimmedQuote.length} 字`}
+                      </span>
+                      {!inlineHighlight && (
+                        <button
+                          type="button"
+                          className="ai-attempt-toggle"
+                          aria-expanded={quoteExpanded}
+                          onClick={() => setQuoteExpanded((v) => !v)}
+                        >
+                          {quoteExpanded ? "收起" : "查看原文"}
+                          {quoteExpanded ? (
+                            <ChevronUp size={13} />
+                          ) : (
+                            <ChevronDown size={13} />
+                          )}
+                        </button>
+                      )}
+                      {!busy && !activeId && (
+                        <button
+                          type="button"
+                          aria-label="移除引用"
+                          className="icon-button"
+                          onClick={() => {
+                            setQuote("");
+                            setQuoteExpanded(false);
+                          }}
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                    {!inlineHighlight && !fullAnswerQuoted && !quoteExpanded && (
+                      <p className="ai-quote-preview">
+                        {formatQuotePreview(trimmedQuote, 58)}
+                      </p>
+                    )}
+                    {!inlineHighlight && quoteExpanded && (
+                      <div className="ai-quote-body">{trimmedQuote}</div>
+                    )}
+                  </div>
+                );
+              })()}
             {effectiveScope === "question" && visibleAttempt && (
               <div className="ai-attempt-card">
                 <div className="ai-attempt-head">
@@ -1372,7 +1695,7 @@ export function AiIsland({
                                 type="button"
                                 className="ai-ref-chip"
                                 disabled={!target}
-                                onClick={() => target && onOpenQuestion(target)}
+                                onClick={() => target && handleOpenQuestion(target)}
                                 title={
                                   target ? `打开：${ref.title}` : ref.title
                                 }
@@ -1398,52 +1721,75 @@ export function AiIsland({
                           busy={busy || applying !== null}
                           applying={applying === key}
                           onApply={() => void applyEdit(edit, key)}
+                          onInspect={() =>
+                            setReaderTarget({
+                              kind: "edit",
+                              edit,
+                              question,
+                              deck: ownedDeck,
+                              keyId: key,
+                            })
+                          }
                         />
                       );
                     })}
-                  {question &&
-                    message.role === "assistant" &&
+                  {message.role === "assistant" &&
                     message.content &&
-                    !message.edits?.length &&
                     !busy && (
                       <div className="message-actions">
+                        {(!message.edits?.length ||
+                          message.content.length >= 120) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setReaderTarget({
+                                kind: "message",
+                                message,
+                                title:
+                                  effectiveScope === "question" && question
+                                    ? question.title
+                                    : effectiveScope === "deck" && contextDeck
+                                      ? contextDeck.title
+                                      : "AI 回答阅读",
+                              })
+                            }
+                          >
+                            <Maximize2 size={13} />
+                            宽屏阅读
+                          </button>
+                        )}
                         <button
-                          onClick={() =>
-                            void appendAssistantToNote(message.content)
-                          }
+                          type="button"
+                          onClick={() => void copyMessageContent(message)}
                         >
-                          <BookmarkPlus size={13} />
-                          存为笔记
+                          {copiedMsgId === message.id ? (
+                            <Check size={13} />
+                          ) : (
+                            <Copy size={13} />
+                          )}
+                          {copiedMsgId === message.id ? "已复制" : "复制"}
                         </button>
-                        <button
-                          onClick={async () => {
-                            const target =
-                              data.decks.find(
-                                (d) =>
-                                  d.isOwner && d.id === question.deckId,
-                              ) ?? data.decks.find((d) => d.isOwner);
-                            const previousQuestion =
-                              items
-                                .slice(0, items.indexOf(message))
-                                .reverse()
-                                .find((m) => m.role === "user")?.content ??
-                              "补充记忆";
-                            const response = await mutate("/api/questions", {
-                              action: "copy",
-                              id: question.id,
-                              deckId: target?.id ?? null,
-                              title: `${question.title} · ${previousQuestion}`.slice(
-                                0,
-                                200,
-                              ),
-                              answer: message.content,
-                            });
-                            if (response) toast.success("已保存为独立复习卡片。");
-                          }}
-                        >
-                          <Layers2 size={13} />
-                          存为卡片
-                        </button>
+                        {question && !message.edits?.length && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void appendAssistantToNote(message.content)
+                              }
+                            >
+                              <BookmarkPlus size={13} />
+                              存为笔记
+                            </button>
+                            <button
+                              type="button"
+                              disabled={copyBusy}
+                              onClick={() => void saveMessageAsCard(message)}
+                            >
+                              <Layers2 size={13} />
+                              存为卡片
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
                 </div>
@@ -1535,6 +1881,18 @@ export function AiIsland({
           </>
         ) : null}
       </aside>
+      <AiReaderDialog
+        target={resolvedReaderTarget}
+        onClose={() => setReaderTarget(null)}
+        busy={busy}
+        applyingKey={applying}
+        copyBusy={copyBusy}
+        onApplyEdit={applyEdit}
+        onSaveToNote={
+          question ? (m) => appendAssistantToNote(m.content) : undefined
+        }
+        onSaveAsCard={question ? saveMessageAsCard : undefined}
+      />
     </>
   );
 }

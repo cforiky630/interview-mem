@@ -1,5 +1,12 @@
 "use client";
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+  type CSSProperties,
+} from "react";
 import dynamic from "next/dynamic";
 import {
   BookOpen,
@@ -10,7 +17,6 @@ import {
   Star,
   Inbox,
   History,
-  ChevronsUpDown,
   Search,
   Plus,
   LogOut,
@@ -33,6 +39,7 @@ import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
+import { syncDocumentTheme, type Palette } from "@/lib/theme";
 import {
   buildSearchFromRoute,
   extractSubscribeParam,
@@ -49,8 +56,10 @@ import { useAiAnswerDraft } from "./use-ai-answer-draft";
 import { useAppShortcuts } from "./use-app-shortcuts";
 import { usePageScroll } from "./use-page-scroll";
 import { useWorkspaceSync } from "./use-workspace-sync";
+import { UserMenu } from "./user-menu";
 import {
   AiIsland,
+  clampAiDockWidth,
   type AiIslandMode,
   type AiTrigger,
 } from "./ai-island";
@@ -82,9 +91,6 @@ const EditDeckDialog = dynamic(() =>
 const CreateQuestionDialog = dynamic(() =>
   import("./dialogs").then((m) => m.CreateQuestionDialog),
 );
-const QuestionEditPage = dynamic(() =>
-  import("./question-edit-page").then((m) => m.QuestionEditPage),
-);
 const ImportDialog = dynamic(() =>
   import("./import-dialog").then((m) => m.ImportDialog),
 );
@@ -106,20 +112,27 @@ const QuestionActionDialog = dynamic(() =>
 import type { ImportSeed } from "./import-dialog";
 
 type View = AppView;
-export type Palette = "forest" | "lavender";
+export type { Palette };
 
-function syncThemeColorMeta(palette: Palette, theme: "light" | "dark") {
-  const color =
-    palette === "lavender"
-      ? theme === "dark"
-        ? "#0D0C13"
-        : "#F6F4F8"
-      : theme === "dark"
-        ? "#0C0F0E"
-        : "#F5F7F6";
-  document
-    .querySelectorAll('meta[name="theme-color"]')
-    .forEach((el) => el.setAttribute("content", color));
+function clearCardPracticeDrafts(
+  userId: string,
+  questionId: string,
+  revisions: number[],
+) {
+  for (const rev of new Set(revisions)) {
+    savePracticeDraft(practiceDraftKey(userId, questionId, rev), "");
+    const paraPrefix = practiceDraftKey(userId, questionId, rev, "paragraph");
+    try {
+      const toRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(paraPrefix)) toRemove.push(k);
+      }
+      for (const k of toRemove) localStorage.removeItem(k);
+    } catch {
+      /* Ignore storage access failures. */
+    }
+  }
 }
 
 export function StudyApp() {
@@ -134,22 +147,19 @@ export function StudyApp() {
           : media?.matches
             ? "dark"
             : "light";
-      document.documentElement.dataset.theme = resolved;
       const savedPalette: Palette =
         localStorage.getItem("shiyi:palette") === "lavender"
           ? "lavender"
           : "forest";
-      document.documentElement.dataset.palette = savedPalette;
-      syncThemeColorMeta(savedPalette, resolved);
+      syncDocumentTheme(resolved, savedPalette);
       if (cached !== "light" && cached !== "dark" && media) {
         const onChange = (event: MediaQueryListEvent) => {
           const next = event.matches ? "dark" : "light";
-          document.documentElement.dataset.theme = next;
           const activePal =
             document.documentElement.dataset.palette === "lavender"
               ? "lavender"
               : "forest";
-          syncThemeColorMeta(activePal, next);
+          syncDocumentTheme(next, activePal);
         };
         media.addEventListener("change", onChange);
         return () => media.removeEventListener("change", onChange);
@@ -189,7 +199,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     error,
     syncError,
     pending,
-    pendingCount,
     lifetime,
     refresh,
     mutate,
@@ -271,9 +280,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [themeOverride, setThemeOverride] = useState<"light" | "dark" | null>(
     null,
   );
-  const [editQuestion, setEditQuestion] = useState<QuestionView | null>(null);
-  const editingId = useRef<string | null>(null);
-  editingId.current = editQuestion?.id ?? null;
   const [publishId, setPublishId] = useState<string | null>(null);
   const [deleteDeck, setDeleteDeck] = useState<
     Workspace["decks"][number] | null
@@ -284,7 +290,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   } | null>(null);
   const [searchToken, setSearchToken] = useState(0);
   const [aiMode, setAiMode] = useState<AiIslandMode>("collapsed");
+  const [aiDockWidth, setAiDockWidth] = useState<number | null>(null);
+  const [aiDockResizing, setAiDockResizing] = useState(false);
   const [aiTrigger, setAiTrigger] = useState<AiTrigger | null>(null);
+  const triggerSeq = useRef(0);
   const [aiBusy, setAiBusy] = useState(false);
   const [reviewRevealed, setReviewRevealed] = useState(false);
   const [confirmState, setConfirmState] = useState<{
@@ -322,9 +331,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [reviewBusy, setReviewBusy] = useState(false);
   const grading = useRef(false);
   const eventId = useRef(crypto.randomUUID());
-  const pageKey = editQuestion
-    ? `edit:${editQuestion.id}`
-    : view === "question"
+  const pageKey =
+    view === "question"
       ? `question:${questionId}`
       : view === "review"
         ? `review:${reviewIndex}:${queue[reviewIndex]?.id ?? "done"}`
@@ -356,16 +364,42 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     return () => window.clearTimeout(id);
   }, [data?.user.id]);
   useEffect(() => {
+    try {
+      const saved = localStorage.getItem("shiyi.aiDockWidth");
+      if (saved) {
+        const parsed = Number.parseInt(saved, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          setAiDockWidth(clampAiDockWidth(parsed, window.innerWidth));
+        }
+      }
+    } catch {
+      /* Ignore storage restrictions. */
+    }
+  }, []);
+  const handleAiDockWidthChange = useCallback((next: number | null) => {
+    const clamped =
+      next === null
+        ? null
+        : clampAiDockWidth(
+            next,
+            typeof window !== "undefined" ? window.innerWidth : 1440,
+          );
+    setAiDockWidth(clamped);
+    try {
+      if (clamped === null) {
+        localStorage.removeItem("shiyi.aiDockWidth");
+      } else {
+        localStorage.setItem("shiyi.aiDockWidth", String(clamped));
+      }
+    } catch {
+      /* Ignore storage restrictions. */
+    }
+  }, []);
+  useEffect(() => {
     if (!sidebarOpen) {
       setDrawerDragX(0);
       drawerTouch.current = null;
-      return;
     }
-    const previous = document.documentElement.style.overflow;
-    document.documentElement.style.overflow = "hidden";
-    return () => {
-      document.documentElement.style.overflow = previous;
-    };
   }, [sidebarOpen]);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -402,7 +436,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         );
         return;
       }
-      if (editingId.current && pendingCount.current) return;
       if (viewRef.current !== "question") {
         origin.current = { view: viewRef.current, deckId: deckIdRef.current };
       }
@@ -410,7 +443,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       changePage(
         "question",
         () => {
-          setEditQuestion(null);
           setQuestionId(matches[0].id);
         },
         {
@@ -469,9 +501,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }, [sessionId, loadCatalog]);
   useEffect(() => {
     function onPopState() {
-      if (editingId.current && pendingCount.current) {
-        return;
-      }
       setSidebarOpen(false);
       const next = parseRouteFromSearch(window.location.search);
       const resolved =
@@ -483,7 +512,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       }
       setNavigationTarget(resolved.view);
       startTransition(() => {
-        setEditQuestion(null);
         if (resolved.view === "library") {
           setDeckId(resolved.deckId);
         } else if (resolved.view === "question") {
@@ -501,6 +529,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [loadCatalog]);
+  const paletteRef = useRef<Palette>(palette);
+  paletteRef.current = palette;
+  const activeThemeRef = useRef<"light" | "dark">("light");
+  activeThemeRef.current =
+    (themeOverride ?? data?.settings.theme) === "dark" ? "dark" : "light";
+
   useEffect(() => {
     try {
       const savedPalette =
@@ -508,17 +542,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           ? "lavender"
           : "forest";
       setPalette(savedPalette);
-      document.documentElement.dataset.palette = savedPalette;
+      syncDocumentTheme(activeThemeRef.current, savedPalette);
     } catch {
-      document.documentElement.dataset.palette = "forest";
+      syncDocumentTheme(activeThemeRef.current, "forest");
     }
   }, []);
   const applyPalette = useCallback((next: Palette) => {
     setPalette(next);
-    document.documentElement.dataset.palette = next;
-    const currentTheme =
-      document.documentElement.dataset.theme === "dark" ? "dark" : "light";
-    syncThemeColorMeta(next, currentTheme);
+    syncDocumentTheme(activeThemeRef.current, next);
     try {
       localStorage.setItem("shiyi:palette", next);
     } catch {
@@ -529,14 +560,33 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (!data) return;
     setThemeOverride(null);
     const nextTheme = data.settings.theme === "dark" ? "dark" : "light";
-    document.documentElement.dataset.theme = nextTheme;
-    syncThemeColorMeta(palette, nextTheme);
+    syncDocumentTheme(nextTheme, paletteRef.current);
     try {
       localStorage.setItem("shiyi:theme", nextTheme);
     } catch {
       /* Ignore storage access failures. */
     }
-  }, [data?.settings.theme, palette]);
+  }, [data?.settings.theme]);
+  useEffect(() => {
+    syncDocumentTheme(activeThemeRef.current, palette);
+  }, [palette]);
+  useEffect(() => {
+    function onStorage(event: StorageEvent) {
+      if (event.key === "shiyi:theme") {
+        if (event.newValue === "light" || event.newValue === "dark") {
+          setThemeOverride(event.newValue);
+          syncDocumentTheme(event.newValue, paletteRef.current);
+        }
+      } else if (event.key === "shiyi:palette") {
+        const nextPal: Palette =
+          event.newValue === "lavender" ? "lavender" : "forest";
+        setPalette(nextPal);
+        syncDocumentTheme(activeThemeRef.current, nextPal);
+      }
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   const preferredAiOpenMode = useRef<"docked" | "floating">("docked");
   const handleAiModeChange = useCallback((next: AiIslandMode) => {
     if (next !== "collapsed") preferredAiOpenMode.current = next;
@@ -545,6 +595,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   useAppShortcuts({
     view,
     reviewRevealed,
+    isEditing: false,
     aiMode,
     onToggleAi: () =>
       setAiMode((current) =>
@@ -552,12 +603,18 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       ),
     onCloseAi: () => setAiMode("collapsed"),
     onCloseSidebar: () => setSidebarOpen(false),
-    onQuickSearch: () => {
-      if (editingId.current && pendingCount.current) return;
+    onQuickSearch: (viaSlash) => {
+      if (viaSlash && viewRef.current === "library") {
+        (
+          document.querySelector(
+            "input[aria-label='搜索题目']",
+          ) as HTMLInputElement | null
+        )?.focus();
+        return;
+      }
       changePage(
         "library",
         () => {
-          setEditQuestion(null);
           setDeckId(undefined);
           setSearchToken((n) => n + 1);
         },
@@ -586,14 +643,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }, []);
   const askAi = useCallback(
     (request: { quote: string; prompt: string; attempt?: string }) => {
-      setAiTrigger({ ...request, nonce: Date.now() });
+      setAiTrigger({ ...request, nonce: ++triggerSeq.current });
       setAiMode((current) =>
         current === "collapsed" ? preferredAiOpenMode.current : current,
       );
     },
     [],
   );
-  const isReaderView = (view === "question" || view === "review") && !editQuestion;
   const aiHiddenInReview = view === "review" && !reviewRevealed;
   const queueCardId = queue[reviewIndex]?.id;
   useEffect(() => {
@@ -621,12 +677,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     else window.history.pushState(null, "", url);
   }
   function navigate(next: View) {
-    if (editingId.current && pendingCount.current) return;
     changePage(
       next,
       () => {
-        setEditQuestion(null);
-        if (next === "library") setDeckId(undefined);
+        if (next === "library" || next === "today" || next === "history") {
+          setDeckId(undefined);
+        }
+        if (next !== "question") {
+          setReadingIds([]);
+        }
       },
       { route: { view: next } },
     );
@@ -650,11 +709,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     });
   }
   function openDeck(id?: string | null) {
-    if (editingId.current && pendingCount.current) return;
     changePage(
       "library",
       () => {
-        setEditQuestion(null);
         setDeckId(id);
       },
       { route: { view: "library", deckId: id } },
@@ -666,7 +723,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     orderedIds?: string[],
     historyMode: "push" | "replace" = "push",
   ) {
-    if (editingId.current && pendingCount.current) return;
     if (view !== "question") origin.current = { view, deckId };
     if (orderedIds !== undefined) {
       setReadingIds(orderedIds);
@@ -676,7 +732,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     changePage(
       "question",
       () => {
-        setEditQuestion(null);
         setQuestionId(question.id);
       },
       {
@@ -691,8 +746,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     );
   }
   function startReview(targetDeck?: string, single?: QuestionView) {
-    if (editingId.current && pendingCount.current) return;
-    setEditQuestion(null);
     if (!data) return;
     if (view === "review" && !targetDeck && !single && queue[reviewIndex]) {
       if (navigationTarget !== "review") {
@@ -708,8 +761,17 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         q.answer.trim() &&
         (!targetDeck || q.deckId === targetDeck),
     );
+    const majorReview = active
+      .filter((q) => q.fsrs && q.majorRevision > q.reviewedRevision)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const majorIds = new Set(majorReview.map((q) => q.id));
     const due = active
-      .filter((q) => q.fsrs && new Date(q.fsrs.due).getTime() <= Date.now())
+      .filter(
+        (q) =>
+          !majorIds.has(q.id) &&
+          q.fsrs &&
+          new Date(q.fsrs.due).getTime() <= Date.now(),
+      )
       .sort(
         (a, b) =>
           new Date(a.fsrs!.due).getTime() - new Date(b.fsrs!.due).getTime(),
@@ -720,13 +782,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         0,
         Math.max(0, data.settings.dailyNewLimit - data.stats.newLearnedToday),
       );
+    setReviewRevealed(false);
     setReviewMode("fsrs");
     setCramLabel("");
     setReviewResults([]);
     changePage(
       "review",
       () => {
-        setQueue(single ? [single] : [...due, ...fresh]);
+        setQueue(single ? [single] : [...majorReview, ...due, ...fresh]);
         setReviewIndex(0);
         setRatings([]);
       },
@@ -737,11 +800,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     rememberScroll();
   }
   function startCram(items: QuestionView[], label: string) {
-    if (editingId.current && pendingCount.current) return;
-    setEditQuestion(null);
     if (!data) return;
     if (view !== "review") reviewOrigin.current = { view, deckId, questionId };
     const cramList = items.filter((q) => !q.archived && q.answer.trim());
+    setReviewRevealed(false);
     setReviewMode("cram");
     setCramLabel(label);
     setReviewResults([]);
@@ -769,27 +831,26 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (grading.current || isNavigating) return;
     const q = queue[reviewIndex];
     if (!q) return;
+    const latest = data?.questions.find((item) => item.id === q.id);
     if (reviewMode === "cram") {
-      if (data)
-        savePracticeDraft(
-          practiceDraftKey(data.user.id, q.id, q.revision),
-          "",
-        );
+      if (data) {
+        clearCardPracticeDrafts(data.user.id, q.id, [
+          q.revision,
+          latest?.revision ?? q.revision,
+        ]);
+      }
       setRatings((previous) => [...previous, rating]);
-      setReviewResults((previous) => [...previous, { question: q, rating }]);
+      setReviewResults((previous) => [
+        ...previous,
+        { question: latest ?? q, rating },
+      ]);
       setReviewIndex((n) => n + 1);
       rememberScroll();
       return;
     }
-    const latest = data?.questions.find((item) => item.id === q.id);
-    if (
-      !latest ||
-      latest.studyVersion !== q.studyVersion ||
-      latest.revision !== q.revision ||
-      latest.archived
-    ) {
+    if (!latest || latest.studyVersion !== q.studyVersion || latest.archived) {
       toast.info(
-        "这道题的内容或复习进度已在其他页面更新，已跳过，稍后可以重新开始。",
+        "这道题的复习进度已在其他页面更新或被归档，已跳过。",
       );
       setReviewIndex((n) => n + 1);
       eventId.current = crypto.randomUUID();
@@ -802,18 +863,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         questionId: q.id,
         eventId: eventId.current,
         expectedVersion: q.studyVersion,
-        questionRevision: q.revision,
+        questionRevision: latest.revision,
         rating,
         answer,
       });
       if (result) {
-        if (data)
-          savePracticeDraft(
-            practiceDraftKey(data.user.id, q.id, q.revision),
-            "",
-          );
+        if (data) {
+          clearCardPracticeDrafts(data.user.id, q.id, [
+            q.revision,
+            latest.revision,
+          ]);
+        }
         setRatings((previous) => [...previous, rating]);
-        setReviewResults((previous) => [...previous, { question: q, rating }]);
+        setReviewResults((previous) => [
+          ...previous,
+          { question: latest, rating },
+        ]);
         setReviewIndex((n) => n + 1);
         eventId.current = crypto.randomUUID();
         rememberScroll();
@@ -823,6 +888,25 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setReviewBusy(false);
     }
   }
+  const currentQuestion = data?.questions.find((q) => q.id === questionId);
+  const queueQuestion = queue[reviewIndex];
+  const currentReview = data?.questions.find((q) => q.id === queueQuestion?.id);
+  useEffect(() => {
+    if (
+      !data ||
+      view !== "review" ||
+      !queueQuestion ||
+      currentReview ||
+      grading.current
+    )
+      return;
+    const nextAlive = queue.findIndex(
+      (item, idx) =>
+        idx > reviewIndex && data.questions.some((q) => q.id === item.id),
+    );
+    setReviewIndex(nextAlive >= 0 ? nextAlive : queue.length);
+    eventId.current = crypto.randomUUID();
+  }, [data, view, queue, reviewIndex, queueQuestion, currentReview]);
   if (!data)
     return (
       <div className="app-loading">
@@ -847,26 +931,35 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     );
   const activeTheme: "light" | "dark" =
     (themeOverride ?? data.settings.theme) === "dark" ? "dark" : "light";
-  function setThemeMode(next: "light" | "dark") {
+  async function setThemeMode(next: "light" | "dark") {
     if (!data || next === activeTheme) return;
+    const previousTheme = activeTheme;
     setThemeOverride(next);
-    document.documentElement.dataset.theme = next;
-    syncThemeColorMeta(palette, next);
+    syncDocumentTheme(next, palette);
     try {
       localStorage.setItem("shiyi:theme", next);
     } catch {
       /* Ignore storage access failures. */
     }
-    void mutate("/api/settings", {
+    const result = await mutate("/api/settings", {
       action: "preferences",
       dailyGoal: data.settings.dailyGoal,
       dailyNewLimit: data.settings.dailyNewLimit,
       theme: next,
       timeZone: data.settings.timeZone,
     });
+    if (!result) {
+      setThemeOverride(null);
+      syncDocumentTheme(previousTheme, palette);
+      try {
+        localStorage.setItem("shiyi:theme", previousTheme);
+      } catch {
+        /* Ignore storage access failures. */
+      }
+    }
   }
   function toggleTheme() {
-    setThemeMode(activeTheme === "dark" ? "light" : "dark");
+    void setThemeMode(activeTheme === "dark" ? "light" : "dark");
   }
   function openQuickSearch() {
     navigate("library");
@@ -882,7 +975,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     );
   }
   function signOutPrompt() {
-    if (editingId.current && pendingCount.current) return;
     setConfirmState({
       open: true,
       title: "退出登录",
@@ -895,9 +987,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       },
     });
   }
-  const currentQuestion = data.questions.find((q) => q.id === questionId);
-  const queueQuestion = queue[reviewIndex];
-  const currentReview = data.questions.find((q) => q.id === queueQuestion?.id);
+  const isReaderView =
+    (view === "question" && Boolean(currentQuestion)) ||
+    (view === "review" && Boolean(currentReview));
   const readingList = readingIds.length
     ? readingIds
         .map((id) => data.questions.find((q) => q.id === id))
@@ -937,9 +1029,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const activeNavView = view === "question" ? origin.current.view : view;
   const activeDeckId = view === "question" ? origin.current.deckId : deckId;
   const displayedView = isNavigating ? navigationTarget : view;
-  const isImmersiveMobile = isReaderView || !!editQuestion;
+  const isImmersiveMobile = isReaderView;
   const hasMobileDeckBack =
-    displayedView === "library" && activeDeckId !== undefined && !editQuestion;
+    displayedView === "library" && activeDeckId !== undefined;
   const mobileView = ["question", "favorites", "inbox", "archived"].includes(
     navigationTarget,
   )
@@ -961,12 +1053,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     <div
       className={cn(
         "app-shell",
-        editQuestion && "editor-open",
-        editQuestion && pending && "editor-saving",
         isReaderView && "mobile-reader-active",
         isImmersiveMobile && "mobile-immersive",
-        aiMode === "docked" && !editQuestion && !aiHiddenInReview && "ai-pushed",
+        aiMode === "docked" && !aiHiddenInReview && "ai-pushed",
+        aiDockResizing && "ai-resizing",
       )}
+      style={
+        aiDockWidth !== null
+          ? ({ "--ai-dock-width": `${aiDockWidth}px` } as CSSProperties)
+          : undefined
+      }
       onPointerDownCapture={rememberScroll}
       onKeyDownCapture={rememberScroll}
     >
@@ -1197,36 +1293,33 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             </span>
             <Sparkles size={15} />
           </button>
-          <button
-            type="button"
-            className={cn(
-              "user-button",
-              settingsState.open && settingsState.mode === "account" && "is-active",
-            )}
-            data-settings-trigger="account"
-            aria-label="个人设置与数据备份"
-            aria-expanded={settingsState.open && settingsState.mode === "account"}
-            aria-controls="settings-floating-card"
-            onClick={(event) => {
-              setSidebarOpen(false);
+          <UserMenu
+            user={data.user}
+            palette={palette}
+            activeTheme={activeTheme}
+            settingsAccountOpen={
+              settingsState.open && settingsState.mode === "account"
+            }
+            onOpenAccountSettings={(accountTab, anchor) =>
               openSettings({
                 mode: "account",
-                anchor: event.currentTarget,
-                toggle: true,
-              });
-            }}
-          >
-            <span className="user-avatar" aria-hidden="true">
-              {data.user.name.slice(0, 1).toUpperCase()}
-            </span>
-            <span className="user-meta">
-              <strong>{data.user.name}</strong>
-              <small>{data.user.email || "学习偏好 · 数据备份"}</small>
-            </span>
-            <span className="user-chevron" aria-hidden="true">
-              <ChevronsUpDown size={14} />
-            </span>
-          </button>
+                accountTab,
+                anchor,
+                toggle: false,
+              })
+            }
+            onBeforeOpenMenu={() =>
+              setSettingsState((prev) =>
+                prev.open ? { ...prev, open: false } : prev,
+              )
+            }
+            onTogglePalette={() =>
+              applyPalette(palette === "forest" ? "lavender" : "forest")
+            }
+            onToggleTheme={toggleTheme}
+            onSignOut={signOutPrompt}
+            onCloseMobileDrawer={() => setSidebarOpen(false)}
+          />
           <button
             type="button"
             className="sidebar-mobile-logout"
@@ -1263,9 +1356,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               </button>
             )}
             <span className="topbar-breadcrumb">
-              {editQuestion ? (
-                <strong>编辑题目</strong>
-              ) : displayedView === "today" ? (
+              {displayedView === "today" ? (
                 <strong>今日</strong>
               ) : displayedView === "library" && activeDeckId !== undefined ? (
                 <>
@@ -1375,7 +1466,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 {pending ? "正在同步" : syncError ? "连接中断" : "已同步"}
               </span>
             </span>
-            {!editQuestion && !aiHiddenInReview && (
+            {!aiHiddenInReview && (
               <button
                 type="button"
                 className={cn(
@@ -1398,9 +1489,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             >
               <Search size={18} />
             </button>
-            {!editQuestion &&
-              displayedView !== "today" &&
-              displayedView !== "library" && (
+            {displayedView !== "today" && displayedView !== "library" && (
                 <button
                   type="button"
                   className="button button-ghost button-sm topbar-import-btn"
@@ -1499,7 +1588,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         </header>
-        <div className="workspace-content" hidden={!!editQuestion}>
+        <div className="workspace-content">
           {syncError && (
             <div className="connection-banner">
               <WifiOff size={14} />{" "}
@@ -1637,7 +1726,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     }
                   : undefined
               }
-              onEdit={() => setEditQuestion(currentQuestion)}
+              onBatchImport={(seed, onCommitted) => {
+                setImportSeed(seed);
+                importCommitted.current = onCommitted;
+                setImportOpen(true);
+              }}
               onDelete={() =>
                 setQuestionAction({
                   question: currentQuestion,
@@ -1701,7 +1794,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     navigate(back.view === "review" ? "today" : back.view);
                   }
                 }}
-                onEdit={() => setEditQuestion(currentReview)}
                 onDelete={() =>
                   setQuestionAction({
                     question: currentReview,
@@ -1766,33 +1858,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             <HistoryView data={data} onQuestion={openQuestion} />
           )}
         </div>
-        {editQuestion && (
-          <QuestionEditPage
-            key={editQuestion.id}
-            question={editQuestion}
-            current={data.questions.find(
-              (q) => q.id === editQuestion.id && q.isOwner,
-            )}
-            userId={data.user.id}
-            mutate={mutate}
-            onBack={() => {
-              if (pendingCount.current) return;
-              setEditQuestion(null);
-              rememberScroll();
-            }}
-            onSaved={() => {
-              if (editingId.current === editQuestion.id) {
-                setEditQuestion(null);
-                rememberScroll();
-              }
-            }}
-            onBatchImport={(seed, onCommitted) => {
-              setImportSeed(seed);
-              importCommitted.current = onCommitted;
-              setImportOpen(true);
-            }}
-          />
-        )}
       </main>
       <nav className="mobile-bottom-nav" aria-label="手机主导航">
         {nav.map(({ id, mobileLabel, icon: Icon, count }) => (
@@ -1878,7 +1943,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             changePage(
               "question",
               () => {
-                setEditQuestion(null);
                 setQuestionId(id);
               },
               {
@@ -2002,12 +2066,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             : undefined
         }
         mode={aiMode}
-        allowDock={!editQuestion}
-        hidden={!!editQuestion || aiHiddenInReview}
+        allowDock
+        hidden={aiHiddenInReview}
         trigger={aiTrigger}
+        dockWidth={aiDockWidth}
+        onDockWidthChange={handleAiDockWidthChange}
+        onResizingDockChange={setAiDockResizing}
         onModeChange={handleAiModeChange}
         onOpen={() => toggleAi(true)}
-        onOpenQuestion={(target) => openQuestion(target)}
+        onOpenQuestion={(target) => openQuestion(target, [])}
         onSettings={(anchor) =>
           openSettings({ mode: "ai", anchor, toggle: true })
         }

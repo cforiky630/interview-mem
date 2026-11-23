@@ -55,7 +55,10 @@ export async function schedule(
       : 0,
     scheduled_days: (result.card.dueAt.getTime() - now.getTime()) / 86400_000,
     reps: (stored?.reps ?? 0) + 1,
-    lapses: (stored?.lapses ?? 0) + (rating === 1 && stored ? 1 : 0),
+    lapses:
+      typeof result.card.lapses === "number"
+        ? result.card.lapses
+        : (stored?.lapses ?? 0) + (rating === 1 && stored?.state === 2 ? 1 : 0),
     state: Number(result.card.state ?? (rating === 1 ? 1 : 2)),
     last_review: now.toISOString(),
   };
@@ -71,6 +74,12 @@ export async function reviewInsight(
     due: item.card.dueAt.toISOString(),
     interval: readableInterval(item.card.dueAt, now),
   }));
+  const elapsed = stored?.last_review
+    ? Math.max(
+        0,
+        (now.getTime() - new Date(stored.last_review).getTime()) / 86400_000,
+      )
+    : 0;
   const curve = stored
     ? [0, 1, 2, 3, 5, 7, 10, 14, 21, 30].map((day) => ({
         day,
@@ -78,7 +87,7 @@ export async function reviewInsight(
           Math.round(
             scheduler.model.forgettingCurve(
               card as Parameters<typeof scheduler.model.forgettingCurve>[0],
-              day,
+              elapsed + day,
             ) * 1000,
           ) / 10,
       }))

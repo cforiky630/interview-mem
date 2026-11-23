@@ -265,14 +265,18 @@ export function Dashboard({
                       setDragX(dx);
                     }
                   }}
-                  onTouchEnd={() => {
+                  onTouchEnd={(event) => {
                     const state = cardTouch.current;
                     cardTouch.current = null;
                     if (state?.locked === "h") {
-                      if (dragX < -48) {
+                      const dx =
+                        (event.changedTouches[0]?.clientX ?? state.x) - state.x;
+                      if (dx < -48) {
                         setIndex((selectedIndex + 1) % cards.length);
-                      } else if (dragX > 48) {
-                        setIndex((selectedIndex - 1 + cards.length) % cards.length);
+                      } else if (dx > 48) {
+                        setIndex(
+                          (selectedIndex - 1 + cards.length) % cards.length,
+                        );
                       }
                     }
                     setDragX(0);

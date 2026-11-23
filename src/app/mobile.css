@@ -227,6 +227,9 @@
     display: block;
     position: fixed;
     inset: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+    touch-action: none;
     background: var(--backdrop-bg);
     z-index: var(--z-drawer-backdrop);
     backdrop-filter: blur(6px);
@@ -322,9 +325,12 @@
     border-radius: 50%;
     flex-shrink: 0;
   }
-  .sidebar .user-button {
-    padding: 8px 10px;
-    min-height: 50px;
+  .sidebar .user-menu-trigger {
+    padding: 7px 10px;
+    min-height: 42px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in oklab, var(--surface) 64%, transparent);
   }
   .sidebar-mobile-ai-btn {
     display: flex;
@@ -882,6 +888,10 @@
   }
   .library-page .search-field input,
   .notebook-reader .personal-notes textarea,
+  .notebook-reader .note-markdown-textarea,
+  .notebook-reader .inline-title-input,
+  .notebook-reader .inline-editor-surface textarea,
+  .notebook-reader .inline-editor-surface .tiptap-content,
   .notebook-reader .followup-card textarea,
   .notebook-reader .practice-block textarea,
   .notebook-reader .answer-draft textarea,
@@ -1172,6 +1182,9 @@
     display: block;
     position: fixed;
     inset: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+    touch-action: none;
     z-index: var(--z-sheet-backdrop);
     background: var(--backdrop-bg);
     backdrop-filter: blur(6px);
@@ -1248,6 +1261,9 @@
     margin: 10px auto 2px;
     flex-shrink: 0;
   }
+  .ai-panel-sheet-handle {
+    touch-action: none;
+  }
   .ai-island-panel .ai-panel-heading {
     height: auto;
     padding: 8px 16px 12px;
@@ -1281,6 +1297,9 @@
   .action-sheet-backdrop {
     position: absolute;
     inset: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+    touch-action: none;
     background: var(--backdrop-bg);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
@@ -1294,6 +1313,7 @@
   .action-sheet-card {
     position: relative;
     z-index: 1;
+    overscroll-behavior: contain;
     background: var(--surface-glass-strong);
     backdrop-filter: var(--glass-blur-strong);
     -webkit-backdrop-filter: var(--glass-blur-strong);
@@ -1447,6 +1467,39 @@
   .table-scroll,
   .prose-content pre {
     overscroll-behavior-x: contain;
+  }
+  .inline-title-trigger {
+    opacity: 0.85;
+  }
+  .inline-title-input {
+    padding: 8px 10px;
+    line-height: 1.45;
+  }
+  .inline-editor-toolbar {
+    gap: 6px;
+  }
+  .inline-editor-detected {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .inline-editor-surface > textarea {
+    padding: 14px;
+    min-block-size: 12lh;
+  }
+  .inline-editor-surface .tiptap-content {
+    padding: 14px;
+  }
+  .inline-editor-surface .editor-toolbar {
+    padding-inline: 5px;
+  }
+  .inline-editor-surface .editor-toolbar .button {
+    width: 31px;
+    height: 32px;
+    padding: 5px;
+  }
+  .note-markdown-view,
+  .note-preview-surface {
+    padding: 14px;
   }
 }
 

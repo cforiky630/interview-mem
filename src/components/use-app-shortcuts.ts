@@ -3,9 +3,18 @@ import { useEffect, useRef } from "react";
 import type { AiIslandMode } from "./ai-island";
 import type { AppView } from "@/lib/navigation";
 
+function hasBlockingOverlay() {
+  return Boolean(
+    document.querySelector(
+      "[role='dialog']:not([hidden]), .action-menu[open], .action-menu:popover-open, .user-menu-popover:popover-open",
+    ),
+  );
+}
+
 export function useAppShortcuts({
   view,
   reviewRevealed,
+  isEditing,
   aiMode,
   onToggleAi,
   onCloseAi,
@@ -14,15 +23,17 @@ export function useAppShortcuts({
 }: {
   view: AppView;
   reviewRevealed: boolean;
+  isEditing: boolean;
   aiMode: AiIslandMode;
   onToggleAi: () => void;
   onCloseAi: () => void;
   onCloseSidebar: () => void;
-  onQuickSearch: () => void;
+  onQuickSearch: (viaSlash: boolean) => void;
 }) {
   const ctxRef = useRef({
     view,
     reviewRevealed,
+    isEditing,
     aiMode,
     onToggleAi,
     onCloseAi,
@@ -32,6 +43,7 @@ export function useAppShortcuts({
   ctxRef.current = {
     view,
     reviewRevealed,
+    isEditing,
     aiMode,
     onToggleAi,
     onCloseAi,
@@ -41,47 +53,55 @@ export function useAppShortcuts({
 
   useEffect(() => {
     function shortcuts(event: KeyboardEvent) {
+      if (event.isComposing) return;
       const ctx = ctxRef.current;
+      const target = event.target as HTMLElement | null;
       if (
         (event.metaKey || event.ctrlKey) &&
         !event.altKey &&
         event.key.toLowerCase() === "j"
       ) {
-        if (document.querySelector("[role='dialog']:not([hidden])")) return;
+        if (ctx.isEditing || hasBlockingOverlay()) return;
         if (ctx.view === "review" && !ctx.reviewRevealed) return;
         event.preventDefault();
         ctx.onToggleAi();
         return;
       }
       if (event.key === "Escape") {
+        if (hasBlockingOverlay()) return;
+        try {
+          if (document.querySelector("select:open")) return;
+        } catch {
+          /* Ignore browsers without :open selector support. */
+        }
         if (
-          !document.querySelector("[role='dialog']:not([hidden])") &&
           ctx.aiMode !== "collapsed" &&
-          (!(event.target as HTMLElement).closest(
-            "input,textarea,[contenteditable='true']",
-          ) ||
-            !!(event.target as HTMLElement).closest(".ai-island-panel"))
+          (!target?.closest("input,textarea,[contenteditable='true']") ||
+            !!target.closest(".ai-island-panel"))
         ) {
           event.preventDefault();
           ctx.onCloseAi();
           return;
         }
+        ctx.onCloseSidebar();
+        return;
       }
       if (
-        (event.target as HTMLElement).closest(
-          "input,textarea,[contenteditable='true']",
-        ) ||
-        document.querySelector("[role='dialog']:not([hidden])")
+        ctx.isEditing ||
+        target?.closest("input,textarea,select,[contenteditable='true']") ||
+        hasBlockingOverlay()
       )
         return;
-      if (
-        event.key === "/" ||
-        ((event.metaKey || event.ctrlKey) && event.key === "k")
-      ) {
+      const isPlainSlash =
+        event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey;
+      const isModK =
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "k";
+      if (isPlainSlash || isModK) {
         event.preventDefault();
-        ctx.onQuickSearch();
+        ctx.onQuickSearch(isPlainSlash);
       }
-      if (event.key === "Escape") ctx.onCloseSidebar();
     }
     window.addEventListener("keydown", shortcuts);
     return () => window.removeEventListener("keydown", shortcuts);

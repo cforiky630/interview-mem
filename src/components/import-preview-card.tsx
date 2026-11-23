@@ -14,7 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import {
-  applyCorrectionSpan,
+  applyCorrectionAt,
   computeInlineDiff,
   PROOFREAD_CATEGORY_LABELS,
   type ProofreadCorrection,
@@ -108,28 +108,45 @@ export function ImportPreviewCard({
 
   function acceptCorrection(correction: ProofreadCorrection) {
     const currentText = item[correction.field];
-    if (!currentText.includes(correction.original)) return;
-    const nextText = applyCorrectionSpan(
+    const index = currentText.indexOf(correction.original);
+    if (index < 0) return;
+    const nextText = applyCorrectionAt(
       currentText,
+      index,
       correction.original,
       correction.replacement,
     );
-    updateCorrection(correction.id, "applied", {
+    onChange({
       [correction.field]: nextText,
+      corrections: corrections.map((c) =>
+        c.id === correction.id
+          ? { ...c, status: "applied" as const, appliedAt: index }
+          : c,
+      ),
     });
   }
 
   function revertCorrection(correction: ProofreadCorrection) {
     const currentText = item[correction.field];
+    const revertIdx =
+      typeof correction.appliedAt === "number"
+        ? correction.appliedAt
+        : currentText.indexOf(correction.replacement);
     const nextText = currentText.includes(correction.replacement)
-      ? applyCorrectionSpan(
+      ? applyCorrectionAt(
           currentText,
+          revertIdx,
           correction.replacement,
           correction.original,
         )
       : currentText;
-    updateCorrection(correction.id, "pending", {
+    onChange({
       [correction.field]: nextText,
+      corrections: corrections.map((c) =>
+        c.id === correction.id
+          ? { ...c, status: "pending" as const, appliedAt: undefined }
+          : c,
+      ),
     });
   }
 
@@ -138,13 +155,29 @@ export function ImportPreviewCard({
     let nextAnswer = item.answer;
     const nextCorrections = corrections.map((c) => {
       if (c.status !== "pending") return c;
-      if (c.field === "title" && nextTitle.includes(c.original)) {
-        nextTitle = applyCorrectionSpan(nextTitle, c.original, c.replacement);
-        return { ...c, status: "applied" as const };
+      if (c.field === "title") {
+        const idx = nextTitle.indexOf(c.original);
+        if (idx >= 0) {
+          nextTitle = applyCorrectionAt(
+            nextTitle,
+            idx,
+            c.original,
+            c.replacement,
+          );
+          return { ...c, status: "applied" as const, appliedAt: idx };
+        }
       }
-      if (c.field === "answer" && nextAnswer.includes(c.original)) {
-        nextAnswer = applyCorrectionSpan(nextAnswer, c.original, c.replacement);
-        return { ...c, status: "applied" as const };
+      if (c.field === "answer") {
+        const idx = nextAnswer.indexOf(c.original);
+        if (idx >= 0) {
+          nextAnswer = applyCorrectionAt(
+            nextAnswer,
+            idx,
+            c.original,
+            c.replacement,
+          );
+          return { ...c, status: "applied" as const, appliedAt: idx };
+        }
       }
       return c;
     });

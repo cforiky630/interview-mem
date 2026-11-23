@@ -193,19 +193,21 @@ export const POST = route(async (request, user) => {
             .where(eq(questions.id, data.id));
           return { ok: true };
         }
+        const normalizedTags = mergeQuestionTags([], data.tags);
         const hash = contentHash(data.title, data.answer);
-        const duplicates = current.deckId
-          ? await tx
-              .select({ id: questions.id })
-              .from(questions)
-              .where(
-                and(
-                  eq(questions.deckId, current.deckId),
-                  isNull(questions.deletedAt),
-                  eq(questions.contentHash, hash),
-                ),
-              )
-          : [];
+        const duplicates = await tx
+          .select({ id: questions.id })
+          .from(questions)
+          .where(
+            and(
+              eq(questions.ownerId, user.id),
+              current.deckId
+                ? eq(questions.deckId, current.deckId)
+                : isNull(questions.deckId),
+              isNull(questions.deletedAt),
+              eq(questions.contentHash, hash),
+            ),
+          );
         if (duplicates.some((q) => q.id !== data.id))
           throw new AppError(409, "题库里已经存在相同题目和答案。");
         const changed = await tx
@@ -213,7 +215,7 @@ export const POST = route(async (request, user) => {
           .set({
             title: data.title,
             ...(data.answer === current.answer ? {} : { answer: data.answer }),
-            tags: data.tags,
+            tags: normalizedTags,
             contentHash: hash,
             revision: sql`${questions.revision} + 1`,
             ...(data.major ? { majorRevision: data.expectedRevision + 1 } : {}),

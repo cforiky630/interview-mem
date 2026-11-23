@@ -153,9 +153,11 @@ export const ParagraphPractice = memo(function ParagraphPractice({
 export function FollowupCards({
   followups,
   draftPrefix,
+  onEditFollowups,
 }: {
   followups: Followup[];
   draftPrefix: string;
+  onEditFollowups?: () => void;
 }) {
   const [index, setIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
@@ -166,7 +168,8 @@ export function FollowupCards({
     y: number;
     locked: "h" | "v" | null;
   } | null>(null);
-  const current = followups[index];
+  const safeIndex = followups.length ? Math.min(index, followups.length - 1) : 0;
+  const current = followups[safeIndex];
   const key = `${draftPrefix}:followup:${current?.id}`;
   useEffect(() => {
     setDraft(readPracticeDraft(key));
@@ -174,9 +177,21 @@ export function FollowupCards({
   }, [key]);
   if (!current)
     return (
-      <div className="quiet-empty">
-        这道题还没有拆出面试追问。点击右上角「更多操作 → 编辑题目」，用「##
-        追问」与 Q：/ A： 写几道追问，这里会自动生成独立抽认卡。
+      <div className="quiet-empty followup-empty-state">
+        <p>
+          这道题还没有拆出面试追问。可在正文中用「## 追问」与 Q：/ A：
+          编写追问，这里会自动生成独立抽认卡。
+        </p>
+        {onEditFollowups && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onEditFollowups}
+          >
+            <PencilLine size={14} /> 原地补充追问
+          </Button>
+        )}
       </div>
     );
   function select(next: number) {
@@ -187,7 +202,7 @@ export function FollowupCards({
     );
   }
   function move(step: number) {
-    select((index + step + followups.length) % followups.length);
+    select((safeIndex + step + followups.length) % followups.length);
   }
   return (
     <section className="followup-workspace" aria-label="面试追问">
@@ -215,7 +230,7 @@ export function FollowupCards({
             </div>
           )}
           <span aria-live="polite">
-            {index + 1} / {followups.length}
+            {safeIndex + 1} / {followups.length}
           </span>
         </div>
       </div>
@@ -262,22 +277,20 @@ export function FollowupCards({
               setDragX(dx);
             }
           }}
-          onTouchEnd={() => {
+          onTouchEnd={(event) => {
             const state = cardTouch.current;
             cardTouch.current = null;
             if (state?.locked === "h") {
-              if (dragX < -48) move(1);
-              else if (dragX > 48) move(-1);
+              const dx =
+                (event.changedTouches[0]?.clientX ?? state.x) - state.x;
+              if (dx < -48) move(1);
+              else if (dx > 48) move(-1);
             }
-            setDragX(0);
-          }}
-          onTouchCancel={() => {
-            cardTouch.current = null;
             setDragX(0);
           }}
         >
           <span className="card-number">
-            Q{String(index + 1).padStart(2, "0")}
+            Q{String(safeIndex + 1).padStart(2, "0")}
           </span>
           <div className="followup-question">
             <Markdown>{current.question}</Markdown>
@@ -310,7 +323,7 @@ export function FollowupCards({
           <button
             key={item.id}
             aria-label={`第 ${i + 1} 道追问`}
-            aria-current={i === index ? "true" : undefined}
+            aria-current={i === safeIndex ? "true" : undefined}
             onClick={() => select(i)}
           />
         ))}

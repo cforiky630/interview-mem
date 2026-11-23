@@ -1354,7 +1354,7 @@ strong {
 
 .sidebar-bottom {
   margin-top: auto;
-  padding-top: 12px;
+  padding: 10px 0 14px;
   border-top: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
@@ -1383,107 +1383,6 @@ strong {
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
   color: var(--muted);
-}
-
-.user-button {
-  width: 100%;
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: color-mix(in oklab, var(--surface) 64%, transparent);
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  text-align: left;
-  box-shadow: 0 1px 2px rgba(18, 42, 33, 0.03);
-  transition:
-    background-color var(--dur-fast) ease,
-    border-color var(--dur-fast) ease,
-    box-shadow var(--dur-fast) ease,
-    transform var(--dur-fast) var(--ease-smooth);
-}
-
-.user-button:hover {
-  background: var(--surface);
-  border-color: var(--border-control);
-  box-shadow: var(--shadow-control);
-}
-
-.user-button:active {
-  transform: scale(0.985);
-}
-
-.user-button.is-active {
-  background: var(--surface);
-  border-color: var(--border-accent);
-  box-shadow: var(--shadow-selected);
-}
-
-.user-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(
-    135deg,
-    color-mix(in oklab, var(--accent) 22%, var(--surface)),
-    color-mix(in oklab, var(--accent-leaf) 14%, var(--surface))
-  );
-  color: var(--accent-dark);
-  border: 1px solid var(--border-accent);
-  border-radius: 10px;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  font-size: 0.85rem;
-  font-weight: 600;
-  box-shadow: var(--shadow-control);
-}
-
-.user-meta {
-  flex: 1;
-  min-width: 0;
-}
-
-.user-button strong {
-  font-size: 0.84rem;
-  font-weight: 600;
-  line-height: 1.3;
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.user-button small {
-  font-size: 0.72rem;
-  line-height: 1.3;
-  display: block;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 1px;
-}
-
-.user-chevron {
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-xs);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: var(--muted);
-  transition:
-    background-color var(--dur-fast) ease,
-    color var(--dur-fast) ease;
-}
-
-.user-button:hover .user-chevron,
-.user-button.is-active .user-chevron {
-  background: var(--accent-soft);
-  color: var(--accent-dark);
 }
 
 .main-layout {
@@ -3341,6 +3240,7 @@ strong {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+  overscroll-behavior: contain;
   opacity: 1;
   scale: 1;
   translate: 0 0;
@@ -3382,16 +3282,62 @@ strong {
 }
 
 .ai-island-panel.is-docked {
+  --ai-dock-default-width: 380px;
   right: 16px;
   bottom: 16px;
-  width: 380px;
-  max-width: calc(100dvw - 32px);
+  width: var(--ai-dock-width, var(--ai-dock-default-width));
+  max-width: min(620px, 45dvw, calc(100dvw - 32px));
   height: calc(100dvh - 88px);
   border: 1px solid var(--border);
   border-radius: 20px;
   box-shadow: var(--shadow-card);
   transform-origin: calc(100% - 28px) calc(100% - 22px);
   z-index: var(--z-ai-docked);
+}
+
+.ai-dock-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 9px;
+  cursor: col-resize;
+  z-index: 4;
+  touch-action: none;
+}
+
+.ai-dock-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  background: var(--border-control);
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) ease,
+    background-color var(--dur-fast) ease,
+    height var(--dur-fast) ease;
+}
+
+.ai-dock-resize-handle:hover::after,
+.app-shell.ai-resizing .ai-dock-resize-handle::after {
+  opacity: 1;
+  height: 52px;
+  background: var(--accent);
+}
+
+.app-shell.ai-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.app-shell.ai-resizing .workspace-content,
+.app-shell.ai-resizing .ai-island-panel {
+  transition: none !important;
 }
 
 .ai-island-panel:where([hidden], [data-closing]) {
@@ -3454,8 +3400,17 @@ strong {
 }
 
 @media (min-width: 1240px) {
+  .app-shell {
+    --ai-dock-default-width: 380px;
+  }
   .app-shell.ai-pushed .workspace-content {
-    margin-right: 404px;
+    margin-right: calc(
+      min(
+        var(--ai-dock-width, var(--ai-dock-default-width, 380px)),
+        620px,
+        45dvw
+      ) + 24px
+    );
   }
 }
 
@@ -3470,13 +3425,16 @@ strong {
   .app-shell.ai-pushed .workspace-content {
     margin-right: 0;
   }
-  .ai-dock-toggle {
+  .ai-dock-toggle,
+  .ai-width-toggle,
+  .ai-dock-resize-handle {
     display: none;
   }
   .ai-island-panel.is-docked {
     right: 20px;
     bottom: 20px;
     width: min(388px, calc(100dvw - 32px));
+    max-width: calc(100dvw - 32px);
     height: min(640px, calc(100dvh - 88px));
     box-shadow: var(--shadow-popover);
     z-index: var(--z-ai-floating);
@@ -3628,10 +3586,23 @@ strong {
 .ai-context-chip > strong {
   color: var(--subtle);
   font-weight: 600;
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ai-context-ref {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .thread-selector {
@@ -3652,37 +3623,68 @@ strong {
   text-overflow: ellipsis;
 }
 
-.ai-quote {
-  display: flex;
-  align-items: start;
-  gap: 8px;
-  margin: 12px 16px 0;
-  padding: 11px 12px;
+.ai-quote-card {
+  margin: 10px 16px 0;
+  padding: 8px 11px;
   background: var(--accent-soft);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-accent);
   box-shadow: inset 3px 0 0 var(--accent);
   border-radius: var(--radius-sm);
-  font-size: 0.78125rem;
-  color: var(--subtle);
-  max-height: 120px;
-  overflow: auto;
+  font-size: 0.78rem;
+  color: var(--accent-dark);
   flex-shrink: 0;
 }
 
-.ai-quote > svg {
-  margin-top: 2px;
+.ai-quote-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-quote-head > svg {
+  flex-shrink: 0;
   color: var(--accent);
 }
 
-.ai-quote p {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.ai-quote-meta,
+.ai-quote-inline {
   flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ai-quote .icon-button {
-  width: 22px;
-  height: 22px;
+.ai-quote-head .icon-button {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.ai-quote-preview {
+  margin: 5px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-quote-body {
+  margin: 8px 0 2px;
+  padding: 9px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 .ai-attempt-card {
@@ -3919,8 +3921,8 @@ strong {
 }
 
 .ai-launcher-tag.is-warn {
-  background: color-mix(in oklab, var(--warn) 14%, transparent);
-  color: var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn-text);
 }
 
 .ai-launcher-empty {
@@ -4221,7 +4223,8 @@ strong {
 
 .message-actions {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 9px;
   margin-top: 13px;
@@ -4321,8 +4324,8 @@ strong {
   contain: layout;
   block-size: 0;
   transition:
-    block-size var(--dur-mid) var(--ease-smooth),
-    content-visibility var(--dur-mid) allow-discrete;
+    block-size var(--dur-base) var(--ease-smooth),
+    content-visibility var(--dur-base) allow-discrete;
 }
 
 .ai-reasoning-box[open]::details-content {
@@ -4856,6 +4859,12 @@ strong {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.ai-model-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .ai-model-label-row > label {

@@ -79,6 +79,7 @@ const schema = z.discriminatedUnion("action", [
       .string()
       .max(60)
       .refine((value) => {
+        if (/^[+-]\d/.test(value)) return false;
         try {
           new Intl.DateTimeFormat("en", { timeZone: value });
           return true;
@@ -171,14 +172,19 @@ export const POST = route(async (request, user) => {
     const saved = !data.key
       ? await aiCredential(user.id, data.baseUrl)
       : null;
-    const models = await providerModels(
-      {
-        baseUrl: data.baseUrl,
-        key: data.key ?? saved!.key,
-      },
-      request.signal,
-    );
-    return NextResponse.json({ ok: true, models });
+    const release = acquireAi(user.id);
+    try {
+      const models = await providerModels(
+        {
+          baseUrl: data.baseUrl,
+          key: data.key ?? saved!.key,
+        },
+        request.signal,
+      );
+      return NextResponse.json({ ok: true, models });
+    } finally {
+      release();
+    }
   }
   if (data.action === "model") {
     const changed = await db

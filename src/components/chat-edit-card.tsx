@@ -1,5 +1,5 @@
 "use client";
-import { Loader2 } from "lucide-react";
+import { Loader2, Maximize2 } from "lucide-react";
 import type { ChatEdit, DeckView, QuestionView } from "@/lib/types";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
@@ -47,6 +47,7 @@ export function ChatEditCard({
   busy,
   applying,
   onApply,
+  onInspect,
 }: {
   edit: ChatEdit;
   question: QuestionView;
@@ -54,6 +55,7 @@ export function ChatEditCard({
   busy: boolean;
   applying: boolean;
   onApply: () => void;
+  onInspect?: () => void;
 }) {
   const state = chatEditState(edit, question, deck);
   const target =
@@ -106,20 +108,33 @@ export function ChatEditCard({
           )}
         </details>
       )}
-      {state === "ready" ? (
-        <Button size="sm" variant="outline" disabled={busy} onClick={onApply}>
-          {applying && <Loader2 size={14} className="spin" />}
-          应用到{applyTarget}
-        </Button>
-      ) : (
-        <small className="muted" role="status">
-          {state === "matched"
-            ? "当前内容已符合建议"
-            : state === "stale"
-              ? "内容已更新，请重新生成建议"
-              : "当前无法编辑这项内容"}
-        </small>
-      )}
+      <div className="chat-edit-actions">
+        {state === "ready" ? (
+          <Button size="sm" variant="outline" disabled={busy} onClick={onApply}>
+            {applying && <Loader2 size={14} className="spin" />}
+            应用到{applyTarget}
+          </Button>
+        ) : (
+          <small className="muted" role="status">
+            {state === "matched"
+              ? "当前内容已符合建议"
+              : state === "stale"
+                ? "内容已更新，请重新生成建议"
+                : "当前无法编辑这项内容"}
+          </small>
+        )}
+        {onInspect && (detailContent !== undefined || rows.length > 0) && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onInspect}
+          >
+            <Maximize2 size={13} />
+            {detailContent !== undefined ? "宽屏对比" : "查看详情"}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

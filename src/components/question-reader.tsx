@@ -1,5 +1,12 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import dynamic from "next/dynamic";
 import {
   ArrowLeft,
@@ -42,10 +49,16 @@ import {
 import { Button } from "./ui/button";
 import { ActionMenu } from "./ui/action-menu";
 import { Dialog } from "./ui/dialog";
-import { Markdown, ObsidianProperties } from "./markdown";
+import { ObsidianProperties } from "./markdown";
 import { ParagraphPractice, FollowupCards } from "./paragraph-practice";
 import { ContentValidationPanel } from "./content-validation";
+import { QuestionNotePanel } from "./question-note-panel";
+import {
+  InlineAnswerEditor,
+  type InlineQuestionDraft,
+} from "./inline-answer-editor";
 import type { Mutate } from "./dialogs";
+import type { ImportSeed } from "./import-dialog";
 
 type Insight = {
   previews: { rating: number; due: string; interval: string }[];
@@ -114,7 +127,7 @@ export function QuestionReader({
   data,
   onBack,
   backLabel = "返回题库",
-  onEdit,
+  onBatchImport,
   onDelete,
   onMove,
   onGenerateAnswer,
@@ -139,7 +152,7 @@ export function QuestionReader({
   data: Workspace;
   onBack: () => void;
   backLabel?: string;
-  onEdit: () => void;
+  onBatchImport?: (seed: ImportSeed, onCommitted: () => void) => void;
   onDelete: () => void;
   onMove: () => void;
   onGenerateAnswer: (q: QuestionView) => void;
@@ -186,6 +199,7 @@ export function QuestionReader({
     () => studyDocument(revealed ? question.answer : "", question.title),
     [question.answer, question.title, revealed],
   );
+  const canInlineEdit = !review && question.isOwner;
   const [tab, setTab] = useState<ReaderTab>("answer");
   const [inputMode, setInputMode] = useState<"written" | "oral">("written");
   const [answer, setAnswer] = useState("");
@@ -199,37 +213,171 @@ export function QuestionReader({
     x: number;
     y: number;
   } | null>(null);
-  const [note, setNote] = useState(question.note);
-  const [noteBase, setNoteBase] = useState(question.noteVersion);
-  const [noteDirty, setNoteDirty] = useState(false);
-  const [noteBusy, setNoteBusy] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingAnswer, setEditingAnswer] = useState(false);
+  const [editingNote, setEditingNote] = useState(false);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [restoredDraft, setRestoredDraft] = useState(false);
+  const [storageError, setStorageError] = useState(false);
+  const [editDraft, setEditDraft] = useState<InlineQuestionDraft>(() => ({
+    title: question.title,
+    answer: question.answer,
+    tags: question.tags.join(", "),
+    major: false,
+    baseRevision: question.revision,
+    pasted: false,
+    keepWhole: false,
+  }));
   const [insight, setInsight] = useState<Insight | null>(null);
   const insightVersion = useRef("");
   const answerRef = useRef<HTMLDivElement>(null);
-  const draftKey = `shiyi:note:${data.user.id}:${question.id}`;
+  const titleInputId = useId();
+  const titleTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorDraftKey = `shiyi:editor:${data.user.id}:${question.id}`;
+  const draftSavedRef = useRef(false);
+  const draftLoadedRef = useRef(false);
+  const editDirty =
+    editDraft.title !== question.title ||
+    editDraft.answer !== question.answer ||
+    editDraft.tags !== question.tags.join(", ") ||
+    editDraft.major;
+  const editDirtyRef = useRef(editDirty);
+  editDirtyRef.current = editDirty;
+  const latestDraftRef = useRef(editDraft);
+  latestDraftRef.current = editDraft;
+  const inlineEditingRef = useRef(false);
+  inlineEditingRef.current = editingTitle || editingAnswer || editingNote;
+  const editTags = useMemo(
+    () => [
+      ...new Set(
+        editDraft.tags
+          .split(/[,，]/)
+          .map((tag) => tag.trim().replace(/^#+/, ""))
+          .filter(Boolean),
+      ),
+    ],
+    [editDraft.tags],
+  );
+  function patchEditDraft(value: Partial<InlineQuestionDraft>) {
+    draftSavedRef.current = false;
+    setEditDraft((before) => ({
+      ...before,
+      ...(value.answer !== undefined && value.answer !== before.answer
+        ? { keepWhole: false }
+        : {}),
+      ...value,
+    }));
+    setEditError("");
+  }
   useEffect(() => {
     onRevealedChange?.(revealed);
   }, [revealed, onRevealedChange]);
   useEffect(() => {
-    function onNoteUpdated(event: Event) {
-      const detail = (
-        event as CustomEvent<{
-          questionId: string;
-          note: string;
-          version: number;
-          switchToNotes?: boolean;
-        }>
-      ).detail;
-      if (!detail || detail.questionId !== question.id) return;
-      setNote(detail.note);
-      setNoteBase(detail.version);
-      setNoteDirty(false);
-      if (detail.switchToNotes) setTab("notes");
+    if (editingTitle || editingAnswer || editingNote) setSelection(null);
+  }, [editingTitle, editingAnswer, editingNote]);
+  useEffect(() => {
+    if (!canInlineEdit) return;
+    draftLoadedRef.current = false;
+    draftSavedRef.current = false;
+    try {
+      const value = JSON.parse(
+        readPracticeDraft(editorDraftKey) || "null",
+      ) as InlineQuestionDraft | null;
+      if (
+        value &&
+        typeof value.title === "string" &&
+        typeof value.answer === "string" &&
+        value.answer.length <= 100_000 &&
+        typeof value.tags === "string" &&
+        typeof value.major === "boolean" &&
+        Number.isInteger(value.baseRevision) &&
+        value.baseRevision > 0
+      ) {
+        if (
+          value.title !== question.title ||
+          value.answer !== question.answer ||
+          value.tags !== question.tags.join(", ") ||
+          value.major
+        ) {
+          setEditDraft({
+            ...value,
+            pasted: value.pasted ?? true,
+            keepWhole: value.keepWhole === true,
+          });
+          setRestoredDraft(true);
+        } else {
+          savePracticeDraft(editorDraftKey, "");
+          setRestoredDraft(false);
+        }
+      }
+    } catch {
+      /* Ignore malformed local editor draft. */
     }
-    window.addEventListener("shiyi:note-updated", onNoteUpdated);
-    return () =>
-      window.removeEventListener("shiyi:note-updated", onNoteUpdated);
-  }, [question.id]);
+    draftLoadedRef.current = true;
+    return () => {
+      if (!draftSavedRef.current && editDirtyRef.current) {
+        savePracticeDraft(editorDraftKey, JSON.stringify(latestDraftRef.current));
+      }
+    };
+  }, [canInlineEdit, editorDraftKey]);
+  useEffect(() => {
+    if (
+      !canInlineEdit ||
+      editingTitle ||
+      editingAnswer ||
+      restoredDraft ||
+      editDirty
+    )
+      return;
+    setEditDraft({
+      title: question.title,
+      answer: question.answer,
+      tags: question.tags.join(", "),
+      major: false,
+      baseRevision: question.revision,
+      pasted: false,
+      keepWhole: false,
+    });
+  }, [
+    canInlineEdit,
+    editingTitle,
+    editingAnswer,
+    restoredDraft,
+    editDirty,
+    question.title,
+    question.answer,
+    question.tags,
+    question.revision,
+  ]);
+  useEffect(() => {
+    if (!canInlineEdit || !draftLoadedRef.current || draftSavedRef.current)
+      return;
+    const timer = window.setTimeout(
+      () =>
+        setStorageError(
+          !savePracticeDraft(
+            editorDraftKey,
+            editDirty ? JSON.stringify(editDraft) : "",
+          ),
+        ),
+      250,
+    );
+    return () => window.clearTimeout(timer);
+  }, [canInlineEdit, editDraft, editDirty, editorDraftKey]);
+  useEffect(() => {
+    const el = titleTextareaRef.current;
+    if (!editingTitle || !el) return;
+    if (
+      typeof CSS !== "undefined" &&
+      CSS.supports("field-sizing", "content")
+    ) {
+      el.style.height = "";
+      return;
+    }
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [editDraft.title, editingTitle]);
   const answerKey = practiceDraftKey(
     data.user.id,
     question.id,
@@ -241,30 +389,21 @@ export function QuestionReader({
     question.revision,
     "paragraph",
   );
+  const prevQuestionIdRef = useRef(question.id);
+  const answerStateRef = useRef(answer);
+  answerStateRef.current = answer;
   useEffect(() => {
-    setAnswer(readPracticeDraft(answerKey));
-  }, [answerKey]);
-  useEffect(() => {
-    const draft = localStorage.getItem(draftKey);
-    if (draft === null) return;
-    try {
-      const saved = JSON.parse(draft);
-      if (typeof saved.content !== "string" || !Number.isInteger(saved.version))
-        throw new Error();
-      setNote(saved.content);
-      setNoteBase(saved.version);
-    } catch {
-      setNote(draft);
-      setNoteBase(0);
+    if (prevQuestionIdRef.current !== question.id) {
+      prevQuestionIdRef.current = question.id;
+      setAnswer(readPracticeDraft(answerKey));
+      return;
     }
-    setNoteDirty(true);
-  }, [draftKey]);
-  useEffect(() => {
-    if (!noteDirty && !localStorage.getItem(draftKey)) {
-      setNote(question.note);
-      setNoteBase(question.noteVersion);
+    if (answerStateRef.current.trim()) {
+      savePracticeDraft(answerKey, answerStateRef.current);
+    } else {
+      setAnswer(readPracticeDraft(answerKey));
     }
-  }, [question.note, question.noteVersion, noteDirty, draftKey]);
+  }, [answerKey, question.id]);
   useEffect(() => {
     // 普通阅读与突击模式不抢发曲线请求；仅正常 FSRS 答题或打开“记忆”时读取。
     if ((!review || cram) && tab !== "memory") return;
@@ -304,10 +443,13 @@ export function QuestionReader({
     if (review || !prevNext || prevNext.total <= 1) return;
     function stepKeys(event: KeyboardEvent) {
       if (
+        inlineEditingRef.current ||
         (event.target as HTMLElement).closest(
           "input,textarea,select,[contenteditable='true'],[role='dialog']:not([hidden]),button",
         ) ||
-        globalThis.document.querySelector("[role='dialog']:not([hidden])") ||
+        globalThis.document.querySelector(
+          "[role='dialog']:not([hidden]), .action-menu[open], .action-menu:popover-open, .user-menu-popover:popover-open",
+        ) ||
         event.ctrlKey ||
         event.metaKey ||
         event.altKey ||
@@ -344,6 +486,10 @@ export function QuestionReader({
   }, [review, prevNext, aiOpen]);
   useEffect(() => {
     function detect() {
+      if (inlineEditingRef.current) {
+        setSelection(null);
+        return;
+      }
       const selected = window.getSelection();
       if (
         !selected ||
@@ -363,7 +509,12 @@ export function QuestionReader({
         return;
       }
       const anchor = range.startContainer.parentElement;
-      if (!anchor?.closest(".prose-content")) {
+      if (
+        !anchor?.closest(".prose-content") ||
+        anchor.closest(
+          "[contenteditable='true'], textarea, input, .inline-answer-editor, .personal-notes-editing",
+        )
+      ) {
         setSelection(null);
         return;
       }
@@ -408,7 +559,9 @@ export function QuestionReader({
         (event.target as HTMLElement).closest(
           "input,textarea,select,[contenteditable='true'],[role='dialog']:not([hidden]),button",
         ) ||
-        globalThis.document.querySelector("[role='dialog']:not([hidden])") ||
+        globalThis.document.querySelector(
+          "[role='dialog']:not([hidden]), .action-menu[open], .action-menu:popover-open, .user-menu-popover:popover-open",
+        ) ||
         event.ctrlKey ||
         event.metaKey ||
         event.altKey ||
@@ -436,24 +589,127 @@ export function QuestionReader({
     setSelection(null);
     window.getSelection()?.removeAllRanges();
   }
-  async function saveNote(value = note, version = noteBase) {
-    setNoteBusy(true);
+  function enterTitleEdit() {
+    if (!canInlineEdit || editBusy) return;
+    setEditingTitle(true);
+    setEditError("");
+    requestAnimationFrame(() => {
+      const el = titleTextareaRef.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+    });
+  }
+  function cancelTitleEdit() {
+    setEditDraft((prev) => ({ ...prev, title: question.title }));
+    setEditError("");
+    setEditingTitle(false);
+  }
+  function cancelAnswerEdit() {
+    savePracticeDraft(editorDraftKey, "");
+    setEditDraft((prev) => ({
+      ...prev,
+      answer: question.answer,
+      tags: question.tags.join(", "),
+      major: false,
+      baseRevision: question.revision,
+      pasted: false,
+      keepWhole: false,
+    }));
+    setRestoredDraft(false);
+    setEditError("");
+    setEditingAnswer(false);
+  }
+  function discardAllDraft() {
+    savePracticeDraft(editorDraftKey, "");
+    setEditDraft({
+      title: question.title,
+      answer: question.answer,
+      tags: question.tags.join(", "),
+      major: false,
+      baseRevision: question.revision,
+      pasted: false,
+      keepWhole: false,
+    });
+    setRestoredDraft(false);
+    setEditError("");
+    setEditingTitle(false);
+    setEditingAnswer(false);
+  }
+  async function saveInlineQuestion(options?: {
+    merged?: boolean;
+    closeTitle?: boolean;
+    closeAnswer?: boolean;
+  }) {
+    if (!canInlineEdit || editBusy) return;
+    const trimmedTitle = editDraft.title.trim();
+    if (!trimmedTitle) {
+      setEditError("请输入面试题目。");
+      return;
+    }
+    if (trimmedTitle.length > 200) {
+      setEditError("题目最多 200 字。");
+      return;
+    }
+    if (editDraft.answer.length > 100_000) {
+      setEditError("答案超过 10 万字符限制。");
+      return;
+    }
+    if (editTags.length > 12 || editTags.some((tag) => tag.length > 30)) {
+      setEditError("标签最多 12 个，每个不超过 30 字。");
+      return;
+    }
+    if (question.revision !== editDraft.baseRevision && !options?.merged) {
+      setEditError("题目已在其他页面更新，请先在编辑区确认合并。");
+      return;
+    }
+    if (!editDirty) {
+      if (options?.closeTitle) setEditingTitle(false);
+      if (options?.closeAnswer) setEditingAnswer(false);
+      return;
+    }
+    setEditBusy(true);
+    setEditError("");
     try {
       const result = await mutate("/api/questions", {
-        action: "note",
+        action: "edit",
         id: question.id,
-        note: value,
-        expectedVersion: version,
+        expectedRevision: options?.merged
+          ? question.revision
+          : editDraft.baseRevision,
+        title: trimmedTitle,
+        answer: editDraft.answer,
+        tags: editTags,
+        major: editDraft.major,
       });
       if (result) {
-        localStorage.removeItem(draftKey);
-        setNoteBase(Number(result.version));
-        setNoteDirty(false);
+        draftSavedRef.current = true;
+        savePracticeDraft(editorDraftKey, "");
+        setRestoredDraft(false);
+        setEditDraft((prev) => ({
+          ...prev,
+          title: trimmedTitle,
+          tags: editTags.join(", "),
+          major: false,
+          baseRevision:
+            typeof result.revision === "number"
+              ? result.revision
+              : question.revision + 1,
+          pasted: false,
+          keepWhole: false,
+        }));
+        if (options?.closeTitle) setEditingTitle(false);
+        if (options?.closeAnswer) setEditingAnswer(false);
+        toast.success("修改已保存。");
+      } else {
+        setEditError("没有保存成功，当前草稿已保留。");
       }
     } finally {
-      setNoteBusy(false);
+      setEditBusy(false);
     }
   }
+  const switchToNotesTab = useCallback(() => setTab("notes"), []);
   const ratings = [
     { rating: 1, label: "忘了", cramHint: "再巩固", className: "again" },
     { rating: 2, label: "困难", cramHint: "有卡顿", className: "hard" },
@@ -575,7 +831,14 @@ export function QuestionReader({
                   </button>
                 )}
                 {question.isOwner && !review && (
-                  <button onClick={onEdit}>
+                  <button
+                    onClick={() => {
+                      setTab("answer");
+                      setHideAll(false);
+                      setEditingTitle(true);
+                      setEditingAnswer(true);
+                    }}
+                  >
                     <PencilLine size={15} /> 编辑题目
                   </button>
                 )}
@@ -651,9 +914,110 @@ export function QuestionReader({
                 </span>
               )}
             </div>
-            <h1>{question.title}</h1>
+            {canInlineEdit && editingTitle ? (
+              <form
+                className="inline-title-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveInlineQuestion({ closeTitle: true });
+                }}
+              >
+                <label htmlFor={titleInputId} className="sr-only">
+                  题目
+                </label>
+                <textarea
+                  id={titleInputId}
+                  ref={titleTextareaRef}
+                  className="inline-title-input"
+                  rows={1}
+                  maxLength={200}
+                  value={editDraft.title}
+                  disabled={editBusy}
+                  placeholder="输入清晰、完整的面试题干（最多 200 字）"
+                  onChange={(event) =>
+                    patchEditDraft({ title: event.target.value })
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      if (
+                        event.nativeEvent.isComposing ||
+                        event.keyCode === 229
+                      )
+                        return;
+                      void saveInlineQuestion({ closeTitle: true });
+                    } else if (
+                      event.key === "Escape" &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      cancelTitleEdit();
+                    }
+                  }}
+                />
+                <div className="inline-title-actions">
+                  <span>
+                    {editDraft.title.length} / 200 · Enter 保存 · Esc 取消
+                  </span>
+                  <div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={editBusy}
+                      onClick={cancelTitleEdit}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={editBusy || !editDraft.title.trim()}
+                    >
+                      {editBusy ? (
+                        <Loader2 size={13} className="spin" />
+                      ) : (
+                        <Check size={13} />
+                      )}
+                      {editingAnswer ? "保存全部" : "保存"}
+                    </Button>
+                  </div>
+                </div>
+                {!editingAnswer && editError && (
+                  <p className="form-error-inline" role="alert">
+                    {editError}
+                  </p>
+                )}
+              </form>
+            ) : canInlineEdit ? (
+              <div className="question-title-row is-editable">
+                <h1
+                  onClick={() => {
+                    if (window.getSelection()?.toString().trim()) return;
+                    enterTitleEdit();
+                  }}
+                >
+                  {question.title}
+                </h1>
+                <button
+                  type="button"
+                  className="icon-button inline-title-trigger"
+                  aria-label="编辑题目"
+                  title="点击原地编辑题目"
+                  onClick={enterTitleEdit}
+                >
+                  <PencilLine size={16} />
+                </button>
+              </div>
+            ) : (
+              <h1>{question.title}</h1>
+            )}
             {(mergedTags.length > 0 ||
-              (!review && !question.archived && !!question.answer.trim())) && (
+              (!review &&
+                !editingTitle &&
+                !editingAnswer &&
+                !question.archived &&
+                !!question.answer.trim())) && (
               <div className="question-card-foot">
                 {mergedTags.length > 0 && (
                   <div className="question-tags">
@@ -667,18 +1031,65 @@ export function QuestionReader({
                     ))}
                   </div>
                 )}
-                {!review && !question.archived && !!question.answer.trim() && (
-                  <Button
-                    size="sm"
-                    className="reader-start-review"
-                    onClick={onSingleReview}
-                  >
-                    <PenLine size={15} /> 开始答题
-                  </Button>
-                )}
+                {!review &&
+                  !editingTitle &&
+                  !editingAnswer &&
+                  !question.archived &&
+                  !!question.answer.trim() && (
+                    <Button
+                      size="sm"
+                      className="reader-start-review"
+                      onClick={onSingleReview}
+                    >
+                      <PenLine size={15} /> 开始答题
+                    </Button>
+                  )}
               </div>
             )}
           </header>
+          {canInlineEdit &&
+            restoredDraft &&
+            !editingAnswer &&
+            !editingTitle && (
+              <div className="editor-notice">
+                已恢复上次未保存的草稿。
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    if (
+                      editDraft.answer !== question.answer ||
+                      editDraft.tags !== question.tags.join(", ") ||
+                      editDraft.major
+                    ) {
+                      setTab("answer");
+                      setHideAll(false);
+                      setEditingAnswer(true);
+                    }
+                    if (editDraft.title !== question.title) {
+                      setEditingTitle(true);
+                    }
+                    if (
+                      editDraft.title === question.title &&
+                      editDraft.answer === question.answer &&
+                      editDraft.tags === question.tags.join(", ") &&
+                      !editDraft.major
+                    ) {
+                      setRestoredDraft(false);
+                    }
+                  }}
+                >
+                  继续编辑
+                </button>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={discardAllDraft}
+                >
+                  放弃草稿
+                </button>
+              </div>
+            )}
           {question.archived && (
             <div className="inline-notice">
               <Archive size={15} /> 已归档
@@ -838,6 +1249,12 @@ export function QuestionReader({
                     }}
                   >
                     {item.label}
+                    {item.id === "answer" &&
+                      canInlineEdit &&
+                      editingAnswer &&
+                      editDirty && (
+                        <i className="tab-dirty-dot" aria-label="未保存" />
+                      )}
                     {item.id === "followups" &&
                       documentView.followups.length > 0 && (
                         <span>{documentView.followups.length}</span>
@@ -852,148 +1269,149 @@ export function QuestionReader({
                 aria-labelledby={`reader-tab-${tab}`}
                 ref={answerRef}
               >
-                {tab === "answer" && (
-                  <>
-                    {noteMeta.properties.length > 0 && (
-                      <ObsidianProperties
-                        source={question.answer}
-                        extraTags={question.tags}
-                        defaultExpanded
-                      />
-                    )}
-                    <div className="answer-actions">
-                      <button
-                        className={`text-button ${hideAll ? "active" : ""}`}
-                        onClick={() => setHideAll(!hideAll)}
-                      >
-                        <PencilLine size={14} />
-                        {hideAll ? "显示正文" : "逐段默写"}
-                      </button>
-                      <button
-                        className="icon-button"
-                        title="问 AI"
-                        aria-label="引用本题提问"
-                        onClick={() =>
-                          ask(
-                            "请解释这道题，并举一个具体的例子。",
-                            question.answer.slice(0, 5000),
-                          )
-                        }
-                      >
-                        <MessageSquare size={16} />
-                      </button>
-                    </div>
-                    <div className="answer-content">
-                      {documentView.blocks.length ? (
-                        documentView.blocks.map((block) => (
-                          <ParagraphPractice
-                            key={block.id}
-                            block={block}
-                            hideAll={hideAll}
-                            references={documentView.references}
-                            draftKey={`${paragraphPrefix}:${block.id}`}
-                          />
-                        ))
-                      ) : (
-                        <div className="missing-answer-card">
-                          <span className="missing-answer-mark">
-                            <PenLine size={27} strokeWidth={1.4} />
-                          </span>
-                          <h3>先把答案补上</h3>
-                          {question.isOwner && !question.archived ? (
-                            <>
-                              <p>
-                                补全参考答案后即可加入每日复习计划并逐段默写。
-                              </p>
-                              <div>
-                                <Button
-                                  onClick={() => onGenerateAnswer(question)}
-                                >
-                                  <Sparkles size={16} />
-                                  AI 写答案
-                                </Button>
-                                <Button variant="ghost" onClick={onEdit}>
-                                  自己补充
-                                </Button>
-                              </div>
-                            </>
-                          ) : (
-                            <p className="quiet-empty">
-                              暂无参考答案，可在上方「笔记」中记录你的理解。
-                            </p>
-                          )}
-                        </div>
+                {tab === "answer" &&
+                  (canInlineEdit && editingAnswer ? (
+                    <InlineAnswerEditor
+                      question={question}
+                      draft={editDraft}
+                      patch={patchEditDraft}
+                      tags={editTags}
+                      dirty={editDirty}
+                      busy={editBusy}
+                      error={editError}
+                      setError={setEditError}
+                      storageError={storageError}
+                      restored={restoredDraft}
+                      onDiscardDraft={discardAllDraft}
+                      onCancel={cancelAnswerEdit}
+                      onSave={(merged) =>
+                        saveInlineQuestion({
+                          merged,
+                          closeAnswer: true,
+                          closeTitle: true,
+                        })
+                      }
+                      onBatchImport={onBatchImport}
+                      onCommittedImport={() => {
+                        draftSavedRef.current = true;
+                        savePracticeDraft(editorDraftKey, "");
+                        setRestoredDraft(false);
+                        setEditingAnswer(false);
+                        setEditingTitle(false);
+                      }}
+                    />
+                  ) : (
+                    <>
+                      {noteMeta.properties.length > 0 && (
+                        <ObsidianProperties
+                          source={question.answer}
+                          extraTags={question.tags}
+                          defaultExpanded
+                        />
                       )}
-                    </div>
-                  </>
-                )}
+                      <div className="answer-actions">
+                        {canInlineEdit && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => {
+                              setHideAll(false);
+                              setEditingAnswer(true);
+                            }}
+                          >
+                            <PencilLine size={14} /> 编辑答案
+                          </button>
+                        )}
+                        <button
+                          className={`text-button ${hideAll ? "active" : ""}`}
+                          onClick={() => setHideAll(!hideAll)}
+                        >
+                          <PenLine size={14} />
+                          {hideAll ? "显示正文" : "逐段默写"}
+                        </button>
+                        <button
+                          className="icon-button"
+                          title="问 AI"
+                          aria-label="围绕本题问 AI"
+                          onClick={() =>
+                            ask("请解释这道题，并举一个具体的例子。", "")
+                          }
+                        >
+                          <MessageSquare size={16} />
+                        </button>
+                      </div>
+                      <div className="answer-content">
+                        {documentView.blocks.length ? (
+                          documentView.blocks.map((block) => (
+                            <ParagraphPractice
+                              key={block.id}
+                              block={block}
+                              hideAll={hideAll}
+                              references={documentView.references}
+                              draftKey={`${paragraphPrefix}:${block.id}`}
+                            />
+                          ))
+                        ) : (
+                          <div className="missing-answer-card">
+                            <span className="missing-answer-mark">
+                              <PenLine size={27} strokeWidth={1.4} />
+                            </span>
+                            <h3>先把答案补上</h3>
+                            {question.isOwner && !question.archived ? (
+                              <>
+                                <p>
+                                  补全参考答案后即可加入每日复习计划并逐段默写。
+                                </p>
+                                <div>
+                                  <Button
+                                    onClick={() => onGenerateAnswer(question)}
+                                  >
+                                    <Sparkles size={16} />
+                                    AI 写答案
+                                  </Button>
+                                  {canInlineEdit && (
+                                    <Button
+                                      variant="ghost"
+                                      onClick={() => setEditingAnswer(true)}
+                                    >
+                                      自己补充
+                                    </Button>
+                                  )}
+                                </div>
+                              </>
+                            ) : (
+                              <p className="quiet-empty">
+                                暂无参考答案，可在上方「笔记」中记录你的理解。
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ))}
                 {tab === "followups" && (
                   <FollowupCards
                     followups={documentView.followups}
                     draftPrefix={answerKey}
+                    onEditFollowups={
+                      canInlineEdit
+                        ? () => {
+                            setTab("answer");
+                            setHideAll(false);
+                            setEditingAnswer(true);
+                          }
+                        : undefined
+                    }
                   />
                 )}
                 {tab === "notes" && (
-                  <section className="personal-notes">
-                    <div className="section-heading">
-                      <h2>我的笔记</h2>
-                    </div>
-                    {noteDirty && noteBase !== question.noteVersion && (
-                      <div className="note-conflict">
-                        <strong>云端笔记已有更新</strong>
-                        <details>
-                          <summary>查看云端版本，再合并到下方草稿</summary>
-                          <Markdown>
-                            {question.note || "云端笔记为空。"}
-                          </Markdown>
-                        </details>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={noteBusy}
-                          onClick={() =>
-                            void saveNote(note, question.noteVersion)
-                          }
-                        >
-                          已合并，保存到最新版本
-                        </Button>
-                      </div>
-                    )}
-                    <textarea
-                      aria-label="个人笔记"
-                      placeholder="记下你的第一反应、容易混淆的边界条件，或结合过往项目经历梳理出的回答话术…"
-                      value={note}
-                      maxLength={50000}
-                      rows={8}
-                      onChange={(event) => {
-                        setNote(event.target.value);
-                        setNoteDirty(true);
-                        localStorage.setItem(
-                          draftKey,
-                          JSON.stringify({
-                            content: event.target.value,
-                            version: noteBase,
-                          }),
-                        );
-                      }}
-                    />
-                    <div className="notes-footer">
-                      <span>{note !== question.note ? "草稿" : "已保存"}</span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={noteBusy || note === question.note}
-                        onClick={() => void saveNote()}
-                      >
-                        {noteBusy ? (
-                          <Loader2 size={13} className="spin" />
-                        ) : (
-                          <Check size={13} />
-                        )}{" "}
-                        保存笔记
-                      </Button>
-                    </div>
-                  </section>
+                  <QuestionNotePanel
+                    question={question}
+                    userId={data.user.id}
+                    mutate={mutate}
+                    onSwitchToNotes={switchToNotesTab}
+                    onEditingChange={setEditingNote}
+                  />
                 )}
                 {tab === "memory" && (
                   <section className="memory-section">
@@ -1081,7 +1499,7 @@ export function QuestionReader({
           )}
         </article>
       </div>
-      {!review && (
+      {!review && !(editingTitle || editingAnswer || editingNote) && (
         <div className="mobile-reader-dock" role="toolbar" aria-label="题目快捷操作">
           <button
             type="button"
@@ -1169,6 +1587,7 @@ export function QuestionReader({
         <div
           className="selection-bubble"
           style={{ left: selection.x, top: selection.y }}
+          onPointerDown={(event) => event.preventDefault()}
           onMouseDown={(event) => event.preventDefault()}
         >
           <button onClick={() => ask("请解释选中的这句话，说明其中的原因。 ")}>

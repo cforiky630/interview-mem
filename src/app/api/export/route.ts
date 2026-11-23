@@ -16,7 +16,7 @@ export const GET = route(async (_request, user) => {
   await cleanupExpiredQuestions({ userId: user.id });
   const workspace = await getWorkspace(user);
   const db = await getDb();
-  const [threads, rawImports, logs] = await Promise.all([
+  const [threads, rawImports, logs, sourceRows] = await Promise.all([
     db.select().from(conversations).where(eq(conversations.userId, user.id)),
     db
       .select({
@@ -26,7 +26,21 @@ export const GET = route(async (_request, user) => {
       .from(imports)
       .where(eq(imports.userId, user.id)),
     db.select().from(reviewEvents).where(eq(reviewEvents.userId, user.id)),
+    db
+      .select({
+        id: questions.id,
+        sourceText: questions.sourceText,
+      })
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, user.id),
+          isNull(questions.deletedAt),
+          isNull(questions.purgedAt),
+        ),
+      ),
   ]);
+  const sourceMap = new Map(sourceRows.map((row) => [row.id, row.sourceText]));
   const chat = threads.length
     ? await db
         .select()
@@ -44,7 +58,9 @@ export const GET = route(async (_request, user) => {
     exportedAt: new Date().toISOString(),
     user: workspace.user,
     decks: workspace.decks,
-    questions: workspace.questions,
+    questions: workspace.questions.map((q) =>
+      q.isOwner ? { ...q, sourceText: sourceMap.get(q.id) ?? "" } : q,
+    ),
     trash: (
       await db
         .select()

@@ -14,7 +14,7 @@ import type {
   ContentValidationView,
 } from "@/lib/content-validation";
 import type { ImportPreviewItem } from "@/lib/import-preview";
-import type { ChatEdit } from "@/lib/types";
+import type { ChatEdit, ChatMessageMeta } from "@/lib/types";
 import { sql } from "drizzle-orm";
 
 const dates = () => ({
@@ -323,6 +323,7 @@ export const messages = pgTable(
     role: text("role").notNull(),
     content: text("content").notNull(),
     edits: jsonb("edits").$type<ChatEdit[]>(),
+    meta: jsonb("meta").$type<ChatMessageMeta>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

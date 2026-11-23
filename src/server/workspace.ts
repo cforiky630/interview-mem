@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   decks,
@@ -202,7 +202,8 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
           isNull(questions.deletedAt),
           isNull(questions.purgedAt),
         ),
-      ),
+      )
+      .orderBy(asc(questions.createdAt), asc(questions.id)),
     db
       .select({ date: dayExpression, count: sql<number>`count(*)::int` })
       .from(reviewEvents)

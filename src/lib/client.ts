@@ -22,12 +22,33 @@ export async function api<T = Record<string, unknown>>(
     cache: "no-store",
     signal: options.signal,
   });
-  const result = await response.json();
-  if (!response.ok)
+  const rawText = await response.text();
+  let result: Record<string, unknown> | null = null;
+  if (rawText.trim()) {
+    try {
+      const parsed = JSON.parse(rawText);
+      if (parsed && typeof parsed === "object") {
+        result = parsed as Record<string, unknown>;
+      }
+    } catch {
+      if (response.ok) {
+        throw new RequestError("服务器返回格式异常，请稍后重试。", response.status);
+      }
+    }
+  }
+  if (!response.ok) {
     throw new RequestError(
-      result.error ?? "请求失败，请重试。",
+      typeof result?.error === "string" && result.error
+        ? result.error
+        : response.status >= 500
+          ? "服务暂时不可用，请稍后重试。"
+          : "请求失败，请重试。",
       response.status,
-      result.code,
+      typeof result?.code === "string" ? result.code : undefined,
     );
-  return result;
+  }
+  if (!result) {
+    throw new RequestError("服务器返回为空，请稍后重试。", response.status);
+  }
+  return result as T;
 }

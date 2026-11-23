@@ -9,6 +9,7 @@ export type ProofreadCorrection = {
   replacement: string;
   reason: string;
   status: "pending" | "applied" | "dismissed";
+  appliedAt?: number;
 };
 
 export type ProofreadItemResult = {
@@ -156,6 +157,21 @@ export function applyCorrectionSpan(
     replacement +
     text.slice(index + original.length)
   );
+}
+
+/** Exact positional replacement when character offset of original slice is known. */
+export function applyCorrectionAt(
+  text: string,
+  index: number,
+  original: string,
+  replacement: string,
+) {
+  if (index >= 0 && text.slice(index, index + original.length) === original) {
+    return (
+      text.slice(0, index) + replacement + text.slice(index + original.length)
+    );
+  }
+  return applyCorrectionSpan(text, original, replacement);
 }
 
 function tokenizeDiff(text: string): string[] {

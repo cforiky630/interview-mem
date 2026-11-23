@@ -140,6 +140,11 @@ export type ChatQuestionReference = {
   title: string;
   deckTitle: string;
 };
+export type ChatMessageMeta = {
+  reasoning?: string;
+  toolSteps?: ChatToolStep[];
+  references?: ChatQuestionReference[];
+};
 export type ChatMessage = {
   id: string;
   role: string;

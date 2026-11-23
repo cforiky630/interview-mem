@@ -15,6 +15,7 @@ export type ProviderMessage =
   | {
       role: "system" | "user" | "assistant";
       content: string | null;
+      reasoning_content?: string;
       tool_calls?: ProviderToolCall[];
     }
   | {
@@ -80,7 +81,11 @@ export function providerError(status: number) {
   if (status === 404)
     return new AppError(400, "模型或接口不存在，请检查 Base URL 和模型名。");
   if (status === 400 || status === 422)
-    return new AppError(400, "模型不支持当前请求，请检查模型名和接口配置。");
+    return new AppError(
+      400,
+      "模型不支持当前请求，请检查模型名和接口配置。",
+      "PROVIDER_BAD_REQUEST",
+    );
   return new AppError(502, "模型服务暂时不可用，请稍后重试。");
 }
 export async function providerRequest(

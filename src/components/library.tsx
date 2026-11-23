@@ -132,7 +132,9 @@ export function Library({
         target?.closest(
           "input, textarea, select, [contenteditable='true'], [role='dialog']:not([hidden])",
         ) ||
-        document.querySelector("[role='dialog']:not([hidden])")
+        document.querySelector(
+          "[role='dialog']:not([hidden]), .action-menu[open]",
+        )
       )
         return;
       event.preventDefault();
@@ -232,37 +234,31 @@ export function Library({
   const sorted = useMemo(() => {
     if (sortBy === "default") return filtered;
     const now = Date.now();
-    const copy = [...filtered];
+    const withMeta = filtered.map((q) => ({
+      q,
+      dueMs: q.fsrs ? new Date(q.fsrs.due).getTime() : Number.POSITIVE_INFINITY,
+      updatedMs: new Date(q.updatedAt).getTime(),
+    }));
     if (sortBy === "due") {
-      const bucket = (q: QuestionView) => {
-        if (!q.fsrs) return 1;
-        return new Date(q.fsrs.due).getTime() <= now ? 0 : 2;
-      };
-      copy.sort((a, b) => {
-        const ba = bucket(a);
-        const bb = bucket(b);
-        if (ba !== bb) return ba - bb;
-        if (a.fsrs && b.fsrs) {
-          return new Date(a.fsrs.due).getTime() - new Date(b.fsrs.due).getTime();
-        }
-        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      const bucket = (entry: (typeof withMeta)[number]) =>
+        !entry.q.fsrs ? 1 : entry.dueMs <= now ? 0 : 2;
+      withMeta.sort((a, b) => {
+        const diff = bucket(a) - bucket(b);
+        if (diff !== 0) return diff;
+        if (a.q.fsrs && b.q.fsrs) return a.dueMs - b.dueMs;
+        return b.updatedMs - a.updatedMs;
       });
     } else if (sortBy === "lapses") {
-      copy.sort((a, b) => {
-        const diff = (b.fsrs?.lapses ?? 0) - (a.fsrs?.lapses ?? 0);
+      withMeta.sort((a, b) => {
+        const diff = (b.q.fsrs?.lapses ?? 0) - (a.q.fsrs?.lapses ?? 0);
         if (diff !== 0) return diff;
-        if (a.fsrs && b.fsrs) {
-          return new Date(a.fsrs.due).getTime() - new Date(b.fsrs.due).getTime();
-        }
-        return a.fsrs ? -1 : b.fsrs ? 1 : 0;
+        if (a.q.fsrs && b.q.fsrs) return a.dueMs - b.dueMs;
+        return a.q.fsrs ? -1 : b.q.fsrs ? 1 : 0;
       });
     } else if (sortBy === "updated") {
-      copy.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
+      withMeta.sort((a, b) => b.updatedMs - a.updatedMs);
     }
-    return copy;
+    return withMeta.map((entry) => entry.q);
   }, [filtered, sortBy]);
   const orderedIds = useMemo(() => sorted.map((item) => item.id), [sorted]);
   const cramEligible = useMemo(
