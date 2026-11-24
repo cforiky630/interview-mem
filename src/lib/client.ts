@@ -52,3 +52,131 @@ export async function api<T = Record<string, unknown>>(
   }
   return result as T;
 }
+
+export type WorkspaceMutate = (
+  url: string,
+  data: unknown,
+) => Promise<Record<string, unknown> | null>;
+
+export type ImportGroupTarget =
+  | { mode: "existing"; groupId: string }
+  | { mode: "create"; title: string; category?: string; description?: string };
+
+export async function createDeckGroup(
+  mutate: WorkspaceMutate,
+  input: {
+    deckId: string;
+    title: string;
+    category?: string;
+    description?: string;
+  },
+) {
+  return mutate("/api/deck-groups", {
+    action: "create",
+    deckId: input.deckId,
+    title: input.title,
+    category: input.category ?? "",
+    description: input.description ?? "",
+  });
+}
+
+export async function editDeckGroup(
+  mutate: WorkspaceMutate,
+  input: {
+    id: string;
+    title: string;
+    category?: string;
+    description?: string;
+  },
+) {
+  return mutate("/api/deck-groups", {
+    action: "edit",
+    id: input.id,
+    title: input.title,
+    category: input.category ?? "",
+    description: input.description ?? "",
+  });
+}
+
+export async function deleteDeckGroup(mutate: WorkspaceMutate, id: string) {
+  return mutate("/api/deck-groups", { action: "delete", id });
+}
+
+export async function reorderDeckGroups(
+  mutate: WorkspaceMutate,
+  deckId: string,
+  orderedIds: string[],
+) {
+  return mutate("/api/deck-groups", {
+    action: "reorder",
+    deckId,
+    orderedIds,
+  });
+}
+
+export async function renameDeckCategory(
+  mutate: WorkspaceMutate,
+  deckId: string,
+  from: string,
+  to: string,
+) {
+  return mutate("/api/deck-groups", {
+    action: "renameCategory",
+    deckId,
+    from,
+    to,
+  });
+}
+
+export async function setSubscriptionDeckGroup(
+  mutate: WorkspaceMutate,
+  deckId: string,
+  groupName: string,
+) {
+  return mutate("/api/decks", {
+    action: "setSubscriptionGroup",
+    deckId,
+    groupName,
+  });
+}
+
+export async function renameDeckGroupName(
+  mutate: WorkspaceMutate,
+  from: string,
+  to: string,
+) {
+  return mutate("/api/decks", {
+    action: "renameDeckGroup",
+    from,
+    to,
+  });
+}
+
+export async function moveQuestionToSlot(
+  mutate: WorkspaceMutate,
+  id: string,
+  deckId: string | null,
+  groupId: string | null = null,
+) {
+  return mutate("/api/questions", {
+    action: "move",
+    id,
+    deckId,
+    groupId: deckId ? groupId : null,
+  });
+}
+
+export async function batchMoveQuestionsToSlot(
+  mutate: WorkspaceMutate,
+  ids: string[],
+  deckId: string | null,
+  groupId: string | null = null,
+) {
+  return mutate("/api/questions", {
+    action: "batch",
+    ids,
+    operation: "move",
+    deckId,
+    groupId: deckId ? groupId : null,
+  });
+}

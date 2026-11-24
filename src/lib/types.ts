@@ -14,10 +14,22 @@ export type StoredCard = {
   raw: Record<string, unknown>;
   [key: string]: unknown;
 };
+export type DeckGroupView = {
+  id: string;
+  deckId: string;
+  title: string;
+  category: string;
+  description: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+};
 export type QuestionView = {
   id: string;
   sourceQuestionId?: string;
   deckId: string | null;
+  groupId: string | null;
+  position: number;
   parentId: string | null;
   title: string;
   answer: string;
@@ -42,6 +54,8 @@ export type DeckView = {
   id: string;
   title: string;
   description: string;
+  groupName: string;
+  groups: DeckGroupView[];
   color: string;
   visibility: string;
   isOwner: boolean;

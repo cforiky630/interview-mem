@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, decks, messages, studyCards } from "@/db/schema";
+import {
+  conversations,
+  deckGroups,
+  decks,
+  messages,
+  releases,
+  studyCards,
+} from "@/db/schema";
 import { accessibleQuestion } from "@/server/workspace";
 import {
   aiCredential,
@@ -148,7 +155,7 @@ export async function handleQuestionChat(
       .trim()
       .slice(0, 10_000);
 
-    const [[deckRow], [study], previous] = await Promise.all([
+    const [[deckRow], [study], previous, groupInfo] = await Promise.all([
       question.deckId
         ? db
             .select({
@@ -182,6 +189,38 @@ export async function handleQuestionChat(
             .orderBy(desc(messages.createdAt))
             .limit(12)
         : Promise.resolve([]),
+      question.groupId && question.deckId
+        ? question.isOwner
+          ? db
+              .select({
+                title: deckGroups.title,
+                category: deckGroups.category,
+              })
+              .from(deckGroups)
+              .where(
+                and(
+                  eq(deckGroups.id, question.groupId),
+                  eq(deckGroups.ownerId, user.id),
+                ),
+              )
+              .then((rows) => rows[0] ?? null)
+          : db
+              .select({ groups: releases.groups })
+              .from(releases)
+              .innerJoin(
+                decks,
+                and(
+                  eq(releases.deckId, decks.id),
+                  eq(releases.version, decks.publishedVersion),
+                ),
+              )
+              .where(eq(releases.deckId, question.deckId))
+              .then(
+                (rows) =>
+                  rows[0]?.groups?.find((g) => g.id === question.groupId) ??
+                  null,
+              )
+        : Promise.resolve(null),
     ]);
 
     const editableDeck =
@@ -255,8 +294,15 @@ export async function handleQuestionChat(
         : `\n${wrapUntrustedTag("用户默写作答", savedAttempt, 10_000)}\n上方为用户本次对话对应的默写作答记录，请在后续追问中结合该作答内容回答。`
       : "";
 
+    const groupDisplay = groupInfo
+      ? groupInfo.category
+        ? `${sanitizeUntrustedText(groupInfo.category, 40)} · ${sanitizeUntrustedText(groupInfo.title, 80)}`
+        : sanitizeUntrustedText(groupInfo.title, 80)
+      : "";
+
     const metaParts = [
       deckRow?.title ? `所属题单：${sanitizeUntrustedText(deckRow.title, 80)}` : "",
+      groupDisplay ? `所属分组：${groupDisplay}` : "",
       question.tags.length
         ? `标签：${question.tags.map((t) => sanitizeUntrustedText(t, 30)).join("、")}`
         : "",

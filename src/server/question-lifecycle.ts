@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import {
   conversations,
+  deckGroups,
   decks,
   imports,
   questions,
@@ -10,9 +11,36 @@ import {
 } from "@/db/schema";
 import { TRASH_RETENTION_MS, questionExpiresAt } from "@/lib/question-trash";
 import { AppError } from "./errors";
+import { nextQuestionPosition } from "./workspace";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type Question = typeof questions.$inferSelect;
+
+export async function verifyOwnedDeckGroup(
+  tx: Transaction,
+  userId: string,
+  deckId: string | null,
+  groupId: string | null | undefined,
+): Promise<string | null> {
+  if (!groupId) return null;
+  if (!deckId) {
+    throw new AppError(400, "未分类题目不能指定题库内分组。");
+  }
+  const [group] = await tx
+    .select({ id: deckGroups.id })
+    .from(deckGroups)
+    .where(
+      and(
+        eq(deckGroups.id, groupId),
+        eq(deckGroups.deckId, deckId),
+        eq(deckGroups.ownerId, userId),
+      ),
+    );
+  if (!group) {
+    throw new AppError(404, "目标分组不存在或不属于所选题库。");
+  }
+  return group.id;
+}
 
 /** Category locks precede question locks, including moves between two categories. */
 export async function mutateOwnedQuestion<T>(
@@ -93,10 +121,12 @@ export function restoreQuestion(userId: string, id: string) {
     userId,
     id,
     async (tx, q) => {
-      if (!q.deletedAt) return { ok: true, deckId: q.deckId };
+      if (!q.deletedAt)
+        return { ok: true, deckId: q.deckId, groupId: q.groupId };
       if (questionExpiresAt(q.deletedAt).getTime() <= Date.now())
         throw new AppError(410, "题目已超过 30 天保留期，无法恢复。");
       let deckId = q.deckId;
+      let groupId = q.groupId;
       if (deckId) {
         const [deck] = await tx
           .select()
@@ -108,24 +138,50 @@ export function restoreQuestion(userId: string, id: string) {
               isNull(decks.deletedAt),
             ),
           );
-        const duplicate = await tx
-          .select({ id: questions.id })
-          .from(questions)
-          .where(
-            and(
-              eq(questions.deckId, deckId),
-              eq(questions.contentHash, q.contentHash),
-              isNull(questions.deletedAt),
-            ),
-          )
-          .limit(1);
-        if (!deck || duplicate.length) deckId = null;
+        if (!deck) {
+          deckId = null;
+          groupId = null;
+        } else {
+          if (groupId) {
+            const [group] = await tx
+              .select({ id: deckGroups.id })
+              .from(deckGroups)
+              .where(
+                and(
+                  eq(deckGroups.id, groupId),
+                  eq(deckGroups.deckId, deckId),
+                  eq(deckGroups.ownerId, userId),
+                ),
+              );
+            if (!group) groupId = null;
+          }
+          const duplicate = await tx
+            .select({ id: questions.id })
+            .from(questions)
+            .where(
+              and(
+                eq(questions.deckId, deckId),
+                groupId
+                  ? eq(questions.groupId, groupId)
+                  : isNull(questions.groupId),
+                eq(questions.contentHash, q.contentHash),
+                isNull(questions.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (duplicate.length) {
+            deckId = null;
+            groupId = null;
+          }
+        }
+      } else {
+        groupId = null;
       }
       await tx
         .update(questions)
-        .set({ deletedAt: null, deckId, updatedAt: new Date() })
+        .set({ deletedAt: null, deckId, groupId, updatedAt: new Date() })
         .where(eq(questions.id, id));
-      return { ok: true, deckId };
+      return { ok: true, deckId, groupId };
     },
     { allowDeleted: true },
   );
@@ -135,6 +191,7 @@ export function moveQuestion(
   userId: string,
   id: string,
   deckId: string | null,
+  groupId: string | null = null,
 ) {
   return mutateOwnedQuestion(
     userId,
@@ -142,7 +199,14 @@ export function moveQuestion(
     async (tx, q, targetExists) => {
       if (!targetExists)
         throw new AppError(404, "目标题库不存在或没有管理权限。");
-      if (q.deckId === deckId) return { ok: true };
+      const verifiedGroupId = await verifyOwnedDeckGroup(
+        tx,
+        userId,
+        deckId,
+        groupId,
+      );
+      if (q.deckId === deckId && q.groupId === verifiedGroupId)
+        return { ok: true };
       if (deckId) {
         const duplicate = await tx
           .select({ id: questions.id })
@@ -150,17 +214,31 @@ export function moveQuestion(
           .where(
             and(
               eq(questions.deckId, deckId),
+              verifiedGroupId
+                ? eq(questions.groupId, verifiedGroupId)
+                : isNull(questions.groupId),
               eq(questions.contentHash, q.contentHash),
               isNull(questions.deletedAt),
             ),
           )
           .limit(1);
         if (duplicate.length)
-          throw new AppError(409, "目标题库已有相同内容，题目仍保留在原位置。");
+          throw new AppError(409, "目标位置已有相同内容，题目仍保留在原位置。");
       }
+      const position = await nextQuestionPosition(
+        tx,
+        userId,
+        deckId,
+        verifiedGroupId,
+      );
       await tx
         .update(questions)
-        .set({ deckId, updatedAt: new Date() })
+        .set({
+          deckId,
+          groupId: verifiedGroupId,
+          position,
+          updatedAt: new Date(),
+        })
         .where(eq(questions.id, id));
       return { ok: true };
     },
@@ -169,7 +247,12 @@ export function moveQuestion(
 }
 
 export type BatchQuestionOperation =
-  | { ids: string[]; operation: "move"; deckId: string | null }
+  | {
+      ids: string[];
+      operation: "move";
+      deckId: string | null;
+      groupId?: string | null;
+    }
   | { ids: string[]; operation: "archive" | "unarchive" | "delete" };
 
 /** Batch move, archive, restore-from-archive, or trash owned active questions in lock order. */
@@ -181,6 +264,8 @@ export async function batchMutateQuestions(
   if (!uniqueIds.length) throw new AppError(400, "请先选择要操作的题目。");
   const db = await getDb();
   const targetDeckId = params.operation === "move" ? params.deckId : undefined;
+  const requestedGroupId =
+    params.operation === "move" ? (params.groupId ?? null) : null;
   const before = await db
     .select({ id: questions.id, deckId: questions.deckId })
     .from(questions)
@@ -218,6 +303,15 @@ export async function batchMutateQuestions(
     ) {
       throw new AppError(404, "目标题库不存在或没有管理权限。");
     }
+    const targetGroupId =
+      params.operation === "move"
+        ? await verifyOwnedDeckGroup(
+            tx,
+            userId,
+            targetDeckId ?? null,
+            requestedGroupId,
+          )
+        : null;
     const lockedQuestions = await tx
       .select()
       .from(questions)
@@ -236,7 +330,11 @@ export async function batchMutateQuestions(
     }
     const lockedDeckSet = new Set(lockedDecks.map((d) => d.id));
     if (lockedQuestions.some((q) => q.deckId && !lockedDeckSet.has(q.deckId))) {
-      throw new AppError(409, "部分题目分类已在其他页面修改，请刷新后重试。", "CONFLICT");
+      throw new AppError(
+        409,
+        "部分题目分类已在其他页面修改，请刷新后重试。",
+        "CONFLICT",
+      );
     }
     const now = new Date();
     if (params.operation === "delete") {
@@ -253,16 +351,33 @@ export async function batchMutateQuestions(
         .where(inArray(questions.id, uniqueIds));
       return { ok: true, updated: uniqueIds.length, skipped: 0 };
     }
+    const orderedForMove = [...lockedQuestions].sort(
+      (a, b) =>
+        a.position - b.position ||
+        a.createdAt.getTime() - b.createdAt.getTime() ||
+        a.id.localeCompare(b.id),
+    );
     const movableIds: string[] = [];
     let skipped = 0;
     if (targetDeckId) {
       const existing = await tx
         .select({ contentHash: questions.contentHash })
         .from(questions)
-        .where(and(eq(questions.deckId, targetDeckId), isNull(questions.deletedAt)));
+        .where(
+          and(
+            eq(questions.deckId, targetDeckId),
+            targetGroupId
+              ? eq(questions.groupId, targetGroupId)
+              : isNull(questions.groupId),
+            isNull(questions.deletedAt),
+          ),
+        );
       const seenHashes = new Set(existing.map((r) => r.contentHash));
-      for (const q of lockedQuestions) {
-        if (q.deckId === targetDeckId || seenHashes.has(q.contentHash)) {
+      for (const q of orderedForMove) {
+        if (
+          (q.deckId === targetDeckId && q.groupId === targetGroupId) ||
+          seenHashes.has(q.contentHash)
+        ) {
           skipped += 1;
         } else {
           seenHashes.add(q.contentHash);
@@ -270,16 +385,29 @@ export async function batchMutateQuestions(
         }
       }
     } else {
-      for (const q of lockedQuestions) {
-        if (q.deckId === null) skipped += 1;
+      for (const q of orderedForMove) {
+        if (q.deckId === null && q.groupId === null) skipped += 1;
         else movableIds.push(q.id);
       }
     }
     if (movableIds.length) {
-      await tx
-        .update(questions)
-        .set({ deckId: targetDeckId ?? null, updatedAt: now })
-        .where(inArray(questions.id, movableIds));
+      let pos = await nextQuestionPosition(
+        tx,
+        userId,
+        targetDeckId ?? null,
+        targetGroupId,
+      );
+      for (const id of movableIds) {
+        await tx
+          .update(questions)
+          .set({
+            deckId: targetDeckId ?? null,
+            groupId: targetGroupId,
+            position: pos++,
+            updatedAt: now,
+          })
+          .where(eq(questions.id, id));
+      }
     }
     return { ok: true, updated: movableIds.length, skipped };
   });
@@ -355,6 +483,7 @@ export async function cleanupExpiredQuestions({
         parentId: null,
         importId: null,
         deckId: null,
+        groupId: null,
         purgedAt: now,
         updatedAt: now,
       })

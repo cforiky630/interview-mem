@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   Check,
   Loader2,
@@ -12,6 +12,7 @@ import type { Workspace, DeckView } from "@/lib/types";
 import { normalizeTagValue } from "@/lib/markdown-source";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
+import { DeckSelectOptions, GroupSelectOptions } from "./deck-select-options";
 
 export type Mutate = (
   url: string,
@@ -82,16 +83,25 @@ export function CreateDeckDialog({
   onClose,
   mutate,
   onCreated,
+  existingGroups = [],
+  defaultGroupName = "",
 }: {
   open: boolean;
   onClose: () => void;
   mutate: Mutate;
   onCreated: (id: string) => void;
+  existingGroups?: string[];
+  defaultGroupName?: string;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [groupName, setGroupName] = useState(defaultGroupName);
   const [color, setColor] = useState("sage");
   const [busy, setBusy] = useState(false);
+  const groupListId = useId();
+  useEffect(() => {
+    if (open) setGroupName(defaultGroupName);
+  }, [open, defaultGroupName]);
   async function create() {
     setBusy(true);
     try {
@@ -99,12 +109,14 @@ export function CreateDeckDialog({
         action: "create",
         title,
         description,
+        groupName: groupName.trim(),
         color,
       });
       if (result) {
         const deck = result.deck as { id: string };
         setTitle("");
         setDescription("");
+        setGroupName("");
         onClose();
         onCreated(deck.id);
         toast.success("题库已创建");
@@ -135,6 +147,25 @@ export function CreateDeckDialog({
             placeholder="例如：前端工程化、MySQL 索引与锁、高并发系统设计"
             autoFocus
           />
+        </label>
+        <label className="field">
+          题库分组（可选）
+          <input
+            list={groupListId}
+            value={groupName}
+            onChange={(e) => setGroupName(e.target.value)}
+            onKeyDown={(e) =>
+              submitOnEnter(e, !busy && !!title.trim(), create)
+            }
+            maxLength={40}
+            disabled={busy}
+            placeholder="例如：八股专题、公司面经、AI / RAG"
+          />
+          <datalist id={groupListId}>
+            {existingGroups.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </label>
         <label className="field">
           简单介绍
@@ -169,19 +200,24 @@ export function EditDeckDialog({
   deck,
   onClose,
   mutate,
+  existingGroups = [],
 }: {
   deck: DeckView | null;
   onClose: () => void;
   mutate: Mutate;
+  existingGroups?: string[];
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [groupName, setGroupName] = useState("");
   const [color, setColor] = useState("sage");
   const [busy, setBusy] = useState(false);
+  const groupListId = useId();
   useEffect(() => {
     if (deck) {
       setTitle(deck.title);
       setDescription(deck.description);
+      setGroupName(deck.groupName ?? "");
       setColor(deck.color || "sage");
     }
   }, [deck]);
@@ -192,6 +228,7 @@ export function EditDeckDialog({
     !!deck &&
     (title.trim() !== deck.title ||
       description !== deck.description ||
+      groupName.trim() !== (deck.groupName ?? "") ||
       color !== (deck.color || "sage"));
   async function save() {
     if (!deck || !title.trim() || busy) return;
@@ -203,10 +240,12 @@ export function EditDeckDialog({
         expected: {
           title: deck.title,
           description: deck.description,
+          groupName: deck.groupName ?? "",
           ...(validColor ? { color: validColor } : {}),
         },
         title: title.trim(),
         description,
+        groupName: groupName.trim(),
         color,
       });
       if (result) {
@@ -239,6 +278,25 @@ export function EditDeckDialog({
             placeholder="输入题库名称"
             autoFocus
           />
+        </label>
+        <label className="field">
+          题库分组（可选）
+          <input
+            list={groupListId}
+            value={groupName}
+            onChange={(e) => setGroupName(e.target.value)}
+            onKeyDown={(e) =>
+              submitOnEnter(e, !busy && !!title.trim() && dirty, save)
+            }
+            maxLength={40}
+            disabled={busy}
+            placeholder="例如：八股专题、公司面经、AI / RAG（留空不分组）"
+          />
+          <datalist id={groupListId}>
+            {existingGroups.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </label>
         <label className="field">
           简单介绍
@@ -278,6 +336,7 @@ export function EditDeckDialog({
 export function CreateQuestionDialog({
   open,
   defaultDeckId,
+  defaultGroupId = null,
   data,
   mutate,
   onClose,
@@ -285,6 +344,7 @@ export function CreateQuestionDialog({
 }: {
   open: boolean;
   defaultDeckId?: string | null;
+  defaultGroupId?: string | null;
   data: Workspace;
   mutate: Mutate;
   onClose: () => void;
@@ -292,18 +352,27 @@ export function CreateQuestionDialog({
 }) {
   const [title, setTitle] = useState("");
   const [deckId, setDeckId] = useState("");
+  const [groupId, setGroupId] = useState("");
   const [tagsInput, setTagsInput] = useState("");
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const ownedDecks = data.decks.filter((d) => d.isOwner);
+  const selectedDeck = ownedDecks.find((d) => d.id === deckId);
+  const availableGroups = selectedDeck?.groups ?? [];
   useEffect(() => {
     if (!open) return;
-    const preferred =
+    const preferredDeck =
       defaultDeckId && ownedDecks.some((d) => d.id === defaultDeckId)
         ? defaultDeckId
         : "";
-    setDeckId(preferred);
-  }, [open, defaultDeckId]);
+    setDeckId(preferredDeck);
+    const deck = ownedDecks.find((d) => d.id === preferredDeck);
+    const preferredGroup =
+      defaultGroupId && deck?.groups.some((g) => g.id === defaultGroupId)
+        ? defaultGroupId
+        : "";
+    setGroupId(preferredGroup);
+  }, [open, defaultDeckId, defaultGroupId]);
   const parsedTags = [
     ...new Set(
       tagsInput
@@ -327,6 +396,7 @@ export function CreateQuestionDialog({
       const result = await mutate("/api/questions", {
         action: "create",
         deckId: deckId || null,
+        groupId: deckId && groupId ? groupId : null,
         title: title.trim(),
         answer,
         tags: parsedTags,
@@ -371,16 +441,28 @@ export function CreateQuestionDialog({
             aria-label="所属题库"
             value={deckId}
             disabled={busy}
-            onChange={(e) => setDeckId(e.target.value)}
+            onChange={(e) => {
+              setDeckId(e.target.value);
+              setGroupId("");
+            }}
           >
             <option value="">未分类</option>
-            {ownedDecks.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.title}
-              </option>
-            ))}
+            <DeckSelectOptions decks={ownedDecks} />
           </select>
         </label>
+        {availableGroups.length > 0 && (
+          <label className="field">
+            所属分组（可选）
+            <select
+              aria-label="所属分组"
+              value={groupId}
+              disabled={busy}
+              onChange={(e) => setGroupId(e.target.value)}
+            >
+              <GroupSelectOptions groups={availableGroups} />
+            </select>
+          </label>
+        )}
         <label className="field">
           标签（逗号分隔，最多 12 个）
           <input

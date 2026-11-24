@@ -2,7 +2,13 @@ import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { decks, imports, questions, user as users } from "@/db/schema";
+import {
+  deckGroups,
+  decks,
+  imports,
+  questions,
+  user as users,
+} from "@/db/schema";
 import { parseQuestions } from "@/lib/importer";
 import { IMPORT_LIMITS, validImportPath } from "@/lib/import-material";
 import { markdownDocument } from "@/lib/markdown-source";
@@ -16,7 +22,13 @@ import {
   type ImportPreviewItem,
 } from "@/lib/import-preview";
 import { contentHash } from "./crypto";
-import { nextQuestionBaseMs, ownedDeck } from "./workspace";
+import {
+  nextDeckGroupPosition,
+  nextQuestionBaseMs,
+  nextQuestionPosition,
+  ownedDeck,
+} from "./workspace";
+import { deckGroupFields } from "./content-fields";
 import { acquireAi, aiCredential, providerRequest } from "./ai";
 import { deckIdSchema } from "./resource-ids";
 import { AppError } from "./errors";
@@ -78,9 +90,24 @@ export const reviewedSchema = z.object({
   answer: z.string().max(IMPORT_LIMITS.sourceChars),
   tags: z.array(z.string().trim().min(1).max(30)).max(12).default([]),
 });
+export const importGroupTargetSchema = z
+  .discriminatedUnion("mode", [
+    z.object({
+      mode: z.literal("existing"),
+      groupId: z.string().uuid(),
+    }),
+    z.object({
+      mode: z.literal("create"),
+      ...deckGroupFields,
+    }),
+  ])
+  .nullable()
+  .optional();
+
 const reviewedSource = z.object({
   batchId: z.string().uuid(),
   questions: z.array(reviewedSchema).min(1).max(IMPORT_LIMITS.questions),
+  group: importGroupTargetSchema,
 });
 const replaceSchema = z
   .object({
@@ -390,12 +417,16 @@ export async function commitImport(userId: string, data: CommitRequest) {
     )
   )
     throw new AppError(409, "本批资料的题库或资料类型不一致，请重新解析。");
-  // 单文件沿用原提交签名，让既有草稿和提交重试继续有效。
+  // 单文件无分组时沿用原提交签名，让既有草稿和提交重试继续有效。
   const reviewed =
     "batches" in data
       ? data
-      : data.replace
-        ? { questions: data.questions, replace: data.replace }
+      : data.replace || data.group !== undefined
+        ? {
+            questions: data.questions,
+            ...(data.replace ? { replace: data.replace } : {}),
+            ...(data.group !== undefined ? { group: data.group } : {}),
+          }
         : data.questions;
   const hash = createHash("sha256")
     .update(JSON.stringify(reviewed))
@@ -504,7 +535,66 @@ export async function commitImport(userId: string, data: CommitRequest) {
       )
         throw new AppError(409, "当前题目分类已改变，请重新预览后保存。");
     }
-    // 在同一个事务中去重并提交全部文件，保留每一道新增题的来源。
+    // Resolve optional target groups per batch inside the deck lock.
+    const batchGroupId = new Map<string, string | null>();
+    const hasExplicitGroup = batches.some((batch) => batch.group != null);
+    if (hasExplicitGroup && !deckId) {
+      throw new AppError(400, "导入到未分类时不能指定分组，请先选择目标题库。");
+    }
+    if (deckId && hasExplicitGroup) {
+      const existingDeckGroups = await tx
+        .select()
+        .from(deckGroups)
+        .where(
+          and(eq(deckGroups.deckId, deckId), eq(deckGroups.ownerId, userId)),
+        )
+        .orderBy(asc(deckGroups.id))
+        .for("update");
+      const byId = new Map(existingDeckGroups.map((g) => [g.id, g]));
+      const byKey = new Map(
+        existingDeckGroups.map((g) => [`${g.category}\0${g.title}`, g]),
+      );
+      let nextGroupPos = await nextDeckGroupPosition(tx, deckId);
+      for (const batch of batches) {
+        if (!batch.group) {
+          batchGroupId.set(batch.batchId, null);
+          continue;
+        }
+        if (batch.group.mode === "existing") {
+          const found = byId.get(batch.group.groupId);
+          if (!found) {
+            throw new AppError(404, "目标分组不存在或不属于所选题库。");
+          }
+          batchGroupId.set(batch.batchId, found.id);
+        } else {
+          const key = `${batch.group.category}\0${batch.group.title}`;
+          const reused = byKey.get(key);
+          if (reused) {
+            batchGroupId.set(batch.batchId, reused.id);
+          } else {
+            const now = new Date();
+            const [created] = await tx
+              .insert(deckGroups)
+              .values({
+                id: crypto.randomUUID(),
+                deckId,
+                ownerId: userId,
+                title: batch.group.title,
+                category: batch.group.category,
+                description: batch.group.description,
+                position: nextGroupPos++,
+                createdAt: now,
+                updatedAt: now,
+              })
+              .returning();
+            byId.set(created.id, created);
+            byKey.set(key, created);
+            batchGroupId.set(batch.batchId, created.id);
+          }
+        }
+      }
+    }
+    // 在同一个事务中按分组去重并提交全部文件，保留每一道新增题的来源与顺序。
     const originals = new Map(
       current.flatMap((source) =>
         source.preview!.map(
@@ -527,7 +617,11 @@ export async function commitImport(userId: string, data: CommitRequest) {
     );
     const normalize = (title: string) => title.trim().replace(/\s+/g, " ");
     const existing = await tx
-      .select({ title: questions.title, hash: questions.contentHash })
+      .select({
+        title: questions.title,
+        hash: questions.contentHash,
+        groupId: questions.groupId,
+      })
       .from(questions)
       .where(
         and(
@@ -537,10 +631,37 @@ export async function commitImport(userId: string, data: CommitRequest) {
           sourceQuestion ? ne(questions.id, sourceQuestion.id) : undefined,
         ),
       );
-    const names = new Set(
-      inputType === "questions" ? existing.map((q) => normalize(q.title)) : [],
-    );
-    const hashes = new Set(existing.map((q) => q.hash));
+    const namesBySlot = new Map<string, Set<string>>();
+    const hashesBySlot = new Map<string, Set<string>>();
+    const getSlotSet = (map: Map<string, Set<string>>, slotKey: string) => {
+      let set = map.get(slotKey);
+      if (!set) {
+        set = new Set();
+        map.set(slotKey, set);
+      }
+      return set;
+    };
+    for (const row of existing) {
+      const slotKey = row.groupId ?? "";
+      getSlotSet(hashesBySlot, slotKey).add(row.hash);
+      if (inputType === "questions") {
+        getSlotSet(namesBySlot, slotKey).add(normalize(row.title));
+      }
+    }
+    const nextPosBySlot = new Map<string, number>();
+    async function allocatePosition(groupId: string | null) {
+      const slotKey = groupId ?? "";
+      let nextPos = nextPosBySlot.get(slotKey);
+      if (nextPos === undefined) {
+        nextPos = await nextQuestionPosition(tx, userId, deckId, groupId);
+      }
+      nextPosBySlot.set(slotKey, nextPos + 1);
+      return nextPos;
+    }
+    const defaultReplaceGroupId =
+      sourceQuestion && sourceQuestion.deckId === deckId
+        ? sourceQuestion.groupId
+        : null;
     const replacingItem = candidates.find((q) => q.key === data.replace?.key);
     const ordered = replacingItem
       ? [replacingItem, ...candidates.filter((q) => q !== replacingItem)]
@@ -552,11 +673,18 @@ export async function commitImport(userId: string, data: CommitRequest) {
       const itemHash = contentHash(q.title, q.answer);
       const title = normalize(q.title);
       const replacing = q === replacingItem;
+      const explicitGroupId = batchGroupId.has(q.batchId)
+        ? (batchGroupId.get(q.batchId) ?? null)
+        : defaultReplaceGroupId;
+      const targetGroupId = deckId ? explicitGroupId : null;
+      const slotKey = targetGroupId ?? "";
+      const names = getSlotSet(namesBySlot, slotKey);
+      const hashes = getSlotSet(hashesBySlot, slotKey);
       if (names.has(title) || hashes.has(itemHash)) {
         if (replacing)
           throw new AppError(
             409,
-            "目标题库已有相同题目，本次修改和新增均未保存。",
+            "目标位置已有相同题目，本次修改和新增均未保存。",
           );
         result.duplicates++;
         continue;
@@ -569,6 +697,7 @@ export async function commitImport(userId: string, data: CommitRequest) {
             answer: q.answer,
             tags: q.tags,
             deckId,
+            groupId: targetGroupId,
             contentHash: itemHash,
             revision: sql`${questions.revision}+1`,
             needsEditing: !q.answer.trim(),
@@ -589,11 +718,14 @@ export async function commitImport(userId: string, data: CommitRequest) {
         continue;
       }
       const ts = new Date(baseMs + insertSeq++);
+      const position = await allocatePosition(targetGroupId);
       const inserted = await tx
         .insert(questions)
         .values({
           id: crypto.randomUUID(),
           deckId,
+          groupId: targetGroupId,
+          position,
           ownerId: userId,
           importId: q.batchId,
           title: q.title,

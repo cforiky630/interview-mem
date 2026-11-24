@@ -36,7 +36,21 @@ import {
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { api } from "@/lib/client";
-import type { Workspace, QuestionView, CatalogDeck } from "@/lib/types";
+import { useDeviceProfile } from "@/lib/device-profile";
+import {
+  computeDeckReadingOrder,
+  computeReaderGroupContext,
+  groupDecksByName,
+  listDeckGroupNames,
+  OTHER_DECKS_LABEL,
+} from "@/lib/grouping";
+import type {
+  Workspace,
+  QuestionView,
+  CatalogDeck,
+  DeckGroupView,
+  DeckView,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
@@ -53,6 +67,7 @@ import { ConfirmDialog } from "./ui/confirm-dialog";
 import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
 import { Library, Catalog } from "./library";
+import { ReviewHub } from "./review-hub";
 import { useAiAnswerDraft } from "./use-ai-answer-draft";
 import { useAppShortcuts } from "./use-app-shortcuts";
 import { usePageScroll } from "./use-page-scroll";
@@ -101,13 +116,22 @@ const PublishDialog = dynamic(() =>
 const SettingsCard = dynamic(() =>
   import("./settings-card").then((m) => m.SettingsCard),
 );
-import type { AccountSettingsTab, SettingsPanelMode } from "./settings-card";
+import type { SettingsTab } from "./settings-card";
 const DeleteDeckDialog = dynamic(() =>
   import("./deck-delete-dialog").then((m) => m.DeleteDeckDialog),
 );
 
 const QuestionActionDialog = dynamic(() =>
   import("./question-action-dialog").then((m) => m.QuestionActionDialog),
+);
+const DeckGroupDialog = dynamic(() =>
+  import("./deck-group-dialog").then((m) => m.DeckGroupDialog),
+);
+const SetDeckGroupDialog = dynamic(() =>
+  import("./deck-group-dialog").then((m) => m.SetDeckGroupDialog),
+);
+const ManageDeckGroupsDialog = dynamic(() =>
+  import("./deck-group-dialog").then((m) => m.ManageDeckGroupsDialog),
 );
 
 import type { ImportSeed } from "./import-dialog";
@@ -204,6 +228,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     refresh,
     mutate,
   } = useWorkspaceSync(sessionId);
+  const device = useDeviceProfile();
   const [view, setView] = useState<View>(initialRoute.current.view);
   const [navigationTarget, setNavigationTarget] = useState<View>(
     initialRoute.current.view,
@@ -213,6 +238,17 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     initialRoute.current.view === "library"
       ? initialRoute.current.deckId
       : initialRoute.current.originDeckId,
+  );
+  const [libraryGroupFilter, setLibraryGroupFilter] = useState<{
+    groupId?: string | null;
+    category?: string | null;
+  }>(() =>
+    initialRoute.current?.view === "library"
+      ? {
+          groupId: initialRoute.current.groupId,
+          category: initialRoute.current.category,
+        }
+      : {},
   );
   const [questionId, setQuestionId] = useState<string | null>(
     initialRoute.current.questionId ?? null,
@@ -228,55 +264,52 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importSeed, setImportSeed] = useState<ImportSeed>();
+  const [importPreferredGroupId, setImportPreferredGroupId] = useState<
+    string | undefined
+  >(undefined);
   const importCommitted = useRef<(() => void) | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createDeckDefaultGroup, setCreateDeckDefaultGroup] = useState("");
+  const [manageDeckGroupsOpen, setManageDeckGroupsOpen] = useState(false);
   const [editDeck, setEditDeck] = useState<Workspace["decks"][number] | null>(
     null,
   );
+  const [groupDialog, setGroupDialog] = useState<{
+    deck: DeckView;
+    group?: DeckGroupView;
+    defaultCategory?: string;
+  } | null>(null);
+  const [setDeckGroupTarget, setSetDeckGroupTarget] = useState<DeckView | null>(
+    null,
+  );
   const [createQuestionOpen, setCreateQuestionOpen] = useState(false);
+  const [createQuestionGroupId, setCreateQuestionGroupId] = useState<
+    string | undefined
+  >(undefined);
   const [settingsState, setSettingsState] = useState<{
     open: boolean;
-    mode: SettingsPanelMode;
-    accountTab: AccountSettingsTab;
-    anchor: HTMLElement | null;
-  }>({ open: false, mode: "ai", accountTab: "study", anchor: null });
+    tab: SettingsTab;
+  }>({ open: false, tab: "study" });
   const [settingsMounted, setSettingsMounted] = useState(false);
-  const topbarSettingsRef = useRef<HTMLButtonElement>(null);
   const openSettings = useCallback(
-    (options?: {
-      mode?: SettingsPanelMode;
-      accountTab?: AccountSettingsTab;
-      anchor?: HTMLElement | null;
-      toggle?: boolean;
-    }) => {
-      const nextMode: SettingsPanelMode = options?.mode ?? "ai";
-      const resolvedAnchor =
-        options?.anchor ??
-        (topbarSettingsRef.current &&
-        topbarSettingsRef.current.offsetParent !== null
-          ? topbarSettingsRef.current
-          : null);
+    (tab: SettingsTab = "study", options?: { toggle?: boolean }) => {
       setSettingsMounted(true);
       setSettingsState((prev) => {
-        if (
-          options?.toggle &&
-          prev.open &&
-          prev.mode === nextMode &&
-          prev.anchor === resolvedAnchor &&
-          (!options.accountTab || prev.accountTab === options.accountTab)
-        ) {
+        if (options?.toggle && prev.open && prev.tab === tab) {
           return { ...prev, open: false };
         }
-        return {
-          open: true,
-          mode: nextMode,
-          accountTab: options?.accountTab ?? prev.accountTab,
-          anchor: resolvedAnchor,
-        };
+        return { open: true, tab };
       });
     },
     [],
   );
+  const toggleSettings = useCallback(() => {
+    setSettingsMounted(true);
+    setSettingsState((prev) => ({
+      open: !prev.open,
+      tab: prev.open ? prev.tab : "study",
+    }));
+  }, []);
   const [palette, setPalette] = useState<Palette>("forest");
   const [themeOverride, setThemeOverride] = useState<"light" | "dark" | null>(
     null,
@@ -322,6 +355,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [queue, setQueue] = useState<QuestionView[]>([]);
   const queueLength = useRef(0);
   queueLength.current = queue.length;
+  const [reviewSessionActive, setReviewSessionActive] = useState(false);
   const [reviewMode, setReviewMode] = useState<"fsrs" | "cram">("fsrs");
   const [cramLabel, setCramLabel] = useState("");
   const [reviewIndex, setReviewIndex] = useState(0);
@@ -336,7 +370,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     view === "question"
       ? `question:${questionId}`
       : view === "review"
-        ? `review:${reviewIndex}:${queue[reviewIndex]?.id ?? "done"}`
+        ? reviewSessionActive
+          ? `review:${reviewIndex}:${queue[reviewIndex]?.id ?? "done"}`
+          : "review:hub"
         : view === "library"
           ? `library:${deckId === null ? "unfiled" : (deckId ?? "all")}`
           : view;
@@ -504,28 +540,28 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     function onPopState() {
       setSidebarOpen(false);
       const next = parseRouteFromSearch(window.location.search);
-      const resolved =
-        next.view === "review" && queueLength.current === 0
-          ? { view: "today" as View }
-          : next;
-      if (resolved !== next) {
-        window.history.replaceState(null, "", window.location.pathname);
-      }
-      setNavigationTarget(resolved.view);
+      setNavigationTarget(next.view);
       startTransition(() => {
-        if (resolved.view === "library") {
-          setDeckId(resolved.deckId);
-        } else if (resolved.view === "question") {
-          origin.current = {
-            view: resolved.originView ?? "library",
-            deckId: resolved.originDeckId,
-          };
-          setDeckId(resolved.originDeckId);
-          setQuestionId(resolved.questionId ?? null);
+        if (next.view !== "review" || queueLength.current === 0) {
+          setReviewSessionActive(false);
         }
-        setView(resolved.view);
+        if (next.view === "library") {
+          setDeckId(next.deckId);
+          setLibraryGroupFilter({
+            groupId: next.groupId,
+            category: next.category,
+          });
+        } else if (next.view === "question") {
+          origin.current = {
+            view: next.originView ?? "library",
+            deckId: next.originDeckId,
+          };
+          setDeckId(next.originDeckId);
+          setQuestionId(next.questionId ?? null);
+        }
+        setView(next.view);
       });
-      if (resolved.view === "catalog") void loadCatalog();
+      if (next.view === "catalog") void loadCatalog();
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -604,6 +640,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       ),
     onCloseAi: () => setAiMode("collapsed"),
     onCloseSidebar: () => setSidebarOpen(false),
+    onToggleSettings: toggleSettings,
     onQuickSearch: (viaSlash) => {
       if (viaSlash && viewRef.current === "library") {
         (
@@ -651,7 +688,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     },
     [],
   );
-  const aiHiddenInReview = view === "review" && !reviewRevealed;
+  const aiHiddenInReview =
+    view === "review" && reviewSessionActive && !reviewRevealed;
   const queueCardId = queue[reviewIndex]?.id;
   useEffect(() => {
     setReviewRevealed(false);
@@ -662,10 +700,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     }
   }, [aiHiddenInReview, aiMode]);
   const answerDraft = useAiAnswerDraft(data, mutate, () =>
-    openSettings({ mode: "ai" }),
+    openSettings("ai"),
   );
   function openImport() {
     setImportSeed(undefined);
+    setImportPreferredGroupId(undefined);
     importCommitted.current = null;
     setImportOpen(true);
   }
@@ -681,8 +720,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     changePage(
       next,
       () => {
+        setReviewSessionActive(false);
         if (next === "library" || next === "today" || next === "history") {
           setDeckId(undefined);
+          setLibraryGroupFilter({});
         }
         if (next !== "question") {
           setReadingIds([]);
@@ -709,13 +750,31 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setView(next);
     });
   }
-  function openDeck(id?: string | null) {
+  function openDeck(
+    id?: string | null,
+    groupFilter?: { groupId?: string; category?: string },
+  ) {
+    const nextFilter =
+      typeof id === "string" && groupFilter ? groupFilter : {};
     changePage(
       "library",
       () => {
+        setReviewSessionActive(false);
         setDeckId(id);
+        setLibraryGroupFilter(nextFilter);
       },
-      { route: { view: "library", deckId: id } },
+      {
+        route: {
+          view: "library",
+          deckId: id,
+          ...(typeof id === "string" && nextFilter.groupId
+            ? { groupId: nextFilter.groupId }
+            : {}),
+          ...(typeof id === "string" && nextFilter.category
+            ? { category: nextFilter.category }
+            : {}),
+        },
+      },
     );
     setSidebarOpen(false);
   }
@@ -733,6 +792,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     changePage(
       "question",
       () => {
+        setReviewSessionActive(false);
         setQuestionId(question.id);
       },
       {
@@ -748,14 +808,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }
   function startReview(targetDeck?: string, single?: QuestionView) {
     if (!data) return;
-    if (view === "review" && !targetDeck && !single && queue[reviewIndex]) {
+    if (
+      view === "review" &&
+      reviewSessionActive &&
+      !targetDeck &&
+      !single &&
+      queue[reviewIndex]
+    ) {
       if (navigationTarget !== "review") {
         changePage("review", undefined, { replace: true, route: { view: "review" } });
       }
       setSidebarOpen(false);
       return;
     }
-    if (view !== "review") reviewOrigin.current = { view, deckId, questionId };
+    if (view !== "review" || !reviewSessionActive) {
+      reviewOrigin.current = { view, deckId, questionId };
+    }
     const active = data.questions.filter(
       (q) =>
         !q.archived &&
@@ -790,6 +858,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     changePage(
       "review",
       () => {
+        setReviewSessionActive(true);
         setQueue(single ? [single] : [...majorReview, ...due, ...fresh]);
         setReviewIndex(0);
         setRatings([]);
@@ -802,7 +871,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }
   function startCram(items: QuestionView[], label: string) {
     if (!data) return;
-    if (view !== "review") reviewOrigin.current = { view, deckId, questionId };
+    if (view !== "review" || !reviewSessionActive) {
+      reviewOrigin.current = { view, deckId, questionId };
+    }
     const cramList = items.filter((q) => !q.archived && q.answer.trim());
     setReviewRevealed(false);
     setReviewMode("cram");
@@ -811,6 +882,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     changePage(
       "review",
       () => {
+        setReviewSessionActive(true);
         setQueue(cramList);
         setReviewIndex(0);
         setRatings([]);
@@ -990,7 +1062,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   }
   const isReaderView =
     (view === "question" && Boolean(currentQuestion)) ||
-    (view === "review" && Boolean(currentReview));
+    (view === "review" && reviewSessionActive && Boolean(currentReview));
   const readingList = readingIds.length
     ? readingIds
         .map((id) => data.questions.find((q) => q.id === id))
@@ -1000,21 +1072,50 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         ["library", "favorites", "inbox", "archived"].includes(
           origin.current.view,
         )
-      ? data.questions.filter((q) => {
-          if (origin.current.view === "archived") return q.archived;
-          if (q.archived) return false;
-          if (origin.current.view === "favorites") return q.favorite;
-          if (origin.current.view === "inbox") return q.needsEditing;
-          if (origin.current.deckId === null)
-            return q.isOwner && q.deckId === null;
-          if (origin.current.deckId !== undefined)
-            return q.deckId === origin.current.deckId;
-          return true;
-        })
+      ? (() => {
+          const matched = data.questions.filter((q) => {
+            if (origin.current.view === "archived") return q.archived;
+            if (q.archived) return false;
+            if (origin.current.view === "favorites") return q.favorite;
+            if (origin.current.view === "inbox") return q.needsEditing;
+            if (origin.current.deckId === null)
+              return q.isOwner && q.deckId === null;
+            if (origin.current.deckId !== undefined)
+              return q.deckId === origin.current.deckId;
+            return true;
+          });
+          if (
+            origin.current.view === "library" &&
+            typeof origin.current.deckId === "string"
+          ) {
+            const originDeck = data.decks.find(
+              (d) => d.id === origin.current.deckId,
+            );
+            if (originDeck && originDeck.groups.length > 0) {
+              return computeDeckReadingOrder(matched, originDeck.groups);
+            }
+          }
+          return matched;
+        })()
       : [];
   const readingIndex = currentQuestion
     ? readingList.findIndex((q) => q.id === currentQuestion.id)
     : -1;
+  const currentQuestionDeck = currentQuestion?.deckId
+    ? data.decks.find((d) => d.id === currentQuestion.deckId)
+    : undefined;
+  const readerGroupContext =
+    view === "question" &&
+    currentQuestion &&
+    currentQuestionDeck?.groups.length
+      ? computeReaderGroupContext(
+          readingList.length ? readingList : [currentQuestion],
+          readingIndex !== -1 ? readingIndex : 0,
+          currentQuestionDeck.groups,
+        )
+      : null;
+  const existingDeckGroups = listDeckGroupNames(data.decks);
+  const sidebarDeckGroups = groupDecksByName(data.decks);
   const weakQuestions = Array.from(
     new Map(
       reviewResults
@@ -1032,18 +1133,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const displayedView = isNavigating ? navigationTarget : view;
   const isImmersiveMobile = isReaderView;
   const hasMobileDeckBack =
-    displayedView === "library" && activeDeckId !== undefined;
+    device.isMobileShell &&
+    displayedView === "library" &&
+    activeDeckId !== undefined;
   const mobileView = ["question", "favorites", "inbox", "archived"].includes(
     navigationTarget,
   )
     ? "library"
-    : navigationTarget;
+    : navigationTarget === "history"
+      ? "review"
+      : navigationTarget;
   const nav = [
     { id: "today" as const, label: "今日", mobileLabel: "今日", icon: LayoutDashboard },
     { id: "library" as const, label: "我的题库", mobileLabel: "题库", icon: Layers2 },
     {
       id: "review" as const,
-      label: "开始复习",
+      label: "复习中心",
       mobileLabel: "复习",
       icon: RotateCcw,
       count: data.stats.due,
@@ -1166,7 +1271,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             <button
               key={id}
               className={cn("nav-item", activeNavView === id && "active")}
-              onClick={() => (id === "review" ? startReview() : navigate(id))}
+              onClick={() => navigate(id)}
             >
               <Icon size={18} strokeWidth={1.6} />
               <span>{label}</span>
@@ -1200,28 +1305,69 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             <button
               className="icon-button"
               aria-label="新建题库"
-              onClick={() => setCreateOpen(true)}
+              onClick={() => {
+                setCreateDeckDefaultGroup("");
+                setCreateOpen(true);
+              }}
             >
               <Plus size={14} />
             </button>
           </div>
-          {data.decks.slice(0, 5).map((d) => (
-            <button
-              className={cn(
-                "sidebar-deck",
-                activeNavView === "library" &&
-                  activeDeckId === d.id &&
-                  "selected",
-              )}
-              onClick={() => openDeck(d.id)}
-              key={d.id}
-            >
-              <span className={`deck-dot color-${d.color}`} />
-              <span>{d.title}</span>
-              <small>{d.count}</small>
-            </button>
-          ))}
-          {data.decks.length > 5 && (
+          {sidebarDeckGroups.hasGroups ? (
+            (() => {
+              let remaining = 8;
+              return sidebarDeckGroups.buckets.map((bucket) => {
+                if (remaining <= 0) return null;
+                const slice = bucket.decks.slice(0, remaining);
+                remaining -= slice.length;
+                if (!slice.length) return null;
+                return (
+                  <div
+                    className="sidebar-deck-group"
+                    key={bucket.groupName || "__other__"}
+                  >
+                    <div className="sidebar-deck-group-label">
+                      {bucket.groupName || OTHER_DECKS_LABEL}
+                    </div>
+                    {slice.map((d) => (
+                      <button
+                        className={cn(
+                          "sidebar-deck",
+                          activeNavView === "library" &&
+                            activeDeckId === d.id &&
+                            "selected",
+                        )}
+                        onClick={() => openDeck(d.id)}
+                        key={d.id}
+                      >
+                        <span className={`deck-dot color-${d.color}`} />
+                        <span>{d.title}</span>
+                        <small>{d.count}</small>
+                      </button>
+                    ))}
+                  </div>
+                );
+              });
+            })()
+          ) : (
+            data.decks.slice(0, 5).map((d) => (
+              <button
+                className={cn(
+                  "sidebar-deck",
+                  activeNavView === "library" &&
+                    activeDeckId === d.id &&
+                    "selected",
+                )}
+                onClick={() => openDeck(d.id)}
+                key={d.id}
+              >
+                <span className={`deck-dot color-${d.color}`} />
+                <span>{d.title}</span>
+                <small>{d.count}</small>
+              </button>
+            ))
+          )}
+          {data.decks.length > (sidebarDeckGroups.hasGroups ? 8 : 5) && (
             <button
               className="sidebar-deck"
               onClick={() => navigate("library")}
@@ -1274,7 +1420,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             data-settings-trigger="ai"
             onClick={() => {
               setSidebarOpen(false);
-              openSettings({ mode: "ai" });
+              openSettings("ai");
             }}
           >
             <span
@@ -1296,28 +1442,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           </button>
           <UserMenu
             user={data.user}
-            palette={palette}
-            activeTheme={activeTheme}
-            settingsAccountOpen={
-              settingsState.open && settingsState.mode === "account"
-            }
-            onOpenAccountSettings={(accountTab, anchor) =>
-              openSettings({
-                mode: "account",
-                accountTab,
-                anchor,
-                toggle: false,
-              })
-            }
+            settingsOpen={settingsState.open}
+            hasAiKey={data.settings.hasKey}
+            aiModel={data.settings.model}
+            onOpenSettings={(tab) => openSettings(tab)}
             onBeforeOpenMenu={() =>
               setSettingsState((prev) =>
                 prev.open ? { ...prev, open: false } : prev,
               )
             }
-            onTogglePalette={() =>
-              applyPalette(palette === "forest" ? "lavender" : "forest")
-            }
-            onToggleTheme={toggleTheme}
             onSignOut={signOutPrompt}
             onCloseMobileDrawer={() => setSidebarOpen(false)}
           />
@@ -1438,7 +1571,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                         favorites: "我的收藏",
                         inbox: "待整理",
                         archived: "已归档",
-                        review: "答题",
+                        review: reviewSessionActive ? "答题" : "复习中心",
                         catalog: "发现题库",
                         history: "回顾记录",
                       }[displayedView]
@@ -1535,29 +1668,22 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               </button>
             </div>
             <button
-              ref={topbarSettingsRef}
               type="button"
               className={cn(
                 "topbar-ai-config-btn",
                 data.settings.hasKey && "is-connected",
-                settingsState.open && settingsState.mode === "ai" && "is-active",
+                settingsState.open && settingsState.tab === "ai" && "is-active",
               )}
               data-settings-trigger="ai"
               aria-label="AI 模型配置"
-              aria-expanded={settingsState.open && settingsState.mode === "ai"}
-              aria-controls="settings-floating-card"
+              aria-expanded={settingsState.open && settingsState.tab === "ai"}
+              aria-controls="settings-modal"
               title={
                 data.settings.hasKey
                   ? `AI 模型连接：${data.settings.model || "已连接"}`
                   : "配置 AI 模型连接"
               }
-              onClick={(event) =>
-                openSettings({
-                  mode: "ai",
-                  anchor: event.currentTarget,
-                  toggle: true,
-                })
-              }
+              onClick={() => openSettings("ai", { toggle: true })}
             >
               <Plug size={15} />
               <span className="ai-status-dot" aria-hidden="true" />
@@ -1625,6 +1751,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   deckId={libraryView === "library" ? deckId : undefined}
                   filter={libraryView === "library" ? undefined : libraryView}
                   searchToken={searchToken}
+                  initialGroupId={
+                    libraryView === "library"
+                      ? libraryGroupFilter.groupId
+                      : undefined
+                  }
+                  initialCategory={
+                    libraryView === "library"
+                      ? libraryGroupFilter.category
+                      : undefined
+                  }
                   mutate={mutate}
                   onDelete={setDeleteDeck}
                   onEditDeck={setEditDeck}
@@ -1639,8 +1775,33 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   onCram={startCram}
                   onDeck={openDeck}
                   onImport={openImport}
-                  onCreateQuestion={() => setCreateQuestionOpen(true)}
-                  onCreate={() => setCreateOpen(true)}
+                  onImportToGroup={(gid) => {
+                    setImportSeed(undefined);
+                    importCommitted.current = null;
+                    setImportPreferredGroupId(gid);
+                    setImportOpen(true);
+                  }}
+                  onCreateQuestion={() => {
+                    setCreateQuestionGroupId(undefined);
+                    setCreateQuestionOpen(true);
+                  }}
+                  onCreateQuestionInGroup={(gid) => {
+                    setCreateQuestionGroupId(gid);
+                    setCreateQuestionOpen(true);
+                  }}
+                  onCreate={() => {
+                    setCreateDeckDefaultGroup("");
+                    setCreateOpen(true);
+                  }}
+                  onManageDeckGroups={() => setManageDeckGroupsOpen(true)}
+                  onCreateDeckInGroup={(groupName) => {
+                    setCreateDeckDefaultGroup(groupName);
+                    setCreateOpen(true);
+                  }}
+                  onOpenGroupDialog={(deck, group, defaultCategory) =>
+                    setGroupDialog({ deck, group, defaultCategory })
+                  }
+                  onSetDeckGroup={(deck) => setSetDeckGroupTarget(deck)}
                   onReview={startReview}
                   onPublish={setPublishId}
                   onFavorite={(q) => void favorite(q)}
@@ -1725,6 +1886,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               }
               onBatchImport={(seed, onCommitted) => {
                 setImportSeed(seed);
+                setImportPreferredGroupId(undefined);
                 importCommitted.current = onCommitted;
                 setImportOpen(true);
               }}
@@ -1746,6 +1908,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               aiOpen={aiMode !== "collapsed"}
               onToggleAi={toggleAi}
               onAskAi={askAi}
+              groupContext={readerGroupContext}
+              readingList={readingList}
+              onJumpQuestion={(target) =>
+                openQuestion(target, undefined, "replace")
+              }
+              onOpenGroup={(targetDeckId, opts) => openDeck(targetDeckId, opts)}
             />
           )}
           {view === "question" && !currentQuestion && (
@@ -1757,7 +1925,19 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               </Button>
             </div>
           )}
+          {view === "review" && !reviewSessionActive && (
+            <ReviewHub
+              data={data}
+              onStartReview={(targetDeck) => startReview(targetDeck)}
+              onStartCram={startCram}
+              onOpenDeck={(targetDeck) => openDeck(targetDeck)}
+              onOpenHistory={() => navigate("history")}
+              onOpenInbox={() => navigate("inbox")}
+              onImport={openImport}
+            />
+          )}
           {view === "review" &&
+            reviewSessionActive &&
             (currentReview ? (
               <QuestionReader
                 key={`review:${currentReview.id}:${reviewIndex}`}
@@ -1767,7 +1947,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 cram={reviewMode === "cram"}
                 cramLabel={cramLabel}
                 onBack={() => {
+                  setReviewSessionActive(false);
                   const back = reviewOrigin.current;
+                  if (back.view === "review") {
+                    return;
+                  }
                   if (back.view === "question" && back.questionId) {
                     changePage(
                       "question",
@@ -1788,7 +1972,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                       { route: { view: "library", deckId: back.deckId } },
                     );
                   } else {
-                    navigate(back.view === "review" ? "today" : back.view);
+                    navigate(back.view);
                   }
                 }}
                 onDelete={() =>
@@ -1821,8 +2005,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 cramLabel={cramLabel}
                 weakCount={weakQuestions.length}
                 onDrillWeak={() => startCram(weakQuestions, "薄弱巩固")}
-                onBack={() => navigate("today")}
-                onLibrary={() => navigate("library")}
+                onBack={() => {
+                  setReviewSessionActive(false);
+                  navigate("today");
+                }}
+                onLibrary={() => {
+                  setReviewSessionActive(false);
+                  navigate("library");
+                }}
               />
             ))}
           {view === "catalog" && (
@@ -1862,7 +2052,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             key={id}
             className={mobileView === id ? "active" : ""}
             aria-current={mobileView === id ? "page" : undefined}
-            onClick={() => (id === "review" ? startReview() : navigate(id))}
+            onClick={() => navigate(id)}
           >
             <span className="mobile-nav-icon-wrap">
               <Icon size={20} />
@@ -1882,6 +2072,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           onClose={() => {
             setImportOpen(false);
             setImportSeed(undefined);
+            setImportPreferredGroupId(undefined);
             importCommitted.current = null;
           }}
           data={data}
@@ -1899,19 +2090,25 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   ? deckId
                   : undefined
           }
+          preferredGroupId={importPreferredGroupId}
           mutate={mutate}
           onView={openDeck}
           onInbox={() => navigate("inbox")}
           onSettings={() => {
             setImportOpen(false);
-            openSettings({ mode: "ai" });
+            openSettings("ai");
           }}
         />
       )}
       {createOpen && (
         <CreateDeckDialog
           open={createOpen}
-          onClose={() => setCreateOpen(false)}
+          existingGroups={existingDeckGroups}
+          defaultGroupName={createDeckDefaultGroup}
+          onClose={() => {
+            setCreateOpen(false);
+            setCreateDeckDefaultGroup("");
+          }}
           mutate={mutate}
           onCreated={openDeck}
         />
@@ -1919,8 +2116,46 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       {editDeck && (
         <EditDeckDialog
           deck={editDeck}
+          existingGroups={existingDeckGroups}
           onClose={() => setEditDeck(null)}
           mutate={mutate}
+        />
+      )}
+      {groupDialog && (
+        <DeckGroupDialog
+          open
+          deck={
+            data.decks.find((d) => d.id === groupDialog.deck.id) ??
+            groupDialog.deck
+          }
+          group={groupDialog.group ?? null}
+          defaultCategory={groupDialog.defaultCategory ?? ""}
+          mutate={mutate}
+          onClose={() => setGroupDialog(null)}
+        />
+      )}
+      {setDeckGroupTarget && (
+        <SetDeckGroupDialog
+          deck={
+            data.decks.find((d) => d.id === setDeckGroupTarget.id) ??
+            setDeckGroupTarget
+          }
+          existingGroups={existingDeckGroups}
+          mutate={mutate}
+          onClose={() => setSetDeckGroupTarget(null)}
+        />
+      )}
+      {manageDeckGroupsOpen && (
+        <ManageDeckGroupsDialog
+          open={manageDeckGroupsOpen}
+          decks={data.decks}
+          mutate={mutate}
+          onClose={() => setManageDeckGroupsOpen(false)}
+          onCreateDeckInGroup={(groupName) => {
+            setManageDeckGroupsOpen(false);
+            setCreateDeckDefaultGroup(groupName);
+            setCreateOpen(true);
+          }}
         />
       )}
       {createQuestionOpen && (
@@ -1931,9 +2166,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               ? deckId
               : null
           }
+          defaultGroupId={createQuestionGroupId}
           data={data}
           mutate={mutate}
-          onClose={() => setCreateQuestionOpen(false)}
+          onClose={() => {
+            setCreateQuestionOpen(false);
+            setCreateQuestionGroupId(undefined);
+          }}
           onCreated={(id) => {
             if (view !== "question") origin.current = { view, deckId };
             setReadingIds([]);
@@ -1957,19 +2196,23 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       {settingsMounted && (
         <SettingsCard
           open={settingsState.open}
-          mode={settingsState.mode}
-          accountTab={settingsState.accountTab}
-          onAccountTabChange={(accountTab) =>
-            setSettingsState((prev) => ({ ...prev, accountTab }))
+          tab={settingsState.tab}
+          onTabChange={(tab) =>
+            setSettingsState((prev) => ({ ...prev, tab }))
           }
-          anchor={settingsState.anchor}
           onClose={() =>
             setSettingsState((prev) => ({ ...prev, open: false }))
           }
           data={data}
           mutate={mutate}
           palette={palette}
+          activeTheme={activeTheme}
           onPaletteChange={applyPalette}
+          onThemeChange={(next) => void setThemeMode(next)}
+          onSignOut={() => {
+            setSettingsState((prev) => ({ ...prev, open: false }));
+            signOutPrompt();
+          }}
         />
       )}
       {publishId && (
@@ -2053,7 +2296,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         question={
           view === "question"
             ? currentQuestion
-            : view === "review" && reviewRevealed
+            : view === "review" && reviewSessionActive && reviewRevealed
               ? currentReview
               : undefined
         }
@@ -2071,9 +2314,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         onResizingDockChange={setAiDockResizing}
         onModeChange={handleAiModeChange}
         onOpenQuestion={(target) => openQuestion(target, [])}
-        onSettings={(anchor) =>
-          openSettings({ mode: "ai", anchor, toggle: true })
-        }
+        onSettings={() => openSettings("ai")}
         onBusyChange={setAiBusy}
         mutate={mutate}
       />

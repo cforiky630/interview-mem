@@ -236,10 +236,11 @@ export function Dashboard({
                   style={
                     dragX !== 0
                       ? {
+                          touchAction: "pan-y",
                           transform: `translateX(${dragX * 0.42}px) rotate(${dragX * 0.012}deg)`,
                           transition: "none",
                         }
-                      : undefined
+                      : { touchAction: "pan-y" }
                   }
                   onTouchStart={(event) => {
                     if (cards.length <= 1 || event.touches.length !== 1) return;
@@ -398,6 +399,11 @@ export function Dashboard({
                       </span>
                       <ArrowUpRight size={16} />
                     </div>
+                    {deck.groupName && (
+                      <span className="deck-group-eyebrow">
+                        {deck.groupName}
+                      </span>
+                    )}
                     <h3>{deck.title}</h3>
                     <div className="deck-card-foot">
                       <span>{deck.count} 道题</span>

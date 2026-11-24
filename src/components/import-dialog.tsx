@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -11,8 +11,13 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { api } from "@/lib/client";
+import { api, type ImportGroupTarget } from "@/lib/client";
 import { readPracticeDraft, savePracticeDraft } from "@/lib/drafts";
+import {
+  formatGroupLabel,
+  inferGroupFromSourceName,
+  listDeckCategories,
+} from "@/lib/grouping";
 import type { ImportType } from "@/lib/importer";
 import type { ImportFile } from "@/lib/import-files";
 import { IMPORT_LIMITS } from "@/lib/import-material";
@@ -20,6 +25,7 @@ import type { ProofreadItemResult } from "@/lib/ai-proofread";
 import type { ImportMethod, ImportPreview } from "@/lib/import-preview";
 import type { Workspace } from "@/lib/types";
 import type { Mutate } from "./dialogs";
+import { DeckSelectOptions, GroupSelectOptions } from "./deck-select-options";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { ImportPreviewCard, type ImportCandidate } from "./import-preview-card";
@@ -49,6 +55,10 @@ type SavedDraft = {
   inputType: ImportType;
   method: ImportMethod;
   deckId: string;
+  groupChoice?: string;
+  newGroupCategory?: string;
+  newGroupTitle?: string;
+  sourceGroups?: Record<string, { category: string; title: string }>;
   proofreadEnabled?: boolean;
   sourceName?: string;
   batchId?: string;
@@ -72,6 +82,7 @@ export function ImportDialog({
   onClose,
   data,
   preferredDeck,
+  preferredGroupId,
   mutate,
   onView,
   onInbox,
@@ -83,6 +94,7 @@ export function ImportDialog({
   onClose: () => void;
   data: Workspace;
   preferredDeck?: string | null;
+  preferredGroupId?: string | null;
   mutate: Mutate;
   onView: (id: string | null) => void;
   onInbox: () => void;
@@ -92,12 +104,30 @@ export function ImportDialog({
 }) {
   const own = data.decks.filter((d) => d.isOwner);
   const storage = `shiyi:import:${data.user.id}${seed?.editQuestion ? `:edit:${seed.editQuestion.id}` : ""}`;
+  const categoryListId = useId();
   const [raw, setRaw] = useState("");
   const [inputType, setInputType] = useState<ImportType>("qa");
   const [method, setMethod] = useState<ImportMethod>("rules");
   const [deckId, setDeckId] = useState(
     preferredDeck === null ? "" : (preferredDeck ?? own[0]?.id ?? ""),
   );
+  const [groupChoice, setGroupChoice] = useState(() => {
+    const initialDeckId =
+      preferredDeck === null ? "" : (preferredDeck ?? own[0]?.id ?? "");
+    const initialDeck = own.find((d) => d.id === initialDeckId);
+    if (
+      preferredGroupId &&
+      initialDeck?.groups.some((g) => g.id === preferredGroupId)
+    ) {
+      return preferredGroupId;
+    }
+    return "";
+  });
+  const [newGroupCategory, setNewGroupCategory] = useState("");
+  const [newGroupTitle, setNewGroupTitle] = useState("");
+  const [sourceGroups, setSourceGroups] = useState<
+    Record<string, { category: string; title: string }>
+  >({});
   const [sourceName, setSourceName] = useState("");
   const [files, setFiles] = useState<ImportFile[]>([]);
   const [fileMode, setFileMode] = useState(false);
@@ -141,7 +171,43 @@ export function ImportDialog({
   const committing = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const previewHeading = useRef<HTMLHeadingElement>(null);
-  const destination = own.find((deck) => deck.id === deckId)?.title ?? "未分类";
+  const selectedDeck = own.find((deck) => deck.id === deckId);
+  const deckGroups = selectedDeck?.groups ?? [];
+  const deckCategories = useMemo(
+    () => listDeckCategories(deckGroups),
+    [deckGroups],
+  );
+  const canAssignGroup = Boolean(deckId) && !seed?.editQuestion;
+  const canAutoFileGroup =
+    canAssignGroup &&
+    (fileMode ? files.length > 0 : sources.some((s) => Boolean(s.name)));
+  const effectiveGroupChoice = !canAssignGroup
+    ? ""
+    : groupChoice === "__auto__" && !canAutoFileGroup
+      ? ""
+      : groupChoice &&
+          groupChoice !== "__new__" &&
+          groupChoice !== "__auto__" &&
+          !deckGroups.some((g) => g.id === groupChoice)
+        ? ""
+        : groupChoice;
+  const destinationBase = selectedDeck?.title ?? "未分类";
+  const destinationGroupLabel =
+    effectiveGroupChoice === "__auto__"
+      ? "按文件自动建组"
+      : effectiveGroupChoice === "__new__"
+        ? formatGroupLabel({
+            category: newGroupCategory,
+            title: newGroupTitle || "新建分组",
+          })
+        : effectiveGroupChoice
+          ? formatGroupLabel(
+              deckGroups.find((g) => g.id === effectiveGroupChoice),
+            )
+          : "";
+  const destination = destinationGroupLabel
+    ? `${destinationBase} / ${destinationGroupLabel}`
+    : destinationBase;
   const signature = useMemo(
     () =>
       JSON.stringify(
@@ -158,8 +224,23 @@ export function ImportDialog({
   const overBatch =
     selected.reduce((total, q) => total + q.title.length + q.answer.length, 0) >
     IMPORT_LIMITS.batchChars;
+  const groupInvalid =
+    canAssignGroup &&
+    ((effectiveGroupChoice === "__new__" && !newGroupTitle.trim()) ||
+      (effectiveGroupChoice === "__auto__" &&
+        sources.some((source) => {
+          const hasSelected = selected.some(
+            (q) => q.batchId === source.batchId,
+          );
+          if (!hasSelected) return false;
+          const info =
+            sourceGroups[source.batchId] ??
+            inferGroupFromSourceName(source.name);
+          return !info.title.trim();
+        })));
   const invalid =
     overBatch ||
+    groupInvalid ||
     selected.some(
       (q) =>
         !q.title.trim() || q.title.length > 200 || q.answer.length > 100_000,
@@ -194,6 +275,28 @@ export function ImportDialog({
         setSourceName(saved.sourceName || "");
         if (!saved.deckId || own.some((d) => d.id === saved.deckId))
           setDeckId(saved.deckId);
+        if (typeof saved.groupChoice === "string")
+          setGroupChoice(saved.groupChoice);
+        if (typeof saved.newGroupCategory === "string")
+          setNewGroupCategory(saved.newGroupCategory.slice(0, 40));
+        if (typeof saved.newGroupTitle === "string")
+          setNewGroupTitle(saved.newGroupTitle.slice(0, 80));
+        if (saved.sourceGroups && typeof saved.sourceGroups === "object") {
+          const valid: Record<string, { category: string; title: string }> = {};
+          for (const [k, v] of Object.entries(saved.sourceGroups)) {
+            if (
+              v &&
+              typeof v.category === "string" &&
+              typeof v.title === "string"
+            ) {
+              valid[k] = {
+                category: v.category.slice(0, 40),
+                title: v.title.slice(0, 80),
+              };
+            }
+          }
+          setSourceGroups(valid);
+        }
         const previousFiles = Array.isArray(saved.files)
           ? saved.files
               .filter(
@@ -305,6 +408,10 @@ export function ImportDialog({
       inputType,
       method,
       deckId,
+      groupChoice,
+      newGroupCategory,
+      newGroupTitle,
+      sourceGroups,
       proofreadEnabled,
       sourceName,
       sources,
@@ -321,6 +428,10 @@ export function ImportDialog({
     inputType,
     method,
     deckId,
+    groupChoice,
+    newGroupCategory,
+    newGroupTitle,
+    sourceGroups,
     proofreadEnabled,
     sourceName,
     sources,
@@ -583,13 +694,20 @@ export function ImportDialog({
         );
         setReplaceKey(matches.length === 1 ? matches[0].key : "");
       }
-      setSources(
-        previews.map((preview, index) => ({
-          batchId: preview.batchId,
-          name: materials[index].name,
-          warning: preview.warning,
-          ...(materials[index].id ? { fileId: materials[index].id } : {}),
-        })),
+      const nextSources = previews.map((preview, index) => ({
+        batchId: preview.batchId,
+        name: materials[index].name,
+        warning: preview.warning,
+        ...(materials[index].id ? { fileId: materials[index].id } : {}),
+      }));
+      setSources(nextSources);
+      setSourceGroups(
+        Object.fromEntries(
+          nextSources.map((source) => [
+            source.batchId,
+            inferGroupFromSourceName(source.name),
+          ]),
+        ),
       );
       setPreviewSignature(signature);
       setUndo(null);
@@ -625,22 +743,51 @@ export function ImportDialog({
     setSaving(true);
     setError("");
     try {
+      const resolveBatchGroup = (
+        source: PreviewSource,
+      ): ImportGroupTarget | undefined => {
+        if (!canAssignGroup || !effectiveGroupChoice) return undefined;
+        if (effectiveGroupChoice === "__new__") {
+          return {
+            mode: "create",
+            title: newGroupTitle.trim(),
+            category: newGroupCategory.trim(),
+            description: "",
+          };
+        }
+        if (effectiveGroupChoice === "__auto__") {
+          const inferred =
+            sourceGroups[source.batchId] ??
+            inferGroupFromSourceName(source.name);
+          return {
+            mode: "create",
+            title: inferred.title.trim(),
+            category: inferred.category.trim(),
+            description: "",
+          };
+        }
+        return { mode: "existing", groupId: effectiveGroupChoice };
+      };
       const batches = sources
-        .map(({ batchId }) => ({
-          batchId,
-          questions: selected
-            .filter((q) => q.batchId === batchId)
-            .map(({ key, title, answer, tags }) => ({
-              key,
-              title,
-              answer,
-              // 更新当前题时沿用编辑页的标签。
-              tags:
-                key === replaceKey && seed?.editQuestion
-                  ? seed.editQuestion.tags
-                  : tags,
-            })),
-        }))
+        .map((source) => {
+          const batchGroup = resolveBatchGroup(source);
+          return {
+            batchId: source.batchId,
+            ...(batchGroup ? { group: batchGroup } : {}),
+            questions: selected
+              .filter((q) => q.batchId === source.batchId)
+              .map(({ key, title, answer, tags }) => ({
+                key,
+                title,
+                answer,
+                // 更新当前题时沿用编辑页的标签。
+                tags:
+                  key === replaceKey && seed?.editQuestion
+                    ? seed.editQuestion.tags
+                    : tags,
+              })),
+          };
+        })
         .filter((batch) => batch.questions.length);
       const saved = await mutate("/api/import/commit", {
         ...(batches.length === 1 ? batches[0] : { batches }),
@@ -937,6 +1084,13 @@ export function ImportDialog({
           </p>
         )}
       </div>
+      {deckCategories.length > 0 && (
+        <datalist id={categoryListId}>
+          {deckCategories.map((cat) => (
+            <option key={cat} value={cat} />
+          ))}
+        </datalist>
+      )}
       {step === "source" ? (
         <section
           className="import-stage import-source-stage"
@@ -1009,17 +1163,74 @@ export function ImportDialog({
                 aria-label="保存到题库"
                 value={deckId}
                 disabled={locked}
-                onChange={(event) => setDeckId(event.target.value)}
+                onChange={(event) => {
+                  const nextDeckId = event.target.value;
+                  setDeckId(nextDeckId);
+                  if (!nextDeckId) {
+                    setGroupChoice("");
+                  } else if (
+                    groupChoice &&
+                    groupChoice !== "__new__" &&
+                    groupChoice !== "__auto__" &&
+                    !own
+                      .find((d) => d.id === nextDeckId)
+                      ?.groups.some((g) => g.id === groupChoice)
+                  ) {
+                    setGroupChoice("");
+                  }
+                }}
               >
                 <option value="">未分类</option>
-                {own.map((deck) => (
-                  <option key={deck.id} value={deck.id}>
-                    {deck.title}
-                  </option>
-                ))}
+                <DeckSelectOptions decks={own} />
               </select>
             </label>
+            {canAssignGroup && (
+              <label className="field import-group-field">
+                归入分组（可选）
+                <select
+                  aria-label="归入分组"
+                  value={effectiveGroupChoice}
+                  disabled={locked}
+                  onChange={(event) => setGroupChoice(event.target.value)}
+                >
+                  <option value="">不分组</option>
+                  {canAutoFileGroup && (
+                    <option value="__auto__">按文件名自动建组</option>
+                  )}
+                  <GroupSelectOptions
+                    groups={deckGroups}
+                    includeUngrouped={false}
+                  />
+                  <option value="__new__">+ 新建分组…</option>
+                </select>
+              </label>
+            )}
           </div>
+          {canAssignGroup && effectiveGroupChoice === "__new__" && (
+            <div className="import-group-inline-create">
+                <label className="field">
+                一级分类 / 公司（可选）
+                <input
+                  list={categoryListId}
+                  value={newGroupCategory}
+                  disabled={locked}
+                  maxLength={40}
+                  placeholder="例如：字节跳动（可留空）"
+                  onChange={(event) => setNewGroupCategory(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                新建分组名称
+                <input
+                  value={newGroupTitle}
+                  disabled={locked}
+                  maxLength={80}
+                  placeholder="例如：抖音后端一面 · 2026.03"
+                  onChange={(event) => setNewGroupTitle(event.target.value)}
+                />
+              </label>
+            </div>
+          )}
           <ImportSourceInput
             raw={raw}
             onRawChange={(value) => {
@@ -1214,6 +1425,61 @@ export function ImportDialog({
               选中的题目超过 15 万字符，请减少本次确认的题目。
             </p>
           )}
+          {!stale && groupInvalid && (
+            <p className="import-notice">
+              请填写要新建的分组名称，或切换为「不分组」。
+            </p>
+          )}
+          {canAssignGroup && !result && hasPreview && !stale && (
+            <div className="import-preview-group-bar">
+              <label className="field import-group-field">
+                入库分组（可选）
+                <select
+                  aria-label="预览入库分组"
+                  value={effectiveGroupChoice}
+                  disabled={locked}
+                  onChange={(event) => setGroupChoice(event.target.value)}
+                >
+                  <option value="">不分组</option>
+                  {canAutoFileGroup && (
+                    <option value="__auto__">按文件名自动建组</option>
+                  )}
+                  <GroupSelectOptions
+                    groups={deckGroups}
+                    includeUngrouped={false}
+                  />
+                  <option value="__new__">+ 新建分组…</option>
+                </select>
+              </label>
+              {effectiveGroupChoice === "__new__" && (
+                <div className="import-group-inline-create">
+                  <label className="field">
+                    一级分类 / 公司（可选）
+                    <input
+                      list={categoryListId}
+                      value={newGroupCategory}
+                      disabled={locked}
+                      maxLength={40}
+                      placeholder="例如：字节跳动"
+                      onChange={(event) =>
+                        setNewGroupCategory(event.target.value)
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    新建分组名称
+                    <input
+                      value={newGroupTitle}
+                      disabled={locked}
+                      maxLength={80}
+                      placeholder="例如：抖音后端一面 · 2026.03"
+                      onChange={(event) => setNewGroupTitle(event.target.value)}
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
           {seed?.editQuestion && !!questions.length && !result && (
             <label className="field import-replace-field">
               当前题的处理
@@ -1279,6 +1545,58 @@ export function ImportDialog({
                     )}
                   </h3>
                 )}
+                {canAssignGroup &&
+                  effectiveGroupChoice === "__auto__" &&
+                  !result && (
+                    <div className="import-source-group-bar">
+                      {(() => {
+                        const currentGroup =
+                          sourceGroups[source.batchId] ??
+                          inferGroupFromSourceName(source.name);
+                        return (
+                          <>
+                            <label className="field">
+                              分类 / 公司
+                              <input
+                                list={categoryListId}
+                                value={currentGroup.category}
+                                disabled={locked}
+                                maxLength={40}
+                                placeholder="可选"
+                                onChange={(event) =>
+                                  setSourceGroups((prev) => ({
+                                    ...prev,
+                                    [source.batchId]: {
+                                      ...currentGroup,
+                                      category: event.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="field">
+                              分组名称
+                              <input
+                                value={currentGroup.title}
+                                disabled={locked}
+                                maxLength={80}
+                                placeholder="必填"
+                                onChange={(event) =>
+                                  setSourceGroups((prev) => ({
+                                    ...prev,
+                                    [source.batchId]: {
+                                      ...currentGroup,
+                                      title: event.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
                 {source.warning && (
                   <p className="import-notice">{source.warning}</p>
                 )}

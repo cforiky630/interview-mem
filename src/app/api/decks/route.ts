@@ -2,12 +2,22 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import { decks, questions, releases, subscriptions } from "@/db/schema";
+import {
+  deckGroups,
+  decks,
+  questions,
+  releases,
+  subscriptions,
+} from "@/db/schema";
 import { body, route } from "@/server/api";
-import { ownedDeck, publishedQuestion } from "@/server/workspace";
+import {
+  ownedDeck,
+  publishedDeckGroup,
+  publishedQuestion,
+} from "@/server/workspace";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
-import { deckFields } from "@/server/content-fields";
+import { deckFields, deckGroupNameSchema } from "@/server/content-fields";
 
 const deckColorSchema = z.enum(["sage", "blue", "sand", "rose"]);
 
@@ -16,6 +26,7 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("create"),
     ...deckFields,
     description: deckFields.description.default(""),
+    groupName: deckGroupNameSchema.default(""),
     color: deckColorSchema.default("sage"),
   }),
   z.object({
@@ -25,9 +36,21 @@ const schema = z.discriminatedUnion("action", [
       title: z.string(),
       description: z.string(),
       color: deckColorSchema.optional(),
+      groupName: z.string().optional(),
     }),
     ...deckFields,
     color: deckColorSchema.optional(),
+    groupName: deckGroupNameSchema.optional(),
+  }),
+  z.object({
+    action: z.literal("setSubscriptionGroup"),
+    deckId: deckIdSchema,
+    groupName: deckGroupNameSchema,
+  }),
+  z.object({
+    action: z.literal("renameDeckGroup"),
+    from: z.string().trim().min(1, "请指定要重命名的题库分组。").max(40),
+    to: deckGroupNameSchema,
   }),
   z.object({
     action: z.literal("publish"),
@@ -78,7 +101,7 @@ export const POST = route(async (request, user) => {
         if (contents.length)
           await tx
             .update(questions)
-            .set({ deckId: null, updatedAt: new Date() })
+            .set({ deckId: null, groupId: null, updatedAt: new Date() })
             .where(
               inArray(
                 questions.id,
@@ -104,6 +127,7 @@ export const POST = route(async (request, user) => {
         ownerId: user.id,
         title: data.title,
         description: data.description,
+        groupName: data.groupName,
         color: data.color,
       })
       .returning();
@@ -116,6 +140,7 @@ export const POST = route(async (request, user) => {
         title: data.title,
         description: data.description,
         ...(data.color ? { color: data.color } : {}),
+        ...(data.groupName !== undefined ? { groupName: data.groupName } : {}),
         updatedAt: new Date(),
       })
       .where(
@@ -127,6 +152,9 @@ export const POST = route(async (request, user) => {
           eq(decks.description, data.expected.description),
           ...(data.expected.color !== undefined
             ? [eq(decks.color, data.expected.color)]
+            : []),
+          ...(data.expected.groupName !== undefined
+            ? [eq(decks.groupName, data.expected.groupName)]
             : []),
         ),
       )
@@ -140,6 +168,48 @@ export const POST = route(async (request, user) => {
       );
     }
     return Response.json({ ok: true });
+  }
+  if (data.action === "setSubscriptionGroup") {
+    const [changed] = await db
+      .update(subscriptions)
+      .set({ groupName: data.groupName })
+      .where(
+        and(
+          eq(subscriptions.userId, user.id),
+          eq(subscriptions.deckId, data.deckId),
+        ),
+      )
+      .returning({ deckId: subscriptions.deckId });
+    if (!changed) throw new AppError(404, "未订阅该题库。");
+    return Response.json({ ok: true });
+  }
+  if (data.action === "renameDeckGroup") {
+    const result = await db.transaction(async (tx) => {
+      const now = new Date();
+      const updatedOwned = await tx
+        .update(decks)
+        .set({ groupName: data.to, updatedAt: now })
+        .where(
+          and(
+            eq(decks.ownerId, user.id),
+            isNull(decks.deletedAt),
+            eq(decks.groupName, data.from),
+          ),
+        )
+        .returning({ id: decks.id });
+      const updatedSubs = await tx
+        .update(subscriptions)
+        .set({ groupName: data.to })
+        .where(
+          and(
+            eq(subscriptions.userId, user.id),
+            eq(subscriptions.groupName, data.from),
+          ),
+        )
+        .returning({ deckId: subscriptions.deckId });
+      return { ok: true, updated: updatedOwned.length + updatedSubs.length };
+    });
+    return Response.json(result);
   }
   if (data.action === "publish") {
     await ownedDeck(user.id, data.deckId);
@@ -158,6 +228,20 @@ export const POST = route(async (request, user) => {
           .for("update");
         if (!deck || deck.publishedVersion !== data.expectedVersion)
           throw new AppError(409, "题库已有新版本，请刷新后再发布。");
+        const groupRows = await tx
+          .select()
+          .from(deckGroups)
+          .where(
+            and(
+              eq(deckGroups.deckId, data.deckId),
+              eq(deckGroups.ownerId, user.id),
+            ),
+          )
+          .orderBy(
+            asc(deckGroups.position),
+            asc(deckGroups.createdAt),
+            asc(deckGroups.id),
+          );
         const items = await tx
           .select()
           .from(questions)
@@ -221,6 +305,7 @@ export const POST = route(async (request, user) => {
           title: deck.title,
           description: deck.description,
           summary: data.summary,
+          groups: groupRows.map(publishedDeckGroup),
           questions: snapshots,
         });
         await tx

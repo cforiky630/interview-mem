@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import {
   decks,
+  deckGroups,
   questions,
   releases,
   subscriptions,
@@ -10,10 +11,12 @@ import {
   credentials,
   preferences,
   user as users,
+  type PublishedDeckGroup,
   type PublishedQuestion,
 } from "@/db/schema";
 import type { Identity } from "./api";
 import type {
+  DeckGroupView,
   DeckView,
   QuestionView,
   StoredCard,
@@ -35,6 +38,56 @@ export async function nextQuestionBaseMs(
     .where(eq(questions.ownerId, ownerId));
   const maxMs = row?.maxCreatedAt ? new Date(row.maxCreatedAt).getTime() : 0;
   return Math.max(Date.now(), Number.isFinite(maxMs) ? maxMs + 1 : 0);
+}
+
+export async function nextDeckGroupPosition(
+  tx: Pick<Database, "select">,
+  deckId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      maxPosition: sql<number | null>`max(${deckGroups.position})`,
+    })
+    .from(deckGroups)
+    .where(eq(deckGroups.deckId, deckId));
+  return typeof row?.maxPosition === "number" ? row.maxPosition + 1 : 0;
+}
+
+export async function nextQuestionPosition(
+  tx: Pick<Database, "select">,
+  ownerId: string,
+  deckId: string | null,
+  groupId: string | null,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      maxPosition: sql<number | null>`max(${questions.position})`,
+    })
+    .from(questions)
+    .where(
+      and(
+        eq(questions.ownerId, ownerId),
+        deckId ? eq(questions.deckId, deckId) : isNull(questions.deckId),
+        groupId ? eq(questions.groupId, groupId) : isNull(questions.groupId),
+        isNull(questions.deletedAt),
+      ),
+    );
+  return typeof row?.maxPosition === "number" ? row.maxPosition + 1 : 0;
+}
+
+export function publishedDeckGroup(
+  g: Pick<
+    typeof deckGroups.$inferSelect,
+    "id" | "title" | "category" | "description" | "position"
+  >,
+): PublishedDeckGroup {
+  return {
+    id: g.id,
+    title: g.title,
+    category: g.category,
+    description: g.description,
+    position: g.position,
+  };
 }
 
 export async function ensureWorkspace(userId: string) {
@@ -62,6 +115,8 @@ export function publishedQuestion(
     typeof questions.$inferSelect,
     | "id"
     | "deckId"
+    | "groupId"
+    | "position"
     | "parentId"
     | "title"
     | "answer"
@@ -78,6 +133,8 @@ export function publishedQuestion(
   return {
     id: q.id,
     deckId: q.deckId,
+    groupId: q.groupId,
+    position: q.position,
     parentId: q.parentId,
     title: q.title,
     answer: q.answer,
@@ -192,70 +249,98 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
   const today = dateKey(new Date(), timeZone);
   const dayExpression = sql<string>`to_char(${reviewEvents.createdAt} at time zone ${timeZone}, 'YYYY-MM-DD')`;
   const recentCutoff = new Date(Date.now() - 30 * 86400_000);
-  const [drafts, activityRows, aggregateRows, published] = await Promise.all([
-    db
-      .select({
-        id: questions.id,
-        deckId: questions.deckId,
-        parentId: questions.parentId,
-        title: questions.title,
-        answer: questions.answer,
-        tags: questions.tags,
-        revision: questions.revision,
-        majorRevision: questions.majorRevision,
-        needsEditing: questions.needsEditing,
-        archived: questions.archived,
-        createdAt: questions.createdAt,
-        updatedAt: questions.updatedAt,
-        validation: questions.validation,
-      })
-      .from(questions)
-      .where(
-        and(
-          eq(questions.ownerId, identity.id),
-          isNull(questions.deletedAt),
-          isNull(questions.purgedAt),
+  const [drafts, ownGroups, activityRows, aggregateRows, published] =
+    await Promise.all([
+      db
+        .select({
+          id: questions.id,
+          deckId: questions.deckId,
+          groupId: questions.groupId,
+          position: questions.position,
+          parentId: questions.parentId,
+          title: questions.title,
+          answer: questions.answer,
+          tags: questions.tags,
+          revision: questions.revision,
+          majorRevision: questions.majorRevision,
+          needsEditing: questions.needsEditing,
+          archived: questions.archived,
+          createdAt: questions.createdAt,
+          updatedAt: questions.updatedAt,
+          validation: questions.validation,
+        })
+        .from(questions)
+        .where(
+          and(
+            eq(questions.ownerId, identity.id),
+            isNull(questions.deletedAt),
+            isNull(questions.purgedAt),
+          ),
+        )
+        .orderBy(asc(questions.createdAt), asc(questions.id)),
+      db
+        .select()
+        .from(deckGroups)
+        .where(eq(deckGroups.ownerId, identity.id))
+        .orderBy(
+          asc(deckGroups.position),
+          asc(deckGroups.createdAt),
+          asc(deckGroups.id),
         ),
-      )
-      .orderBy(asc(questions.createdAt), asc(questions.id)),
-    db
-      .select({ date: dayExpression, count: sql<number>`count(*)::int` })
-      .from(reviewEvents)
-      .where(eq(reviewEvents.userId, identity.id))
-      .groupBy(sql`1`),
-    db
-      .select({
-        total: sql<number>`count(*)::int`,
-        recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
-        remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
-        today: sql<number>`count(distinct case when ${dayExpression} = ${today} then ${reviewEvents.questionId} end)::int`,
-        newToday: sql<number>`count(distinct case when ${dayExpression} = ${today} and ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
-      })
-      .from(reviewEvents)
-      .where(eq(reviewEvents.userId, identity.id)),
-    subscribed.length
-      ? db
-          .select({ release: releases })
-          .from(releases)
-          .innerJoin(
-            decks,
-            and(
-              eq(releases.deckId, decks.id),
-              eq(releases.version, decks.publishedVersion),
-            ),
-          )
-          .where(
-            inArray(
-              releases.deckId,
-              subscribed.map((s) => s.deck.id),
-            ),
-          )
-      : [],
-  ]);
+      db
+        .select({ date: dayExpression, count: sql<number>`count(*)::int` })
+        .from(reviewEvents)
+        .where(eq(reviewEvents.userId, identity.id))
+        .groupBy(sql`1`),
+      db
+        .select({
+          total: sql<number>`count(*)::int`,
+          recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
+          remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
+          today: sql<number>`count(distinct case when ${dayExpression} = ${today} then ${reviewEvents.questionId} end)::int`,
+          newToday: sql<number>`count(distinct case when ${dayExpression} = ${today} and ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
+        })
+        .from(reviewEvents)
+        .where(eq(reviewEvents.userId, identity.id)),
+      subscribed.length
+        ? db
+            .select({ release: releases })
+            .from(releases)
+            .innerJoin(
+              decks,
+              and(
+                eq(releases.deckId, decks.id),
+                eq(releases.version, decks.publishedVersion),
+              ),
+            )
+            .where(
+              inArray(
+                releases.deckId,
+                subscribed.map((s) => s.deck.id),
+              ),
+            )
+        : [],
+    ]);
   const stateMap = new Map(states.map((s) => [s.questionId, s]));
   const releaseMap = new Map(
     published.map((p) => [p.release.deckId, p.release]),
   );
+  const ownGroupsByDeck = new Map<string, DeckGroupView[]>();
+  for (const g of ownGroups) {
+    const view: DeckGroupView = {
+      id: g.id,
+      deckId: g.deckId,
+      title: g.title,
+      category: g.category,
+      description: g.description,
+      position: g.position,
+      createdAt: g.createdAt.toISOString(),
+      updatedAt: g.updatedAt.toISOString(),
+    };
+    const list = ownGroupsByDeck.get(g.deckId);
+    if (list) list.push(view);
+    else ownGroupsByDeck.set(g.deckId, [view]);
+  }
   const questionViews: QuestionView[] = [];
   const deckViews: DeckView[] = [];
   const now = Date.now();
@@ -265,7 +350,11 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     isOwner: boolean,
     ownerName: string,
     seenVersion: number,
-    releaseSummary = "",
+    options: {
+      releaseSummary?: string;
+      groupName?: string;
+      groups?: DeckGroupView[];
+    } = {},
   ) {
     const active = qs.filter((q) => !q.archived);
     const eligible = active.filter((q) => q.answer.trim());
@@ -287,6 +376,8 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         description: isOwner
           ? deck.description
           : (release?.description ?? deck.description),
+        groupName: options.groupName ?? "",
+        groups: options.groups ?? [],
         color: deck.color,
         visibility: deck.visibility,
         isOwner,
@@ -297,13 +388,15 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         due,
         newCount,
         updatedAt: deck.updatedAt.toISOString(),
-        releaseSummary,
+        releaseSummary: options.releaseSummary ?? "",
         sourceDeleted: !!deck.deletedAt,
       });
     for (const q of qs) {
       const s = stateMap.get(q.id);
       questionViews.push({
         ...q,
+        groupId: q.groupId ?? null,
+        position: q.position ?? 0,
         isOwner,
         deckTitle: title,
         note: s?.note ?? "",
@@ -322,6 +415,10 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       true,
       identity.name,
       deck.publishedVersion,
+      {
+        groupName: deck.groupName,
+        groups: ownGroupsByDeck.get(deck.id) ?? [],
+      },
     );
   append(
     null,
@@ -332,15 +429,33 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
   );
   for (const item of subscribed) {
     const release = releaseMap.get(item.deck.id);
-    if (release)
+    if (release) {
+      const releaseTime = release.createdAt.toISOString();
+      const releaseGroups: DeckGroupView[] = (release.groups ?? [])
+        .map((g) => ({
+          id: g.id,
+          deckId: item.deck.id,
+          title: g.title,
+          category: g.category ?? "",
+          description: g.description ?? "",
+          position: g.position ?? 0,
+          createdAt: releaseTime,
+          updatedAt: releaseTime,
+        }))
+        .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
       append(
         item.deck,
         release.questions,
         false,
         item.owner,
         item.subscription.seenVersion,
-        release.summary,
+        {
+          releaseSummary: release.summary,
+          groupName: item.subscription.groupName,
+          groups: releaseGroups,
+        },
       );
+    }
   }
   questionViews.sort((a, b) => {
     const diff =

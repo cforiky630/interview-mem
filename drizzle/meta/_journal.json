@@ -78,6 +78,13 @@
       "when": 1795395480992,
       "tag": "0010_chat_message_meta",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795481864017,
+      "tag": "0011_grouping",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,7 @@ import { body, route } from "@/server/api";
 import {
   accessibleQuestion,
   nextQuestionBaseMs,
+  nextQuestionPosition,
   ownedDeck,
 } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
@@ -20,12 +21,16 @@ import {
   moveQuestion,
   mutateOwnedQuestion,
   batchMutateQuestions,
+  verifyOwnedDeckGroup,
 } from "@/server/question-lifecycle";
+
+const groupIdSchema = z.string().uuid().nullable();
 
 const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
     deckId: deckIdSchema.nullable().default(null),
+    groupId: groupIdSchema.default(null),
     ...questionFields,
     tags: questionFields.tags.default([]),
   }),
@@ -34,6 +39,7 @@ const schema = z.discriminatedUnion("action", [
     ids: z.array(z.string().uuid()).min(1).max(100),
     operation: z.enum(["move", "archive", "unarchive", "delete"]),
     deckId: deckIdSchema.nullable().optional(),
+    groupId: groupIdSchema.optional(),
   }),
   z.object({ action: z.literal("delete"), id: z.string().uuid() }),
   z.object({ action: z.literal("restore"), id: z.string().uuid() }),
@@ -41,6 +47,7 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("move"),
     id: z.string().uuid(),
     deckId: deckIdSchema.nullable(),
+    groupId: groupIdSchema.default(null),
   }),
   z.object({
     action: z.literal("edit"),
@@ -69,6 +76,7 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("copy"),
     id: z.string().uuid(),
     deckId: deckIdSchema.nullable().default(null),
+    groupId: groupIdSchema.default(null),
     title: z.string().trim().min(1).max(200).optional(),
     answer: z.string().max(100_000).optional(),
   }),
@@ -78,6 +86,7 @@ async function insertOwnedQuestion(
   params: {
     userId: string;
     deckId: string | null;
+    groupId: string | null;
     parentId: string | null;
     title: string;
     answer: string;
@@ -109,6 +118,12 @@ async function insertOwnedQuestion(
         .where(eq(users.id, params.userId))
         .for("update");
     }
+    const groupId = await verifyOwnedDeckGroup(
+      tx,
+      params.userId,
+      params.deckId,
+      params.groupId,
+    );
     const duplicate = await tx
       .select({ id: questions.id })
       .from(questions)
@@ -118,6 +133,7 @@ async function insertOwnedQuestion(
           params.deckId
             ? eq(questions.deckId, params.deckId)
             : isNull(questions.deckId),
+          groupId ? eq(questions.groupId, groupId) : isNull(questions.groupId),
           eq(questions.contentHash, hash),
           isNull(questions.deletedAt),
         ),
@@ -125,11 +141,19 @@ async function insertOwnedQuestion(
       .limit(1);
     if (duplicate.length) throw new AppError(409, params.duplicateMessage);
     const ts = new Date(await nextQuestionBaseMs(tx, params.userId));
+    const position = await nextQuestionPosition(
+      tx,
+      params.userId,
+      params.deckId,
+      groupId,
+    );
     return tx
       .insert(questions)
       .values({
         id: crypto.randomUUID(),
         deckId: params.deckId,
+        groupId,
+        position,
         ownerId: params.userId,
         parentId: params.parentId,
         title: params.title,
@@ -144,7 +168,7 @@ async function insertOwnedQuestion(
       .onConflictDoNothing()
       .returning();
   });
-  if (!inserted.length) throw new AppError(409, "目标题库已有相同内容。");
+  if (!inserted.length) throw new AppError(409, "目标位置已有相同内容。");
   return { id: inserted[0].id };
 }
 
@@ -155,7 +179,12 @@ export const POST = route(async (request, user) => {
       await batchMutateQuestions(
         user.id,
         data.operation === "move"
-          ? { ids: data.ids, operation: "move", deckId: data.deckId ?? null }
+          ? {
+              ids: data.ids,
+              operation: "move",
+              deckId: data.deckId ?? null,
+              groupId: data.groupId ?? null,
+            }
           : { ids: data.ids, operation: data.operation },
       ),
     );
@@ -169,6 +198,7 @@ export const POST = route(async (request, user) => {
       await insertOwnedQuestion(db, {
         userId: user.id,
         deckId: data.deckId,
+        groupId: data.groupId,
         parentId: null,
         title: data.title,
         answer: data.answer,
@@ -183,7 +213,9 @@ export const POST = route(async (request, user) => {
   if (data.action === "restore")
     return Response.json(await restoreQuestion(user.id, data.id));
   if (data.action === "move")
-    return Response.json(await moveQuestion(user.id, data.id, data.deckId));
+    return Response.json(
+      await moveQuestion(user.id, data.id, data.deckId, data.groupId),
+    );
   const question = await accessibleQuestion(user.id, data.id);
   if (data.action === "edit" || data.action === "archive") {
     if (!question.isOwner)
@@ -211,12 +243,15 @@ export const POST = route(async (request, user) => {
               current.deckId
                 ? eq(questions.deckId, current.deckId)
                 : isNull(questions.deckId),
+              current.groupId
+                ? eq(questions.groupId, current.groupId)
+                : isNull(questions.groupId),
               isNull(questions.deletedAt),
               eq(questions.contentHash, hash),
             ),
           );
         if (duplicates.some((q) => q.id !== data.id))
-          throw new AppError(409, "题库里已经存在相同题目和答案。");
+          throw new AppError(409, "当前位置已经存在相同题目和答案。");
         const changed = await tx
           .update(questions)
           .set({
@@ -253,6 +288,7 @@ export const POST = route(async (request, user) => {
       await insertOwnedQuestion(db, {
         userId: user.id,
         deckId: data.deckId,
+        groupId: data.groupId,
         parentId: data.id,
         title,
         answer,

@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, ChevronRight, Search, Sparkles } from "lucide-react";
 import type { DeckView, QuestionView, Workspace } from "@/lib/types";
+import { formatGroupLabel, resolveQuestionGroup } from "@/lib/grouping";
 
 type DeckFilter = "all" | "needsEditing" | "due";
 
@@ -97,8 +98,12 @@ export function ScopeLauncher({
         )
           return false;
         if (!terms.length) return true;
+        const groupLabel = formatGroupLabel(
+          resolveQuestionGroup(data.decks, q),
+          " ",
+        );
         const haystack =
-          `${q.title}\n${q.tags.join(" ")}\n${q.deckTitle}\n${q.answer.slice(0, 600)}`.toLowerCase();
+          `${q.title}\n${q.tags.join(" ")}\n${q.deckTitle}\n${groupLabel}\n${q.answer.slice(0, 600)}`.toLowerCase();
         return terms.every((term) => haystack.includes(term));
       })
       .sort((a, b) => {
@@ -106,7 +111,7 @@ export function ScopeLauncher({
         return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
       })
       .slice(0, 24);
-  }, [activePool, query, filter]);
+  }, [activePool, data.decks, query, filter]);
 
   return (
     <div className="ai-launcher">
@@ -174,23 +179,31 @@ export function ScopeLauncher({
 
       <div className="ai-launcher-list">
         {matches.length ? (
-          matches.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="ai-launcher-item"
-              onClick={() => onOpenQuestion(item)}
-            >
-              <span className="ai-launcher-item-title">{item.title}</span>
-              <span className="ai-launcher-item-meta">
-                {scope === "workspace" && <span>{item.deckTitle}</span>}
-                {item.needsEditing && (
-                  <span className="ai-launcher-tag is-warn">需完善</span>
-                )}
-                {!item.fsrs && <span className="ai-launcher-tag">未学</span>}
-              </span>
-            </button>
-          ))
+          matches.map((item) => {
+            const groupLabel = formatGroupLabel(
+              resolveQuestionGroup(data.decks, item),
+            );
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className="ai-launcher-item"
+                onClick={() => onOpenQuestion(item)}
+              >
+                <span className="ai-launcher-item-title">{item.title}</span>
+                <span className="ai-launcher-item-meta">
+                  {scope === "workspace" && <span>{item.deckTitle}</span>}
+                  {groupLabel && (
+                    <span className="ai-launcher-tag">{groupLabel}</span>
+                  )}
+                  {item.needsEditing && (
+                    <span className="ai-launcher-tag is-warn">需完善</span>
+                  )}
+                  {!item.fsrs && <span className="ai-launcher-tag">未学</span>}
+                </span>
+              </button>
+            );
+          })
         ) : (
           <p className="ai-launcher-empty">
             没有匹配的题目，换个关键词或筛选条件试试。

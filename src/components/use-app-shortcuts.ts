@@ -11,6 +11,14 @@ function hasBlockingOverlay() {
   );
 }
 
+function hasOtherBlockingOverlay() {
+  return Boolean(
+    document.querySelector(
+      "[role='dialog']:not([hidden]):not(#settings-modal), .action-menu[open], .action-menu:popover-open",
+    ),
+  );
+}
+
 export function useAppShortcuts({
   view,
   reviewRevealed,
@@ -20,6 +28,7 @@ export function useAppShortcuts({
   onCloseAi,
   onCloseSidebar,
   onQuickSearch,
+  onToggleSettings,
 }: {
   view: AppView;
   reviewRevealed: boolean;
@@ -29,6 +38,7 @@ export function useAppShortcuts({
   onCloseAi: () => void;
   onCloseSidebar: () => void;
   onQuickSearch: (viaSlash: boolean) => void;
+  onToggleSettings?: () => void;
 }) {
   const ctxRef = useRef({
     view,
@@ -39,6 +49,7 @@ export function useAppShortcuts({
     onCloseAi,
     onCloseSidebar,
     onQuickSearch,
+    onToggleSettings,
   });
   ctxRef.current = {
     view,
@@ -49,6 +60,7 @@ export function useAppShortcuts({
     onCloseAi,
     onCloseSidebar,
     onQuickSearch,
+    onToggleSettings,
   };
 
   useEffect(() => {
@@ -56,6 +68,17 @@ export function useAppShortcuts({
       if (event.isComposing) return;
       const ctx = ctxRef.current;
       const target = event.target as HTMLElement | null;
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key === ","
+      ) {
+        if (ctx.isEditing || hasOtherBlockingOverlay()) return;
+        event.preventDefault();
+        ctx.onToggleSettings?.();
+        return;
+      }
       if (
         (event.metaKey || event.ctrlKey) &&
         !event.altKey &&

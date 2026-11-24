@@ -12,6 +12,8 @@ export type AppView =
 export type RouteState = {
   view: AppView;
   deckId?: string | null;
+  groupId?: string;
+  category?: string;
   questionId?: string | null;
   originView?: AppView;
   originDeckId?: string | null;
@@ -53,21 +55,26 @@ export function extractSubscribeParam(search: string): string | null {
 
 /** Parse window location query string into an application route state. */
 export function parseRouteFromSearch(search: string, coldLoad = false): RouteState {
+  void coldLoad;
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const rawView = params.get("view") as AppView | null;
   if (!rawView || !VALID_VIEWS.has(rawView)) {
     return { view: "today" };
   }
   if (rawView === "review") {
-    return coldLoad ? { view: "today" } : { view: "review" };
+    return { view: "review" };
   }
   if (rawView === "library") {
     const rawDeck = params.get("deck");
     const deckId =
       rawDeck === "unfiled" ? null : normalizeIdParam(rawDeck);
+    const groupId = typeof deckId === "string" ? normalizeIdParam(params.get("group")) : undefined;
+    const category = typeof deckId === "string" ? normalizeIdParam(params.get("cat")) : undefined;
     return {
       view: "library",
       ...(deckId !== undefined ? { deckId } : {}),
+      ...(groupId ? { groupId } : {}),
+      ...(category ? { category } : {}),
     };
   }
   if (rawView === "question") {
@@ -118,6 +125,10 @@ export function buildSearchFromRoute(state: RouteState): string {
   params.set("view", state.view);
   if (state.view === "library" && state.deckId !== undefined) {
     params.set("deck", state.deckId === null ? "unfiled" : state.deckId);
+    if (typeof state.deckId === "string") {
+      if (state.groupId?.trim()) params.set("group", state.groupId.trim());
+      if (state.category?.trim()) params.set("cat", state.category.trim());
+    }
   }
   return `?${params.toString()}`;
 }

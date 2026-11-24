@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { MoreHorizontal } from "lucide-react";
+import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
 
 function menuItems(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
@@ -27,7 +28,8 @@ export function ActionMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
-  const [sheetMode, setSheetMode] = useState(false);
+  const { isMobileShell } = useDeviceProfile();
+  const sheetMode = isMobileShell;
   const ref = useRef<HTMLDetailsElement>(null);
   const trigger = useRef<HTMLElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -92,8 +94,7 @@ export function ActionMenu({
     const menu = panel.current;
     if (!open || !anchor || !menu) return;
 
-    const isMobile = window.matchMedia("(max-width: 760px)").matches;
-    setSheetMode(isMobile);
+    const isMobile = getDeviceProfile().isMobileShell;
     menu.dataset.sheet = isMobile ? "true" : "false";
 
     // The top layer avoids clipping inside scrollable dialogs and cards.
@@ -101,9 +102,8 @@ export function ActionMenu({
     if (floating && !menu.matches(":popover-open")) menu.showPopover();
     const viewport = window.visualViewport;
     const place = () => {
-      if (window.matchMedia("(max-width: 760px)").matches) {
+      if (getDeviceProfile().isMobileShell) {
         menu.dataset.sheet = "true";
-        setSheetMode(true);
         menu.style.left = "";
         menu.style.top = "";
         menu.style.right = "";
@@ -114,7 +114,6 @@ export function ActionMenu({
         return;
       }
       menu.dataset.sheet = "false";
-      setSheetMode(false);
       const bounds = anchor.getBoundingClientRect();
       const margin = 8;
       const gap = 4;
@@ -199,7 +198,7 @@ export function ActionMenu({
       viewport?.removeEventListener("resize", place);
       viewport?.removeEventListener("scroll", place);
     };
-  }, [open, requestClose]);
+  }, [open, isMobileShell, requestClose]);
 
   return (
     <details ref={ref} open={open || closing} className="reader-more action-menu">
@@ -217,7 +216,6 @@ export function ActionMenu({
               closeTokenRef.current += 1;
               closingRef.current = false;
               setClosing(false);
-              setSheetMode(window.matchMedia("(max-width: 760px)").matches);
               setOpen(true);
             } else {
               menuItems(panel.current)[0]?.focus({ preventScroll: true });
@@ -233,7 +231,6 @@ export function ActionMenu({
             closingRef.current = false;
             setClosing(false);
             focusFirstOnOpenRef.current = event.detail === 0;
-            setSheetMode(window.matchMedia("(max-width: 760px)").matches);
             setOpen(true);
           }
         }}

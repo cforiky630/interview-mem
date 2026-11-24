@@ -115,8 +115,30 @@ test("navigation: parseRouteFromSearch and buildSearchFromRoute round-trip clean
   });
 
   assert.deepEqual(parseRouteFromSearch("?view=question"), { view: "library" });
-  assert.deepEqual(parseRouteFromSearch("?view=review", true), { view: "today" });
+  assert.deepEqual(parseRouteFromSearch("?view=review", true), { view: "review" });
   assert.deepEqual(parseRouteFromSearch("?view=review", false), { view: "review" });
+
+  const groupedSearch = buildSearchFromRoute({
+    view: "library",
+    deckId: "deck-1",
+    groupId: "grp-1",
+    category: "字节跳动",
+  });
+  assert.equal(
+    groupedSearch,
+    `?view=library&deck=deck-1&group=grp-1&cat=${encodeURIComponent("字节跳动")}`,
+  );
+  assert.deepEqual(parseRouteFromSearch(groupedSearch), {
+    view: "library",
+    deckId: "deck-1",
+    groupId: "grp-1",
+    category: "字节跳动",
+  });
+  assert.deepEqual(
+    parseRouteFromSearch("?view=library&deck=unfiled&group=grp-1&cat=字节跳动"),
+    { view: "library", deckId: null },
+  );
+
   assert.equal(extractSubscribeParam("?subscribe=shared-123"), "shared-123");
   assert.equal(parseRouteFromSearch("?view=library&deck=undefined").deckId, undefined);
 });

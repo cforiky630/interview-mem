@@ -110,6 +110,7 @@ export const decks = pgTable(
       .references(() => user.id),
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
+    groupName: text("group_name").notNull().default(""),
     color: text("color").notNull().default("sage"),
     visibility: text("visibility").notNull().default("private"),
     publishedVersion: integer("published_version").notNull().default(0),
@@ -117,6 +118,27 @@ export const decks = pgTable(
     ...dates(),
   },
   (t) => [index("deck_owner_idx").on(t.ownerId)],
+);
+export const deckGroups = pgTable(
+  "deck_groups",
+  {
+    id: text("id").primaryKey(),
+    deckId: text("deck_id")
+      .notNull()
+      .references(() => decks.id, { onDelete: "cascade" }),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    category: text("category").notNull().default(""),
+    description: text("description").notNull().default(""),
+    position: integer("position").notNull().default(0),
+    ...dates(),
+  },
+  (t) => [
+    index("deck_group_deck_pos_idx").on(t.deckId, t.position, t.createdAt),
+    index("deck_group_owner_idx").on(t.ownerId),
+  ],
 );
 export const questions = pgTable(
   "questions",
@@ -126,6 +148,10 @@ export const questions = pgTable(
       .notNull()
       .references(() => user.id),
     deckId: text("deck_id").references(() => decks.id),
+    groupId: text("group_id").references(() => deckGroups.id, {
+      onDelete: "set null",
+    }),
+    position: integer("position").notNull().default(0),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     purgedAt: timestamp("purged_at", { withTimezone: true }),
     parentId: text("parent_id"),
@@ -144,6 +170,7 @@ export const questions = pgTable(
   },
   (t) => [
     index("question_deck_idx").on(t.deckId),
+    index("question_group_idx").on(t.deckId, t.groupId, t.position, t.createdAt),
     index("question_owner_idx").on(t.ownerId, t.deletedAt),
     index("question_import_idx")
       .on(t.importId)
@@ -152,14 +179,23 @@ export const questions = pgTable(
       .on(t.deletedAt)
       .where(sql`${t.deletedAt} is not null and ${t.purgedAt} is null`),
     uniqueIndex("question_hash_idx")
-      .on(t.deckId, t.contentHash)
-      .where(sql`${t.deletedAt} is null`),
+      .on(t.deckId, sql`(coalesce(${t.groupId}, ''))`, t.contentHash)
+      .where(sql`${t.deletedAt} is null and ${t.deckId} is not null`),
   ],
 );
+export type PublishedDeckGroup = {
+  id: string;
+  title: string;
+  category: string;
+  description: string;
+  position: number;
+};
 export type PublishedQuestion = {
   id: string;
   sourceQuestionId?: string;
   deckId: string | null;
+  groupId?: string | null;
+  position?: number;
   parentId: string | null;
   title: string;
   answer: string;
@@ -182,6 +218,7 @@ export const releases = pgTable(
     title: text("title").notNull(),
     description: text("description").notNull(),
     summary: text("summary").notNull().default(""),
+    groups: jsonb("groups").$type<PublishedDeckGroup[]>().notNull().default([]),
     questions: jsonb("questions").$type<PublishedQuestion[]>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -204,6 +241,7 @@ export const subscriptions = pgTable(
     deckId: text("deck_id")
       .notNull()
       .references(() => decks.id),
+    groupName: text("group_name").notNull().default(""),
     seenVersion: integer("seen_version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

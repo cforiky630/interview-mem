@@ -250,8 +250,11 @@ export function FollowupCards({
               ? {
                   transform: `translateX(${dragX * 0.42}px) rotate(${dragX * 0.01}deg)`,
                   transition: "none",
+                  touchAction: followups.length > 1 ? "pan-y" : undefined,
                 }
-              : undefined
+              : followups.length > 1
+                ? { touchAction: "pan-y" }
+                : undefined
           }
           onTouchStart={(event) => {
             if (followups.length <= 1 || event.touches.length !== 1) return;
@@ -286,6 +289,10 @@ export function FollowupCards({
               if (dx < -48) move(1);
               else if (dx > 48) move(-1);
             }
+            setDragX(0);
+          }}
+          onTouchCancel={() => {
+            cardTouch.current = null;
             setDragX(0);
           }}
         >

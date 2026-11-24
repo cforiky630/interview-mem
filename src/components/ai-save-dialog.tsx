@@ -5,6 +5,7 @@ import { BookmarkPlus, Layers2, Loader2 } from "lucide-react";
 import type { ChatMessage, DeckView, QuestionView } from "@/lib/types";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
+import { DeckSelectOptions } from "./deck-select-options";
 
 export type AiSaveTarget =
   | { kind: "note"; message: ChatMessage }
@@ -150,11 +151,7 @@ export function AiSaveDialog({
                     value={deckId}
                     onChange={(e) => setDeckId(e.target.value)}
                   >
-                    {ownedDecks.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.title}
-                      </option>
-                    ))}
+                    <DeckSelectOptions decks={ownedDecks} />
                     <option value="">未分类</option>
                   </select>
                 </label>

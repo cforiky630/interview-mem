@@ -35,10 +35,17 @@ import {
   FolderInput,
   Sun,
   Moon,
+  List,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
 import { api } from "@/lib/client";
+import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
+import {
+  formatGroupLabel,
+  UNGROUPED_LABEL,
+  type ReaderGroupContext,
+} from "@/lib/grouping";
 import { relativeDue } from "@/lib/utils";
 import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import {
@@ -148,6 +155,10 @@ export function QuestionReader({
   onToggleAi,
   onAskAi,
   onRevealedChange,
+  groupContext = null,
+  readingList,
+  onJumpQuestion,
+  onOpenGroup,
 }: {
   question: QuestionView;
   data: Workspace;
@@ -186,7 +197,18 @@ export function QuestionReader({
     attempt?: string;
   }) => void;
   onRevealedChange?: (revealed: boolean) => void;
+  groupContext?: ReaderGroupContext | null;
+  readingList?: QuestionView[];
+  onJumpQuestion?: (q: QuestionView) => void;
+  onOpenGroup?: (
+    deckId: string,
+    opts?: { groupId?: string; category?: string },
+  ) => void;
 }) {
+  const device = useDeviceProfile();
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const outlineWrapRef = useRef<HTMLDivElement>(null);
+  const currentOutlineItemRef = useRef<HTMLButtonElement>(null);
   const [revealed, setRevealed] = useState(!review);
   const noteMeta = useMemo(
     () => markdownDocument(question.answer),
@@ -441,9 +463,81 @@ export function QuestionReader({
     if (revealed) setOralRunning(false);
   }, [revealed]);
   useEffect(() => {
+    setOutlineOpen(false);
+  }, [question.id, review]);
+  useEffect(() => {
+    if (!outlineOpen) return;
+    requestAnimationFrame(() => {
+      currentOutlineItemRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    function onPointerDown(event: PointerEvent) {
+      if (device.isMobileShell) return;
+      if (
+        outlineWrapRef.current &&
+        !outlineWrapRef.current.contains(event.target as Node)
+      ) {
+        setOutlineOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOutlineOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [outlineOpen, device.isMobileShell]);
+  const outlineSections = useMemo(() => {
+    if (!readingList || readingList.length <= 1) return [];
+    const deck = question.deckId
+      ? data.decks.find((d) => d.id === question.deckId)
+      : undefined;
+    const groupMap = new Map(
+      (deck?.groups ?? []).map((g) => [g.id, g] as const),
+    );
+    const hasAnyGroup = readingList.some(
+      (item) => Boolean(item.groupId && groupMap.has(item.groupId)),
+    );
+    const sections: {
+      key: string;
+      rawKey: string;
+      label: string | null;
+      items: { question: QuestionView; globalIndex: number }[];
+    }[] = [];
+    for (let i = 0; i < readingList.length; i++) {
+      const item = readingList[i];
+      const grp = item.groupId ? (groupMap.get(item.groupId) ?? null) : null;
+      const rawKey = hasAnyGroup ? (grp?.id ?? "__ungrouped__") : "__flat__";
+      const label = hasAnyGroup
+        ? grp
+          ? formatGroupLabel(grp)
+          : UNGROUPED_LABEL
+        : null;
+      const last = sections[sections.length - 1];
+      if (last && last.rawKey === rawKey) {
+        last.items.push({ question: item, globalIndex: i });
+      } else {
+        sections.push({
+          key: `${rawKey}:${i}`,
+          rawKey,
+          label,
+          items: [{ question: item, globalIndex: i }],
+        });
+      }
+    }
+    return sections;
+  }, [readingList, question.deckId, data.decks]);
+  useEffect(() => {
     if (review || !prevNext || prevNext.total <= 1) return;
     function stepKeys(event: KeyboardEvent) {
       if (
+        outlineOpen ||
         inlineEditingRef.current ||
         (event.target as HTMLElement).closest(
           "input,textarea,select,[contenteditable='true'],[role='dialog']:not([hidden]),button",
@@ -484,7 +578,7 @@ export function QuestionReader({
     }
     window.addEventListener("keydown", stepKeys);
     return () => window.removeEventListener("keydown", stepKeys);
-  }, [review, prevNext, aiOpen]);
+  }, [review, prevNext, aiOpen, outlineOpen]);
   useEffect(() => {
     function detect() {
       if (inlineEditingRef.current) {
@@ -734,30 +828,107 @@ export function QuestionReader({
             {review ? (cram ? "结束突击" : "结束答题") : backLabel}
           </button>
           {!review && prevNext && prevNext.total > 1 && (
-            <div className="reader-step-nav" role="group" aria-label="切换上下题">
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="上一题"
-                title="上一题 ([)"
-                disabled={!prevNext.hasPrev}
-                onClick={prevNext.onPrev}
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <span>
-                {prevNext.index + 1} / {prevNext.total}
-              </span>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="下一题"
-                title="下一题 (])"
-                disabled={!prevNext.hasNext}
-                onClick={prevNext.onNext}
-              >
-                <ChevronRight size={16} />
-              </button>
+            <div className="reader-outline-wrap" ref={outlineWrapRef}>
+              <div className="reader-step-nav" role="group" aria-label="切换上下题">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="上一题"
+                  title="上一题 ([)"
+                  disabled={!prevNext.hasPrev}
+                  onClick={prevNext.onPrev}
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                {outlineSections.length > 0 && onJumpQuestion ? (
+                  <button
+                    type="button"
+                    className={`reader-outline-trigger ${outlineOpen ? "is-open" : ""}`}
+                    aria-expanded={outlineOpen}
+                    aria-haspopup="dialog"
+                    aria-label="展开阅读目录"
+                    title={
+                      groupContext
+                        ? `本组第 ${groupContext.groupIndex + 1}/${groupContext.groupTotal} 题 · 共 ${prevNext.total} 题（点击跳转）`
+                        : `第 ${prevNext.index + 1}/${prevNext.total} 题（点击跳转）`
+                    }
+                    onClick={() => setOutlineOpen((open) => !open)}
+                  >
+                    <List size={12} aria-hidden="true" />
+                    <span>
+                      {groupContext
+                        ? `${groupContext.groupIndex + 1} / ${groupContext.groupTotal}`
+                        : `${prevNext.index + 1} / ${prevNext.total}`}
+                    </span>
+                  </button>
+                ) : (
+                  <span>
+                    {groupContext
+                      ? `${groupContext.groupIndex + 1} / ${groupContext.groupTotal}`
+                      : `${prevNext.index + 1} / ${prevNext.total}`}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="下一题"
+                  title="下一题 (])"
+                  disabled={!prevNext.hasNext}
+                  onClick={prevNext.onNext}
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+              {outlineOpen &&
+                !device.isMobileShell &&
+                outlineSections.length > 0 &&
+                onJumpQuestion && (
+                  <div
+                    className="reader-outline-popover"
+                    role="dialog"
+                    aria-label="阅读目录"
+                  >
+                    <div className="reader-outline-head">
+                      <strong>阅读目录</strong>
+                      <span>共 {prevNext.total} 题</span>
+                    </div>
+                    <div className="reader-outline-list">
+                      {outlineSections.map((sec) => (
+                        <div className="reader-outline-section" key={sec.key}>
+                          {sec.label && (
+                            <div className="reader-outline-group-head">
+                              <span>{sec.label}</span>
+                              <small>{sec.items.length}</small>
+                            </div>
+                          )}
+                          {sec.items.map(({ question: item, globalIndex }) => {
+                            const isCurrent = item.id === question.id;
+                            return (
+                              <button
+                                key={item.id}
+                                ref={isCurrent ? currentOutlineItemRef : undefined}
+                                type="button"
+                                className={`reader-outline-item ${isCurrent ? "is-current" : ""}`}
+                                aria-current={isCurrent ? "true" : undefined}
+                                onClick={() => {
+                                  setOutlineOpen(false);
+                                  if (!isCurrent) onJumpQuestion(item);
+                                }}
+                              >
+                                <span className="reader-outline-index">
+                                  {String(globalIndex + 1).padStart(2, "0")}
+                                </span>
+                                <span className="reader-outline-title">
+                                  {item.title}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
             </div>
           )}
           {review && progress && (
@@ -897,8 +1068,60 @@ export function QuestionReader({
         </div>
         <article className="question-article">
           <header className="question-card-heading">
-            <div className="question-breadcrumb">
-              <span>{question.deckTitle}</span>
+            <div className="question-breadcrumb reader-breadcrumb">
+              {!review && groupContext?.currentGroup && question.deckId ? (
+                <>
+                  {onOpenGroup ? (
+                    <button
+                      type="button"
+                      className="reader-crumb-btn"
+                      onClick={() => onOpenGroup(question.deckId!)}
+                    >
+                      {question.deckTitle}
+                    </button>
+                  ) : (
+                    <span>{question.deckTitle}</span>
+                  )}
+                  {groupContext.currentGroup.category && (
+                    <>
+                      <ChevronRight size={12} aria-hidden="true" />
+                      {onOpenGroup ? (
+                        <button
+                          type="button"
+                          className="reader-crumb-btn"
+                          onClick={() =>
+                            onOpenGroup(question.deckId!, {
+                              category: groupContext.currentGroup!.category,
+                            })
+                          }
+                        >
+                          {groupContext.currentGroup.category}
+                        </button>
+                      ) : (
+                        <span>{groupContext.currentGroup.category}</span>
+                      )}
+                    </>
+                  )}
+                  <ChevronRight size={12} aria-hidden="true" />
+                  {onOpenGroup ? (
+                    <button
+                      type="button"
+                      className="reader-crumb-btn is-current"
+                      onClick={() =>
+                        onOpenGroup(question.deckId!, {
+                          groupId: groupContext.currentGroup!.id,
+                        })
+                      }
+                    >
+                      {groupContext.currentGroup.title}
+                    </button>
+                  ) : (
+                    <span>{groupContext.currentGroup.title}</span>
+                  )}
+                </>
+              ) : (
+                <span>{question.deckTitle}</span>
+              )}
               {review && (
                 <>
                   <ChevronRight size={12} />
@@ -986,6 +1209,7 @@ export function QuestionReader({
               <div className="question-title-row is-editable">
                 <h1
                   onClick={() => {
+                    if (getDeviceProfile().isTouchInput) return;
                     if (window.getSelection()?.toString().trim()) return;
                     enterTitleEdit();
                   }}
@@ -1313,43 +1537,53 @@ export function QuestionReader({
                           defaultExpanded
                         />
                       )}
-                      <div className="answer-actions">
-                        {canInlineEdit && (
-                          <button
-                            type="button"
-                            className="icon-button"
-                            title="编辑答案"
-                            aria-label="编辑答案"
-                            onClick={() => {
-                              setHideAll(false);
-                              setEditingAnswer(true);
-                            }}
-                          >
-                            <PencilLine size={16} />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className={`icon-button ${hideAll ? "active" : ""}`}
-                          title={hideAll ? "显示正文" : "逐段默写"}
-                          aria-label={hideAll ? "显示正文" : "逐段默写"}
-                          aria-pressed={hideAll}
-                          onClick={() => setHideAll(!hideAll)}
-                        >
-                          {hideAll ? <Eye size={16} /> : <EyeOff size={16} />}
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          title="问 AI"
-                          aria-label="围绕本题问 AI"
-                          onClick={() =>
-                            ask("请解释这道题，并举一个具体的例子。", "")
-                          }
-                        >
-                          <MessageSquare size={16} />
-                        </button>
-                      </div>
+                      {(canInlineEdit || review || !device.isMobileShell) && (
+                        <div className="answer-actions">
+                          {canInlineEdit && (
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="编辑答案"
+                              aria-label="编辑答案"
+                              onClick={() => {
+                                setHideAll(false);
+                                setEditingAnswer(true);
+                              }}
+                            >
+                              <PencilLine size={16} />
+                            </button>
+                          )}
+                          {(review || !device.isMobileShell) && (
+                            <>
+                              <button
+                                type="button"
+                                className={`icon-button ${hideAll ? "active" : ""}`}
+                                title={hideAll ? "显示正文" : "逐段默写"}
+                                aria-label={hideAll ? "显示正文" : "逐段默写"}
+                                aria-pressed={hideAll}
+                                onClick={() => setHideAll(!hideAll)}
+                              >
+                                {hideAll ? (
+                                  <Eye size={16} />
+                                ) : (
+                                  <EyeOff size={16} />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                className="icon-button"
+                                title="问 AI"
+                                aria-label="围绕本题问 AI"
+                                onClick={() =>
+                                  ask("请解释这道题，并举一个具体的例子。", "")
+                                }
+                              >
+                                <MessageSquare size={16} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
                       <div className="answer-content">
                         {documentView.blocks.length ? (
                           documentView.blocks.map((block) => (
@@ -1479,12 +1713,20 @@ export function QuestionReader({
               {prevNext.hasPrev ? (
                 <button
                   type="button"
-                  className="reader-pager-btn"
+                  className={`reader-pager-btn ${groupContext?.prevCrossesGroup ? "is-group-boundary" : ""}`}
                   onClick={prevNext.onPrev}
                 >
-                  <span>
-                    <ChevronLeft size={14} /> 上一题
-                  </span>
+                  {groupContext?.prevCrossesGroup ? (
+                    <span className="reader-pager-group-cue">
+                      <ChevronLeft size={14} /> 上一组 ·{" "}
+                      {formatGroupLabel(groupContext.prevGroup) ||
+                        UNGROUPED_LABEL}
+                    </span>
+                  ) : (
+                    <span>
+                      <ChevronLeft size={14} /> 上一题
+                    </span>
+                  )}
                   {prevNext.prevTitle && <strong>{prevNext.prevTitle}</strong>}
                 </button>
               ) : (
@@ -1493,12 +1735,21 @@ export function QuestionReader({
               {prevNext.hasNext ? (
                 <button
                   type="button"
-                  className="reader-pager-btn is-next"
+                  className={`reader-pager-btn is-next ${groupContext?.nextCrossesGroup ? "is-group-boundary" : ""}`}
                   onClick={prevNext.onNext}
                 >
-                  <span>
-                    下一题 <ChevronRight size={14} />
-                  </span>
+                  {groupContext?.nextCrossesGroup ? (
+                    <span className="reader-pager-group-cue">
+                      下一组 ·{" "}
+                      {formatGroupLabel(groupContext.nextGroup) ||
+                        UNGROUPED_LABEL}{" "}
+                      <ChevronRight size={14} />
+                    </span>
+                  ) : (
+                    <span>
+                      下一题 <ChevronRight size={14} />
+                    </span>
+                  )}
                   {prevNext.nextTitle && <strong>{prevNext.nextTitle}</strong>}
                 </button>
               ) : (
@@ -1594,7 +1845,7 @@ export function QuestionReader({
       )}
       {selection && (
         <div
-          className="selection-bubble"
+          className={`selection-bubble ${device.isTouchInput ? "is-touch" : ""}`}
           style={{ left: selection.x, top: selection.y }}
           onPointerDown={(event) => event.preventDefault()}
           onMouseDown={(event) => event.preventDefault()}
@@ -1615,6 +1866,68 @@ export function QuestionReader({
           </button>
         </div>
       )}
+      {outlineOpen &&
+        device.isMobileShell &&
+        outlineSections.length > 0 &&
+        onJumpQuestion && (
+          <div className="reader-outline-modal" role="dialog" aria-modal="true" aria-label="阅读目录">
+            <button
+              type="button"
+              className="reader-outline-backdrop"
+              aria-label="关闭目录"
+              onClick={() => setOutlineOpen(false)}
+            />
+            <div className="reader-outline-sheet">
+              <div className="sheet-grabber" aria-hidden="true" />
+              <div className="reader-outline-head">
+                <strong>阅读目录（{prevNext?.total ?? readingList?.length ?? 0} 题）</strong>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="关闭目录"
+                  onClick={() => setOutlineOpen(false)}
+                >
+                  <X size={17} />
+                </button>
+              </div>
+              <div className="reader-outline-list">
+                {outlineSections.map((sec) => (
+                  <div className="reader-outline-section" key={sec.key}>
+                    {sec.label && (
+                      <div className="reader-outline-group-head">
+                        <span>{sec.label}</span>
+                        <small>{sec.items.length}</small>
+                      </div>
+                    )}
+                    {sec.items.map(({ question: item, globalIndex }) => {
+                      const isCurrent = item.id === question.id;
+                      return (
+                        <button
+                          key={item.id}
+                          ref={isCurrent ? currentOutlineItemRef : undefined}
+                          type="button"
+                          className={`reader-outline-item ${isCurrent ? "is-current" : ""}`}
+                          aria-current={isCurrent ? "true" : undefined}
+                          onClick={() => {
+                            setOutlineOpen(false);
+                            if (!isCurrent) onJumpQuestion(item);
+                          }}
+                        >
+                          <span className="reader-outline-index">
+                            {String(globalIndex + 1).padStart(2, "0")}
+                          </span>
+                          <span className="reader-outline-title">
+                            {item.title}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       <Dialog
         open={validationOpen}
         onOpenChange={setValidationOpen}

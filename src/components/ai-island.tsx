@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
+import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
 import {
   formatQuotePreview,
   formatThreadLabel,
@@ -133,6 +134,7 @@ export function AiIsland({
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [readerTarget, setReaderTarget] = useState<AiReaderTarget | null>(null);
   const [saveTarget, setSaveTarget] = useState<AiSaveTarget | null>(null);
+  const { isMobileShell } = useDeviceProfile();
   const [dragY, setDragY] = useState(0);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const historyWrapRef = useRef<HTMLDivElement>(null);
@@ -211,10 +213,10 @@ export function AiIsland({
   );
 
   useEffect(() => {
-    if (mode !== "collapsed") {
+    if (mode !== "collapsed" || !isMobileShell) {
       setDragY(0);
     }
-  }, [mode]);
+  }, [mode, isMobileShell]);
 
   useEffect(() => {
     setHistoryOpen(false);
@@ -808,6 +810,7 @@ export function AiIsland({
       !allowDock ||
       !isDocked ||
       !onDockWidthChange ||
+      getDeviceProfile().isMobileShell ||
       window.matchMedia("(max-width: 1239px)").matches
     ) {
       return;
@@ -837,10 +840,7 @@ export function AiIsland({
   }
 
   function handleOpenQuestion(target: QuestionView) {
-    if (
-      typeof window !== "undefined" &&
-      window.matchMedia("(max-width: 760px)").matches
-    ) {
+    if (getDeviceProfile().isMobileShell) {
       onModeChange("collapsed");
     }
     onOpenQuestion(target);
@@ -922,7 +922,7 @@ export function AiIsland({
           className="ai-panel-sheet-handle"
           onTouchStart={(event) => {
             if (event.touches.length !== 1) return;
-            if (!window.matchMedia("(max-width: 760px)").matches) return;
+            if (!getDeviceProfile().isMobileShell) return;
             const touch = event.touches[0];
             sheetTouch.current = {
               x: touch.clientX,

@@ -1,6 +1,13 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { decks, questions, releases, studyCards, subscriptions } from "@/db/schema";
+import {
+  deckGroups,
+  decks,
+  questions,
+  releases,
+  studyCards,
+  subscriptions,
+} from "@/db/schema";
 import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
 import type { ProviderTool } from "./ai";
 import { AppError } from "./errors";
@@ -17,6 +24,9 @@ type ScopedQuestionItem = {
   id: string;
   deckId: string | null;
   deckTitle: string;
+  groupId: string | null;
+  groupTitle: string;
+  groupCategory: string;
   isOwner: boolean;
   title: string;
   answerSnippet: string;
@@ -30,7 +40,13 @@ type ScopedQuestionItem = {
 
 export type ScopedPool = {
   pool: ScopedQuestionItem[];
-  deckRows: { id: string | null; title: string; isOwner: boolean }[];
+  deckRows: {
+    id: string | null;
+    title: string;
+    groupName: string;
+    isOwner: boolean;
+    groups: { id: string; title: string; category: string }[];
+  }[];
 };
 
 export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
@@ -229,9 +245,13 @@ export async function loadScopedPool(
   deckId: string | null,
 ): Promise<ScopedPool> {
   const db = await getDb();
-  const [ownDecks, subs, studyRows] = await Promise.all([
+  const [ownDecks, ownGroups, subs, studyRows] = await Promise.all([
     db
-      .select({ id: decks.id, title: decks.title })
+      .select({
+        id: decks.id,
+        title: decks.title,
+        groupName: decks.groupName,
+      })
       .from(decks)
       .where(
         and(
@@ -242,8 +262,28 @@ export async function loadScopedPool(
       ),
     db
       .select({
+        id: deckGroups.id,
+        deckId: deckGroups.deckId,
+        title: deckGroups.title,
+        category: deckGroups.category,
+      })
+      .from(deckGroups)
+      .where(
+        and(
+          eq(deckGroups.ownerId, userId),
+          scope === "deck" && deckId ? eq(deckGroups.deckId, deckId) : undefined,
+        ),
+      )
+      .orderBy(
+        asc(deckGroups.position),
+        asc(deckGroups.createdAt),
+        asc(deckGroups.id),
+      ),
+    db
+      .select({
         deckId: decks.id,
         publishedVersion: decks.publishedVersion,
+        groupName: subscriptions.groupName,
       })
       .from(subscriptions)
       .innerJoin(decks, eq(subscriptions.deckId, decks.id))
@@ -265,16 +305,45 @@ export async function loadScopedPool(
       .where(eq(studyCards.userId, userId)),
   ]);
 
-  const deckTitleMap = new Map<string, { title: string; isOwner: boolean }>();
-  for (const d of ownDecks) deckTitleMap.set(d.id, { title: d.title, isOwner: true });
+  const deckInfoMap = new Map<
+    string,
+    {
+      title: string;
+      groupName: string;
+      isOwner: boolean;
+      groups: { id: string; title: string; category: string }[];
+    }
+  >();
+  const groupInfoMap = new Map<
+    string,
+    { title: string; category: string }
+  >();
+  for (const d of ownDecks) {
+    deckInfoMap.set(d.id, {
+      title: d.title,
+      groupName: d.groupName,
+      isOwner: true,
+      groups: [],
+    });
+  }
+  for (const g of ownGroups) {
+    groupInfoMap.set(g.id, { title: g.title, category: g.category });
+    deckInfoMap.get(g.deckId)?.groups.push({
+      id: g.id,
+      title: g.title,
+      category: g.category,
+    });
+  }
+  const subGroupNameMap = new Map(subs.map((s) => [s.deckId, s.groupName]));
   const studyMap = new Map(studyRows.map((s) => [s.questionId, s]));
   const pool: ScopedQuestionItem[] = [];
 
-  if (!deckId || deckTitleMap.has(deckId)) {
+  if (!deckId || deckInfoMap.has(deckId)) {
     const ownedRows = await db
       .select({
         id: questions.id,
         deckId: questions.deckId,
+        groupId: questions.groupId,
         title: questions.title,
         answerSnippet: sql<string>`left(${questions.answer}, 2000)`,
         hasAnswer: sql<boolean>`btrim(${questions.answer}) <> ''`,
@@ -294,6 +363,7 @@ export async function loadScopedPool(
       );
     for (const q of ownedRows) {
       const study = studyMap.get(q.id);
+      const grp = q.groupId ? groupInfoMap.get(q.groupId) : undefined;
       const mergedTags = mergeQuestionTags(
         q.tags,
         markdownDocument(q.answerSnippet).tags,
@@ -302,8 +372,11 @@ export async function loadScopedPool(
         id: q.id,
         deckId: q.deckId,
         deckTitle: q.deckId
-          ? (deckTitleMap.get(q.deckId)?.title ?? "未分类")
+          ? (deckInfoMap.get(q.deckId)?.title ?? "未分类")
           : "未分类",
+        groupId: q.groupId,
+        groupTitle: grp?.title ?? "",
+        groupCategory: grp?.category ?? "",
         isOwner: true,
         title: q.title,
         answerSnippet: q.answerSnippet,
@@ -332,10 +405,22 @@ export async function loadScopedPool(
       )
       .where(inArray(releases.deckId, subIds));
     for (const { release } of published) {
-      deckTitleMap.set(release.deckId, { title: release.title, isOwner: false });
+      const releaseGroups = (release.groups ?? []).map((g) => ({
+        id: g.id,
+        title: g.title,
+        category: g.category ?? "",
+      }));
+      const releaseGroupMap = new Map(releaseGroups.map((g) => [g.id, g]));
+      deckInfoMap.set(release.deckId, {
+        title: release.title,
+        groupName: subGroupNameMap.get(release.deckId) ?? "",
+        isOwner: false,
+        groups: releaseGroups,
+      });
       for (const q of release.questions) {
         if (q.archived) continue;
         const study = studyMap.get(q.id);
+        const grp = q.groupId ? releaseGroupMap.get(q.groupId) : undefined;
         const snippet = q.answer.slice(0, 2000);
         const mergedTags = mergeQuestionTags(
           q.tags,
@@ -345,6 +430,9 @@ export async function loadScopedPool(
           id: q.id,
           deckId: release.deckId,
           deckTitle: release.title,
+          groupId: q.groupId ?? null,
+          groupTitle: grp?.title ?? "",
+          groupCategory: grp?.category ?? "",
           isOwner: false,
           title: q.title,
           answerSnippet: snippet,
@@ -359,14 +447,24 @@ export async function loadScopedPool(
     }
   }
 
-  const deckRows: { id: string | null; title: string; isOwner: boolean }[] = [
-    ...Array.from(deckTitleMap.entries()).map(([id, info]) => ({
+  const deckRows = [
+    ...Array.from(deckInfoMap.entries()).map(([id, info]) => ({
       id,
       title: info.title,
+      groupName: info.groupName,
       isOwner: info.isOwner,
+      groups: info.groups,
     })),
     ...(scope === "workspace"
-      ? [{ id: null, title: "未分类", isOwner: true }]
+      ? [
+          {
+            id: null,
+            title: "未分类",
+            groupName: "",
+            isOwner: true,
+            groups: [],
+          },
+        ]
       : []),
   ];
 
@@ -424,7 +522,7 @@ export async function executeWorkspaceTool(
         };
       }
       const db = await getDb();
-      const [[study], deckTitle] = await Promise.all([
+      const [[study], deckTitle, groupInfo] = await Promise.all([
         db
           .select({ note: studyCards.note })
           .from(studyCards)
@@ -435,6 +533,37 @@ export async function executeWorkspaceTool(
             ),
           ),
         resolveDeckTitle(userId, q.deckId, q.isOwner),
+        q.groupId && q.deckId
+          ? q.isOwner
+            ? db
+                .select({
+                  title: deckGroups.title,
+                  category: deckGroups.category,
+                })
+                .from(deckGroups)
+                .where(
+                  and(
+                    eq(deckGroups.id, q.groupId),
+                    eq(deckGroups.ownerId, userId),
+                  ),
+                )
+                .then((rows) => rows[0] ?? null)
+            : db
+                .select({ groups: releases.groups })
+                .from(releases)
+                .innerJoin(
+                  decks,
+                  and(
+                    eq(releases.deckId, decks.id),
+                    eq(releases.version, decks.publishedVersion),
+                  ),
+                )
+                .where(eq(releases.deckId, q.deckId))
+                .then(
+                  (rows) =>
+                    rows[0]?.groups?.find((g) => g.id === q.groupId) ?? null,
+                )
+          : Promise.resolve(null),
       ]);
       const tags = mergeQuestionTags(q.tags, markdownDocument(q.answer).tags);
       return {
@@ -443,6 +572,12 @@ export async function executeWorkspaceTool(
         output: {
           id: q.id,
           deckTitle,
+          ...(groupInfo
+            ? {
+                groupCategory: groupInfo.category,
+                groupTitle: groupInfo.title,
+              }
+            : {}),
           isOwner: q.isOwner,
           title: q.title,
           tags,
@@ -468,15 +603,31 @@ export async function executeWorkspaceTool(
     const now = Date.now();
     const summary = deckRows.map((d) => {
       const items = pool.filter((q) => q.deckId === d.id);
+      const groupSummary = d.groups.length
+        ? d.groups.map((g) => {
+            const groupItems = items.filter((q) => q.groupId === g.id);
+            return {
+              category: g.category,
+              title: g.title,
+              total: groupItems.length,
+              due: groupItems.filter(
+                (q) => q.hasAnswer && q.due && Date.parse(q.due) <= now,
+              ).length,
+              needsEditing: groupItems.filter((q) => q.needsEditing).length,
+            };
+          })
+        : undefined;
       return {
         deckId: d.id,
         title: d.title,
+        ...(d.groupName ? { groupName: d.groupName } : {}),
         isOwner: d.isOwner,
         total: items.length,
         due: items.filter(
           (q) => q.hasAnswer && q.due && Date.parse(q.due) <= now,
         ).length,
         needsEditing: items.filter((q) => q.needsEditing).length,
+        ...(groupSummary ? { groups: groupSummary } : {}),
       };
     });
     return {
@@ -503,6 +654,8 @@ export async function executeWorkspaceTool(
         id: string;
         title: string;
         deckTitle: string;
+        groupCategory?: string;
+        groupTitle?: string;
         tags: string[];
         isOwner: boolean;
       };
@@ -510,6 +663,8 @@ export async function executeWorkspaceTool(
         id: string;
         title: string;
         deckTitle: string;
+        groupCategory?: string;
+        groupTitle?: string;
         tags: string[];
         isOwner: boolean;
       };
@@ -534,6 +689,10 @@ export async function executeWorkspaceTool(
               id: pa.item.id,
               title: pa.item.title,
               deckTitle: pa.item.deckTitle,
+              ...(pa.item.groupCategory
+                ? { groupCategory: pa.item.groupCategory }
+                : {}),
+              ...(pa.item.groupTitle ? { groupTitle: pa.item.groupTitle } : {}),
               tags: pa.item.tags,
               isOwner: pa.item.isOwner,
             },
@@ -541,6 +700,10 @@ export async function executeWorkspaceTool(
               id: pb.item.id,
               title: pb.item.title,
               deckTitle: pb.item.deckTitle,
+              ...(pb.item.groupCategory
+                ? { groupCategory: pb.item.groupCategory }
+                : {}),
+              ...(pb.item.groupTitle ? { groupTitle: pb.item.groupTitle } : {}),
               tags: pb.item.tags,
               isOwner: pb.item.isOwner,
             },
@@ -601,6 +764,7 @@ export async function executeWorkspaceTool(
         if (!terms.length) return { item: q, score: 1 };
         const titleLower = q.title.toLowerCase();
         const tagsLower = q.tags.join(" ").toLowerCase();
+        const groupLower = `${q.groupCategory} ${q.groupTitle}`.toLowerCase();
         const deckLower = q.deckTitle.toLowerCase();
         const ansLower = q.answerSnippet.slice(0, 1200).toLowerCase();
         const noteLower = q.noteSnippet.toLowerCase();
@@ -612,6 +776,10 @@ export async function executeWorkspaceTool(
             hit = true;
           }
           if (tagsLower.includes(term)) {
+            score += 3;
+            hit = true;
+          }
+          if (groupLower.includes(term)) {
             score += 3;
             hit = true;
           }
@@ -646,6 +814,8 @@ export async function executeWorkspaceTool(
       id: item.id,
       title: item.title,
       deckTitle: item.deckTitle,
+      ...(item.groupCategory ? { groupCategory: item.groupCategory } : {}),
+      ...(item.groupTitle ? { groupTitle: item.groupTitle } : {}),
       isOwner: item.isOwner,
       tags: item.tags,
       needsEditing: item.needsEditing,
@@ -688,13 +858,25 @@ export async function buildFallbackScopeSummary(
       id: q.id,
       title: q.title,
       deckTitle: q.deckTitle,
+      ...(q.groupCategory ? { groupCategory: q.groupCategory } : {}),
+      ...(q.groupTitle ? { groupTitle: q.groupTitle } : {}),
       tags: q.tags,
       needsEditing: q.needsEditing,
     }));
   return JSON.stringify({
     scope,
     totalInScope: pool.length,
-    decks: deckRows.map((d) => d.title),
+    decks: deckRows.map((d) => ({
+      title: d.title,
+      ...(d.groupName ? { groupName: d.groupName } : {}),
+      ...(d.groups.length
+        ? {
+            groups: d.groups.map((g) =>
+              g.category ? `${g.category} · ${g.title}` : g.title,
+            ),
+          }
+        : {}),
+    })),
     recentQuestions: top,
   });
 }

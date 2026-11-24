@@ -9,16 +9,15 @@ import {
 } from "react";
 import {
   Download,
+  Keyboard,
   LogOut,
-  Moon,
-  Palette as PaletteIcon,
+  Plug,
   SlidersHorizontal,
-  Sun,
 } from "lucide-react";
-import type { Palette } from "@/lib/theme";
+import { getDeviceProfile } from "@/lib/device-profile";
 import { userInitials } from "@/lib/user-display";
 import { cn } from "@/lib/utils";
-import type { AccountSettingsTab } from "./settings-card";
+import type { SettingsTab } from "./settings-card";
 import "./user-menu.css";
 
 function getMenuButtons(container: HTMLElement | null): HTMLButtonElement[] {
@@ -30,39 +29,41 @@ function getMenuButtons(container: HTMLElement | null): HTMLButtonElement[] {
 
 export function UserMenu({
   user,
-  palette,
-  activeTheme,
-  settingsAccountOpen,
-  onOpenAccountSettings,
+  settingsOpen,
+  hasAiKey,
+  aiModel,
+  onOpenSettings,
   onBeforeOpenMenu,
-  onTogglePalette,
-  onToggleTheme,
   onSignOut,
   onCloseMobileDrawer,
 }: {
   user: { name: string; email?: string };
-  palette: Palette;
-  activeTheme: "light" | "dark";
-  settingsAccountOpen: boolean;
-  onOpenAccountSettings: (
-    tab: AccountSettingsTab,
-    anchor: HTMLElement | null,
-  ) => void;
+  settingsOpen: boolean;
+  hasAiKey: boolean;
+  aiModel?: string;
+  onOpenSettings: (tab: SettingsTab) => void;
   onBeforeOpenMenu?: () => void;
-  onTogglePalette: () => void;
-  onToggleTheme: () => void;
   onSignOut: () => void;
   onCloseMobileDrawer?: () => void;
 }) {
   const triggerId = useId();
   const menuId = useId();
   const [open, setOpen] = useState(false);
+  const [isMac, setIsMac] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const enterOnOpenRef = useRef(false);
   const pointerTriggerRef = useRef(false);
   const initials = userInitials(user.name);
+
+  useEffect(() => {
+    setIsMac(
+      /Mac|iPhone|iPad|iPod/i.test(
+        navigator.platform || navigator.userAgent || "",
+      ),
+    );
+  }, []);
 
   const placeFallback = useCallback(() => {
     const trigger = triggerRef.current;
@@ -88,7 +89,7 @@ export function UserMenu({
     const vTop = vv?.offsetTop ?? 0;
     const vWidth = vv?.width ?? document.documentElement.clientWidth;
     const vHeight = vv?.height ?? window.innerHeight;
-    const width = popover.offsetWidth || 228;
+    const width = popover.offsetWidth || 212;
     const height = popover.offsetHeight || 260;
 
     const left = Math.max(
@@ -162,7 +163,7 @@ export function UserMenu({
     const onToggle = (event: Event) => {
       const toggleEvent = event as ToggleEvent;
       const nextOpen = toggleEvent.newState === "open";
-      if (nextOpen && window.matchMedia("(max-width: 760px)").matches) {
+      if (nextOpen && getDeviceProfile().isMobileShell) {
         popover.hidePopover();
         return;
       }
@@ -232,10 +233,10 @@ export function UserMenu({
   }, [open, closeMenu, placeFallback]);
 
   function handleTriggerClick(event: MouseEvent<HTMLButtonElement>) {
-    if (window.matchMedia("(max-width: 760px)").matches) {
+    if (getDeviceProfile().isMobileShell) {
       event.preventDefault();
       onCloseMobileDrawer?.();
-      onOpenAccountSettings("study", null);
+      onOpenSettings("study");
       return;
     }
     const hasInvokers = "commandForElement" in HTMLButtonElement.prototype;
@@ -274,6 +275,7 @@ export function UserMenu({
   }
 
   function handleItemPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.pointerType !== "mouse") return;
     const item = event.currentTarget;
     const hit = document.elementFromPoint(event.clientX, event.clientY);
     if (!hit || !item.contains(hit)) return;
@@ -288,7 +290,7 @@ export function UserMenu({
         ref={triggerRef}
         id={triggerId}
         type="button"
-        className={cn("user-menu-trigger", settingsAccountOpen && "is-active")}
+        className={cn("user-menu-trigger", settingsOpen && "is-active")}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`账号菜单：${user.name}`}
@@ -297,13 +299,13 @@ export function UserMenu({
           command: "toggle-popover",
         } as Record<string, string>)}
         onPointerDown={(event) => {
-          if (window.matchMedia("(max-width: 760px)").matches) return;
+          if (getDeviceProfile().isMobileShell) return;
           event.preventDefault();
           pointerTriggerRef.current = true;
           onBeforeOpenMenu?.();
         }}
         onKeyDown={(event) => {
-          if (window.matchMedia("(max-width: 760px)").matches) return;
+          if (getDeviceProfile().isMobileShell) return;
           if (event.key === "ArrowDown") {
             event.preventDefault();
             if (popoverRef.current?.matches(":popover-open")) {
@@ -351,44 +353,42 @@ export function UserMenu({
             onPointerMove={handleItemPointerMove}
             onClick={() => {
               closeMenu("none");
-              onOpenAccountSettings("study", triggerRef.current);
+              onOpenSettings("study");
             }}
           >
             <span className="user-menu-item-icon" aria-hidden="true">
               <SlidersHorizontal size={15} />
             </span>
-            <span>学习偏好</span>
-          </button>
-          <button
-            type="button"
-            onPointerMove={handleItemPointerMove}
-            onClick={(event) => {
-              closeMenu(event.detail === 0 ? "keyboard" : "pointer");
-              onTogglePalette();
-            }}
-          >
-            <span className="user-menu-item-icon" aria-hidden="true">
-              <PaletteIcon size={15} />
-            </span>
-            <span>主题色系</span>
+            <span>偏好设置</span>
             <span className="user-menu-hint" aria-hidden="true">
-              {palette === "forest" ? "青瓷" : "熏衣"}
+              {isMac ? "⌘ ," : "Ctrl ,"}
             </span>
           </button>
           <button
             type="button"
+            title={
+              hasAiKey
+                ? `AI 模型已连接：${aiModel || "已配置"}`
+                : "尚未配置 AI 模型"
+            }
             onPointerMove={handleItemPointerMove}
-            onClick={(event) => {
-              closeMenu(event.detail === 0 ? "keyboard" : "pointer");
-              onToggleTheme();
+            onClick={() => {
+              closeMenu("none");
+              onOpenSettings("ai");
             }}
           >
             <span className="user-menu-item-icon" aria-hidden="true">
-              {activeTheme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+              <Plug size={15} />
             </span>
-            <span>{activeTheme === "dark" ? "浅色模式" : "深色模式"}</span>
+            <span>AI 模型</span>
             <span className="user-menu-hint" aria-hidden="true">
-              {activeTheme === "dark" ? "夜读" : "清晨"}
+              <span
+                className={cn(
+                  "user-menu-status-dot",
+                  hasAiKey && "is-connected",
+                )}
+              />
+              {hasAiKey ? "已连接" : "未配置"}
             </span>
           </button>
           <button
@@ -396,13 +396,26 @@ export function UserMenu({
             onPointerMove={handleItemPointerMove}
             onClick={() => {
               closeMenu("none");
-              onOpenAccountSettings("data", triggerRef.current);
+              onOpenSettings("data");
             }}
           >
             <span className="user-menu-item-icon" aria-hidden="true">
               <Download size={15} />
             </span>
             <span>数据备份</span>
+          </button>
+          <button
+            type="button"
+            onPointerMove={handleItemPointerMove}
+            onClick={() => {
+              closeMenu("none");
+              onOpenSettings("shortcuts");
+            }}
+          >
+            <span className="user-menu-item-icon" aria-hidden="true">
+              <Keyboard size={15} />
+            </span>
+            <span>快捷键</span>
           </button>
           <hr className="user-menu-sep" />
           <button
