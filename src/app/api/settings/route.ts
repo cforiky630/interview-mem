@@ -71,10 +71,14 @@ const schema = z.discriminatedUnion("action", [
     model: modelSchema,
   }),
   z.object({
+    action: z.literal("theme"),
+    theme: z.enum(["light", "dark"]),
+  }),
+  z.object({
     action: z.literal("preferences"),
     dailyGoal: z.number().int().min(1).max(200),
     dailyNewLimit: z.number().int().min(0).max(50).optional(),
-    theme: z.enum(["light", "dark"]),
+    theme: z.enum(["light", "dark"]).optional(),
     timeZone: z
       .string()
       .max(60)
@@ -91,8 +95,23 @@ const schema = z.discriminatedUnion("action", [
 ]);
 export const POST = route(async (request, user) => {
   const data = await body(request, schema, 10_000);
-  await ensureWorkspace(user.id);
   const db = await getDb();
+  if (data.action === "theme") {
+    const updated = await db
+      .update(preferences)
+      .set({ theme: data.theme })
+      .where(eq(preferences.userId, user.id))
+      .returning({ userId: preferences.userId });
+    if (!updated.length) {
+      await ensureWorkspace(user.id);
+      await db
+        .update(preferences)
+        .set({ theme: data.theme })
+        .where(eq(preferences.userId, user.id));
+    }
+    return NextResponse.json({ ok: true, theme: data.theme });
+  }
+  await ensureWorkspace(user.id);
   if (
     data.action === "saveKey" ||
     data.action === "saveConnection" ||
@@ -202,7 +221,7 @@ export const POST = route(async (request, user) => {
         ...(data.dailyNewLimit === undefined
           ? {}
           : { dailyNewLimit: data.dailyNewLimit }),
-        theme: data.theme,
+        ...(data.theme === undefined ? {} : { theme: data.theme }),
         timeZone: data.timeZone,
       })
       .where(eq(preferences.userId, user.id));

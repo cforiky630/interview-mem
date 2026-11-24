@@ -41,6 +41,7 @@ import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
 import { api } from "@/lib/client";
 import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
+import { toggleAppearanceTheme, useAppearance } from "@/lib/theme";
 import {
   formatGroupLabel,
   UNGROUPED_LABEL,
@@ -130,6 +131,20 @@ function Curve({ curve }: { curve: Insight["curve"] }) {
   );
 }
 
+function ReaderMobileThemeButton() {
+  const { theme } = useAppearance();
+  return (
+    <button
+      type="button"
+      className="icon-button reader-mobile-theme-btn"
+      aria-label={theme === "dark" ? "切换浅色模式" : "切换深色模式"}
+      onClick={toggleAppearanceTheme}
+    >
+      {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+    </button>
+  );
+}
+
 export function QuestionReader({
   question,
   data,
@@ -149,8 +164,6 @@ export function QuestionReader({
   progress,
   prevNext,
   onSingleReview,
-  activeTheme,
-  onToggleTheme,
   aiOpen = false,
   onToggleAi,
   onAskAi,
@@ -187,8 +200,6 @@ export function QuestionReader({
     onNext: () => void;
   };
   onSingleReview?: () => void;
-  activeTheme?: "light" | "dark";
-  onToggleTheme?: () => void;
   aiOpen?: boolean;
   onToggleAi?: (open?: boolean) => void;
   onAskAi?: (request: {
@@ -968,18 +979,7 @@ export function QuestionReader({
                 <Sparkles size={17} />
               </button>
             )}
-            {onToggleTheme && (
-              <button
-                type="button"
-                className="icon-button reader-mobile-theme-btn"
-                aria-label={
-                  activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"
-                }
-                onClick={onToggleTheme}
-              >
-                {activeTheme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-              </button>
-            )}
+            <ReaderMobileThemeButton />
             {(question.isOwner || !!question.validation || !review) && (
               <ActionMenu label="更多题目操作">
                 {question.isOwner && !review && (

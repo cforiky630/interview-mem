@@ -58,6 +58,7 @@ export const GET = route(async (_request, user) => {
     exportedAt: new Date().toISOString(),
     user: workspace.user,
     decks: workspace.decks,
+    followedAuthors: workspace.followedAuthors ?? [],
     questions: workspace.questions.map((q) =>
       q.isOwner ? { ...q, sourceText: sourceMap.get(q.id) ?? "" } : q,
     ),

@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import {
+  authorSubscriptions,
   decks,
   deckGroups,
   questions,
@@ -18,10 +19,18 @@ import type { Identity } from "./api";
 import type {
   DeckGroupView,
   DeckView,
+  FollowedAuthorView,
+  PendingDeckUpdate,
+  PublishStatus,
   QuestionView,
   StoredCard,
+  UnpublishedDeckDiff,
   Workspace,
 } from "@/lib/types";
+import {
+  computeUnpublishedDiff,
+  diffReleaseVersions,
+} from "@/lib/subscriptions";
 import { dateKey } from "@/lib/utils";
 import { AppError } from "./errors";
 import { contentHash } from "./crypto";
@@ -186,6 +195,7 @@ export async function accessibleQuestion(
     return { ...publishedQuestion(row), isOwner: true };
   }
   // A published question keeps its stable identity when the author removes a category or deletes the draft.
+  // Subscribers stay pinned to their accepted release version (`subscriptions.seenVersion`) until opting into updates.
   const snapshots = await db
     .select({ release: releases })
     .from(subscriptions)
@@ -194,7 +204,7 @@ export async function accessibleQuestion(
       releases,
       and(
         eq(releases.deckId, decks.id),
-        eq(releases.version, decks.publishedVersion),
+        eq(releases.version, subscriptions.seenVersion),
       ),
     )
     .where(
@@ -215,116 +225,189 @@ export async function accessibleQuestion(
 export async function getWorkspace(identity: Identity): Promise<Workspace> {
   await ensureWorkspace(identity.id);
   const db = await getDb();
-  const [own, subscribed, states, logs, prefRows, keyRows] = await Promise.all([
-    db
-      .select()
-      .from(decks)
-      .where(and(eq(decks.ownerId, identity.id), isNull(decks.deletedAt)))
-      .orderBy(decks.createdAt),
-    db
-      .select({ deck: decks, subscription: subscriptions, owner: users.name })
-      .from(subscriptions)
-      .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-      .innerJoin(users, eq(decks.ownerId, users.id))
-      .where(eq(subscriptions.userId, identity.id)),
-    db.select().from(studyCards).where(eq(studyCards.userId, identity.id)),
-    db
-      .select()
-      .from(reviewEvents)
-      .where(eq(reviewEvents.userId, identity.id))
-      .orderBy(desc(reviewEvents.createdAt))
-      .limit(30),
-    db.select().from(preferences).where(eq(preferences.userId, identity.id)),
-    db
-      .select({
-        keyHint: credentials.keyHint,
-        provider: credentials.provider,
-        baseUrl: credentials.baseUrl,
-        model: credentials.model,
-      })
-      .from(credentials)
-      .where(eq(credentials.userId, identity.id)),
-  ]);
+  const [own, subscribed, followedRows, states, logs, prefRows, keyRows] =
+    await Promise.all([
+      db
+        .select()
+        .from(decks)
+        .where(and(eq(decks.ownerId, identity.id), isNull(decks.deletedAt)))
+        .orderBy(decks.createdAt),
+      db
+        .select({ deck: decks, subscription: subscriptions, owner: users.name })
+        .from(subscriptions)
+        .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+        .innerJoin(users, eq(decks.ownerId, users.id))
+        .where(eq(subscriptions.userId, identity.id)),
+      db
+        .select({
+          authorId: authorSubscriptions.authorId,
+          authorName: users.name,
+          autoSubscribeNew: authorSubscriptions.autoSubscribeNew,
+          createdAt: authorSubscriptions.createdAt,
+        })
+        .from(authorSubscriptions)
+        .innerJoin(users, eq(authorSubscriptions.authorId, users.id))
+        .where(eq(authorSubscriptions.followerId, identity.id))
+        .orderBy(desc(authorSubscriptions.createdAt)),
+      db.select().from(studyCards).where(eq(studyCards.userId, identity.id)),
+      db
+        .select()
+        .from(reviewEvents)
+        .where(eq(reviewEvents.userId, identity.id))
+        .orderBy(desc(reviewEvents.createdAt))
+        .limit(30),
+      db.select().from(preferences).where(eq(preferences.userId, identity.id)),
+      db
+        .select({
+          keyHint: credentials.keyHint,
+          provider: credentials.provider,
+          baseUrl: credentials.baseUrl,
+          model: credentials.model,
+        })
+        .from(credentials)
+        .where(eq(credentials.userId, identity.id)),
+    ]);
   const timeZone = prefRows[0]?.timeZone ?? "Asia/Shanghai";
   const today = dateKey(new Date(), timeZone);
   const dayExpression = sql<string>`to_char(${reviewEvents.createdAt} at time zone ${timeZone}, 'YYYY-MM-DD')`;
   const recentCutoff = new Date(Date.now() - 30 * 86400_000);
-  const [drafts, ownGroups, activityRows, aggregateRows, published] =
-    await Promise.all([
-      db
-        .select({
-          id: questions.id,
-          deckId: questions.deckId,
-          groupId: questions.groupId,
-          position: questions.position,
-          parentId: questions.parentId,
-          title: questions.title,
-          answer: questions.answer,
-          tags: questions.tags,
-          revision: questions.revision,
-          majorRevision: questions.majorRevision,
-          needsEditing: questions.needsEditing,
-          archived: questions.archived,
-          createdAt: questions.createdAt,
-          updatedAt: questions.updatedAt,
-          validation: questions.validation,
-        })
-        .from(questions)
-        .where(
-          and(
-            eq(questions.ownerId, identity.id),
-            isNull(questions.deletedAt),
-            isNull(questions.purgedAt),
-          ),
-        )
-        .orderBy(asc(questions.createdAt), asc(questions.id)),
-      db
-        .select()
-        .from(deckGroups)
-        .where(eq(deckGroups.ownerId, identity.id))
-        .orderBy(
-          asc(deckGroups.position),
-          asc(deckGroups.createdAt),
-          asc(deckGroups.id),
+  const latestDeckIds = [
+    ...new Set([
+      ...own.filter((d) => d.publishedVersion > 0).map((d) => d.id),
+      ...subscribed
+        .filter((s) => s.deck.publishedVersion > s.subscription.seenVersion)
+        .map((s) => s.deck.id),
+    ]),
+  ];
+  const followedAuthorIds = followedRows.map((row) => row.authorId);
+  const [
+    drafts,
+    ownGroups,
+    activityRows,
+    aggregateRows,
+    pinnedSubReleases,
+    latestReleases,
+    followedAuthorDecks,
+  ] = await Promise.all([
+    db
+      .select({
+        id: questions.id,
+        deckId: questions.deckId,
+        groupId: questions.groupId,
+        position: questions.position,
+        parentId: questions.parentId,
+        title: questions.title,
+        answer: questions.answer,
+        tags: questions.tags,
+        revision: questions.revision,
+        majorRevision: questions.majorRevision,
+        needsEditing: questions.needsEditing,
+        archived: questions.archived,
+        createdAt: questions.createdAt,
+        updatedAt: questions.updatedAt,
+        validation: questions.validation,
+      })
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, identity.id),
+          isNull(questions.deletedAt),
+          isNull(questions.purgedAt),
         ),
-      db
-        .select({ date: dayExpression, count: sql<number>`count(*)::int` })
-        .from(reviewEvents)
-        .where(eq(reviewEvents.userId, identity.id))
-        .groupBy(sql`1`),
-      db
-        .select({
-          total: sql<number>`count(*)::int`,
-          recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
-          remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
-          today: sql<number>`count(distinct case when ${dayExpression} = ${today} then ${reviewEvents.questionId} end)::int`,
-          newToday: sql<number>`count(distinct case when ${dayExpression} = ${today} and ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
-        })
-        .from(reviewEvents)
-        .where(eq(reviewEvents.userId, identity.id)),
-      subscribed.length
-        ? db
-            .select({ release: releases })
-            .from(releases)
-            .innerJoin(
-              decks,
-              and(
-                eq(releases.deckId, decks.id),
-                eq(releases.version, decks.publishedVersion),
-              ),
-            )
-            .where(
-              inArray(
-                releases.deckId,
-                subscribed.map((s) => s.deck.id),
-              ),
-            )
-        : [],
-    ]);
+      )
+      .orderBy(asc(questions.createdAt), asc(questions.id)),
+    db
+      .select()
+      .from(deckGroups)
+      .where(eq(deckGroups.ownerId, identity.id))
+      .orderBy(
+        asc(deckGroups.position),
+        asc(deckGroups.createdAt),
+        asc(deckGroups.id),
+      ),
+    db
+      .select({ date: dayExpression, count: sql<number>`count(*)::int` })
+      .from(reviewEvents)
+      .where(eq(reviewEvents.userId, identity.id))
+      .groupBy(sql`1`),
+    db
+      .select({
+        total: sql<number>`count(*)::int`,
+        recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
+        remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
+        today: sql<number>`count(distinct case when ${dayExpression} = ${today} then ${reviewEvents.questionId} end)::int`,
+        newToday: sql<number>`count(distinct case when ${dayExpression} = ${today} and ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
+      })
+      .from(reviewEvents)
+      .where(eq(reviewEvents.userId, identity.id)),
+    subscribed.length
+      ? db
+          .select({ release: releases })
+          .from(subscriptions)
+          .innerJoin(
+            releases,
+            and(
+              eq(releases.deckId, subscriptions.deckId),
+              eq(releases.version, subscriptions.seenVersion),
+            ),
+          )
+          .where(eq(subscriptions.userId, identity.id))
+      : [],
+    latestDeckIds.length
+      ? db
+          .select({ release: releases })
+          .from(releases)
+          .innerJoin(
+            decks,
+            and(
+              eq(releases.deckId, decks.id),
+              eq(releases.version, decks.publishedVersion),
+            ),
+          )
+          .where(inArray(releases.deckId, latestDeckIds))
+      : [],
+    followedAuthorIds.length
+      ? db
+          .select({ id: decks.id, ownerId: decks.ownerId })
+          .from(decks)
+          .where(
+            and(
+              inArray(decks.ownerId, followedAuthorIds),
+              eq(decks.visibility, "public"),
+              gt(decks.publishedVersion, 0),
+              isNull(decks.deletedAt),
+            ),
+          )
+      : [],
+  ]);
   const stateMap = new Map(states.map((s) => [s.questionId, s]));
-  const releaseMap = new Map(
-    published.map((p) => [p.release.deckId, p.release]),
+  const pinnedReleaseMap = new Map(
+    pinnedSubReleases.map((p) => [p.release.deckId, p.release]),
   );
+  const latestReleaseMap = new Map(
+    latestReleases.map((p) => [p.release.deckId, p.release]),
+  );
+  const subscribedDeckIdSet = new Set(subscribed.map((s) => s.deck.id));
+  const followedAuthors: FollowedAuthorView[] = followedRows.map((row) => {
+    const publicDecks = followedAuthorDecks.filter(
+      (d) => d.ownerId === row.authorId,
+    );
+    const subscribedDeckCount = publicDecks.filter((d) =>
+      subscribedDeckIdSet.has(d.id),
+    ).length;
+    return {
+      authorId: row.authorId,
+      authorName: row.authorName,
+      autoSubscribeNew: row.autoSubscribeNew,
+      createdAt: row.createdAt.toISOString(),
+      publicDeckCount: publicDecks.length,
+      subscribedDeckCount,
+      unsubscribedDeckCount: Math.max(
+        0,
+        publicDecks.length - subscribedDeckCount,
+      ),
+    };
+  });
   const ownGroupsByDeck = new Map<string, DeckGroupView[]>();
   for (const g of ownGroups) {
     const view: DeckGroupView = {
@@ -354,6 +437,11 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       releaseSummary?: string;
       groupName?: string;
       groups?: DeckGroupView[];
+      pinnedRelease?: typeof releases.$inferSelect;
+      dismissedVersion?: number;
+      pendingUpdate?: PendingDeckUpdate | null;
+      publishStatus?: PublishStatus;
+      unpublishedDiff?: UnpublishedDeckDiff | null;
     } = {},
   ) {
     const active = qs.filter((q) => !q.archived);
@@ -363,7 +451,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       return s?.fsrs && new Date(String(s.fsrs.due)).getTime() <= now;
     }).length;
     const newCount = eligible.filter((q) => !stateMap.get(q.id)?.fsrs).length;
-    const release = deck ? releaseMap.get(deck.id) : undefined;
+    const release = options.pinnedRelease;
     const title = deck
       ? isOwner
         ? deck.title
@@ -381,9 +469,19 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         color: deck.color,
         visibility: deck.visibility,
         isOwner,
+        ownerId: deck.ownerId,
         ownerName,
         publishedVersion: deck.publishedVersion,
         seenVersion,
+        syncedVersion: seenVersion,
+        dismissedVersion: options.dismissedVersion ?? 0,
+        pendingUpdate: options.pendingUpdate ?? null,
+        ...(options.publishStatus !== undefined
+          ? { publishStatus: options.publishStatus }
+          : {}),
+        ...(options.unpublishedDiff !== undefined
+          ? { unpublishedDiff: options.unpublishedDiff }
+          : {}),
         count: active.length,
         due,
         newCount,
@@ -408,18 +506,30 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       });
     }
   }
-  for (const deck of own)
-    append(
-      deck,
-      drafts.filter((q) => q.deckId === deck.id).map(publishedQuestion),
-      true,
-      identity.name,
-      deck.publishedVersion,
+  for (const deck of own) {
+    const deckDrafts = drafts
+      .filter((q) => q.deckId === deck.id)
+      .map(publishedQuestion);
+    const deckGroupViews = ownGroupsByDeck.get(deck.id) ?? [];
+    const latestRel =
+      deck.publishedVersion > 0 ? latestReleaseMap.get(deck.id) : undefined;
+    const { publishStatus, unpublishedDiff } = computeUnpublishedDiff(
       {
-        groupName: deck.groupName,
-        groups: ownGroupsByDeck.get(deck.id) ?? [],
+        title: deck.title,
+        description: deck.description,
+        groups: deckGroupViews,
+        questions: deckDrafts,
       },
+      latestRel,
     );
+    append(deck, deckDrafts, true, identity.name, deck.publishedVersion, {
+      groupName: deck.groupName,
+      groups: deckGroupViews,
+      releaseSummary: latestRel?.summary ?? "",
+      publishStatus,
+      unpublishedDiff,
+    });
+  }
   append(
     null,
     drafts.filter((q) => !q.deckId).map(publishedQuestion),
@@ -428,10 +538,10 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     0,
   );
   for (const item of subscribed) {
-    const release = releaseMap.get(item.deck.id);
-    if (release) {
-      const releaseTime = release.createdAt.toISOString();
-      const releaseGroups: DeckGroupView[] = (release.groups ?? [])
+    const pinned = pinnedReleaseMap.get(item.deck.id);
+    if (pinned) {
+      const releaseTime = pinned.createdAt.toISOString();
+      const releaseGroups: DeckGroupView[] = (pinned.groups ?? [])
         .map((g) => ({
           id: g.id,
           deckId: item.deck.id,
@@ -443,16 +553,27 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
           updatedAt: releaseTime,
         }))
         .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+      const latest =
+        item.deck.publishedVersion > item.subscription.seenVersion
+          ? latestReleaseMap.get(item.deck.id)
+          : undefined;
+      const pendingUpdate =
+        latest && latest.version > pinned.version
+          ? diffReleaseVersions(pinned, latest)
+          : null;
       append(
         item.deck,
-        release.questions,
+        pinned.questions,
         false,
         item.owner,
         item.subscription.seenVersion,
         {
-          releaseSummary: release.summary,
+          pinnedRelease: pinned,
+          releaseSummary: pinned.summary,
           groupName: item.subscription.groupName,
           groups: releaseGroups,
+          dismissedVersion: item.subscription.dismissedVersion,
+          pendingUpdate,
         },
       );
     }
@@ -478,6 +599,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     user: identity,
     decks: deckViews,
     questions: questionViews,
+    followedAuthors,
     stats: {
       due: active.filter(
         (q) =>

@@ -377,6 +377,12 @@ html[data-input="touch"] :where(
   .settings-modal textarea,
   .deck-organizer-dialog input,
   .deck-organizer-dialog select,
+  .catalog-toolbar input,
+  .catalog-toolbar select,
+  .catalog-batch-bar input,
+  .publish-batch-dialog input,
+  .publish-batch-dialog select,
+  .publish-batch-dialog textarea,
   .auth-form input,
   .tiptap-math-inline-input,
   .tiptap-math-block-editor > textarea
@@ -391,6 +397,7 @@ html[data-input="touch"] :where(
   .text-button,
   .reader-tabs > button,
   .library-sections > button,
+  .catalog-tabs > button,
   .action-menu > div > button
 ) {
   min-height: 44px;
@@ -535,7 +542,8 @@ html[data-input="touch"] :where(
   .settings-close-btn,
   .settings-signout-btn,
   .deck-group-heading-actions > .button-ghost,
-  .deck-group-heading-actions > .icon-button
+  .deck-group-heading-actions > .icon-button,
+  .catalog-deck-author-row
 ):active:not(:disabled) {
   background: transparent;
   border-color: transparent;
@@ -555,7 +563,12 @@ html[data-input="touch"] :where(
   .group-view-toggle > button,
   .tag-filter-pill,
   .tag-interactive,
-  .settings-nav-item:not(.is-active)
+  .settings-nav-item:not(.is-active),
+  .subscription-update-pill,
+  .catalog-filter-toggle,
+  .catalog-author-decks > button,
+  .publish-batch-filters > button,
+  .catalog-tabs > button:not(.is-active):not(.selected)
 ):active:not(:disabled) {
   opacity: 0.74;
   transform: scale(0.97);
@@ -592,7 +605,11 @@ html[data-input="touch"] :where(
   .action-sheet-cancel,
   .sidebar-mobile-ai-btn,
   .sidebar-mobile-logout,
-  .settings-option-card
+  .settings-option-card,
+  .catalog-deck-card,
+  .catalog-author-card,
+  .catalog-sub-row,
+  .publish-batch-row
 ):active:not(:disabled) {
   translate: 0 0;
   transform: scale(0.98);
@@ -896,6 +913,9 @@ html[data-shell="mobile"] {
   }
 
   /* —— 抽屉内移动端专属控件 —— */
+  & .sidebar .brand-wordmark {
+    font-size: 1.56rem;
+  }
   & .sidebar .nav-item {
     min-height: 42px;
     padding: 8px 12px;
@@ -1228,8 +1248,10 @@ html[data-shell="mobile"] {
   & .focus-card h3 {
     margin-block: 12px;
     padding-block: 4px;
-    font-size: 1.2rem;
-    line-height: 1.48;
+    font-size: 1.16rem;
+    font-weight: 600;
+    line-height: 1.44;
+    letter-spacing: -0.014em;
   }
   & .focus-card-top {
     gap: 8px;
@@ -1318,6 +1340,11 @@ html[data-shell="mobile"] {
   }
   & .deck-card-top .deck-icon > svg {
     width: 17px;
+  }
+  & .deck-group-badge {
+    max-width: 80px;
+    padding: 1px 7px;
+    font-size: 0.675rem;
   }
 
   /* —— 我的题库：紧凑横向列表 + 一键状态胶囊 —— */
@@ -1550,7 +1577,9 @@ html[data-shell="mobile"] {
     gap: 9px;
   }
   & .question-row-main > strong {
-    font-size: 0.98rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.48;
   }
   & .question-row-tools .icon-button,
   & .question-row-tools .action-menu > summary {
@@ -1657,8 +1686,10 @@ html[data-shell="mobile"] {
     row-gap: 4px;
   }
   & .question-card-heading h1 {
-    font-size: 1.34rem;
-    line-height: 1.46;
+    font-size: clamp(1.22rem, 4.8vw, 1.42rem);
+    font-weight: 600;
+    line-height: 1.38;
+    letter-spacing: -0.015em;
   }
   & .question-card-foot {
     margin-top: 12px;
@@ -1683,11 +1714,11 @@ html[data-shell="mobile"] {
     padding-left: 6px;
   }
   & .notebook-reader .prose-content {
-    font-size: 0.98rem;
-    line-height: 1.84;
+    font-size: 0.9375rem;
+    line-height: 1.78;
   }
   & .notebook-reader .prose-content h2 {
-    font-size: 1.18rem;
+    font-size: 1.12rem;
   }
   & .obsidian-prop-row {
     grid-template-columns: minmax(64px, 88px) minmax(0, 1fr);
@@ -1825,7 +1856,8 @@ html[data-shell="mobile"] {
     padding: 16px 14px;
   }
   & .followup-question .prose-content {
-    font-size: 1.15rem;
+    font-size: 1.08rem;
+    font-weight: 600;
   }
 
   /* —— 原生底部抽屉：AI 助手 / ActionMenu / Dialog（适配 --vvh 软键盘高度） —— */
@@ -2131,6 +2163,232 @@ html[data-shell="mobile"] {
   & .catalog-grid {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  /* —— 移动端订阅更新横幅、三栏发现目录与批量发布弹层 —— */
+  & .update-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 13px;
+  }
+  & .update-banner-main {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  & .update-banner-head {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+  & .update-banner-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    width: 100%;
+  }
+  & .update-banner-actions > .button {
+    min-height: 40px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+  }
+  & .subscription-update-pill {
+    min-height: 34px;
+    padding: 4px 11px;
+    font-size: 0.78rem;
+  }
+  & .library-updates-bar {
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 10px;
+    padding: 10px 12px;
+  }
+  & .library-updates-bar > .button {
+    min-height: 38px;
+    padding: 5px 12px;
+    font-size: 0.8rem;
+  }
+  & .catalog-page:has(.catalog-batch-bar) {
+    padding-bottom: calc(164px + env(safe-area-inset-bottom));
+  }
+  & .catalog-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    width: 100%;
+    max-width: 100%;
+    gap: 4px;
+  }
+  & .catalog-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  & .catalog-tabs > button {
+    flex: 1 0 auto;
+    white-space: nowrap;
+    min-height: 40px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+  }
+  & .catalog-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
+  }
+  & .catalog-toolbar .search-field {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  & .catalog-toolbar select {
+    flex: 1 1 130px;
+    min-width: 0;
+    max-width: none;
+    min-height: 42px;
+  }
+  & .catalog-filter-toggle {
+    min-height: 40px;
+    padding: 6px 11px;
+    font-size: 0.8rem;
+  }
+  & .catalog-author-filter-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 13px 14px;
+  }
+  & .catalog-deck-card {
+    padding: 13px 14px;
+    gap: 9px;
+  }
+  & .catalog-deck-select {
+    position: relative;
+    width: 36px;
+    height: 36px;
+  }
+  & .catalog-deck-select::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
+  & .catalog-author-decks > button {
+    min-height: 32px;
+    padding: 4px 10px;
+  }
+  & .catalog-deck-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+  & .catalog-deck-actions > .button {
+    min-height: 40px;
+    flex: 1 1 0;
+    justify-content: center;
+  }
+  & .catalog-authors-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 11px;
+  }
+  & .catalog-author-card {
+    padding: 13px 14px;
+    gap: 10px;
+  }
+  & .catalog-author-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  & .catalog-author-actions > .button {
+    min-height: 38px;
+    padding: 5px 11px;
+    font-size: 0.8rem;
+  }
+  & .catalog-followed-strip {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    gap: 8px;
+    padding-bottom: 2px;
+  }
+  & .catalog-followed-strip::-webkit-scrollbar {
+    display: none;
+  }
+  & .catalog-sub-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 13px;
+  }
+  & .catalog-batch-bar {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(68px + env(safe-area-inset-bottom));
+    z-index: var(--z-batch-bar, 55);
+    width: auto;
+    max-width: none;
+    margin: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  & .catalog-batch-bar input {
+    min-width: 0;
+    max-width: none;
+    min-height: 40px;
+    width: 100%;
+  }
+  & .dialog-content.catalog-preview-dialog,
+  & .dialog-content.publish-batch-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: calc(
+      min(90dvh, calc(var(--vvh, 100dvh) - 24px - env(safe-area-inset-top))) + 48px
+    );
+  }
+  & .publish-batch-filters {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+  & .publish-batch-filters::-webkit-scrollbar {
+    display: none;
+  }
+  & .publish-batch-filters > button {
+    flex-shrink: 0;
+    white-space: nowrap;
+    min-height: 36px;
+    padding: 5px 11px;
+    font-size: 0.8rem;
+  }
+  & .publish-batch-row {
+    min-height: 44px;
+    padding: 10px 11px;
+    gap: 9px;
+    flex-wrap: wrap;
+  }
+  & .publish-batch-config input,
+  & .publish-batch-row input:not([type="checkbox"]) {
+    min-height: 42px;
+  }
+  & .publish-batch-result {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
   & .dialog-content.answer-composer-dialog {
     height: calc(var(--vvh, 100dvh) - 32px);
@@ -2467,6 +2725,11 @@ html[data-shell="mobile"][data-keyboard-open="true"] .settings-modal {
   height: calc(var(--vvh, 100dvh) - 16px - env(safe-area-inset-top) + 48px);
 }
 
+html[data-shell="mobile"][data-keyboard-open="true"] .catalog-batch-bar,
+html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
+  bottom: calc(12px + var(--kb-offset, 0px));
+}
+
 /* 宽屏移动端（竖屏平板 680-960px & 宽横屏手机）：自然双列排布，避免卡片过宽拉伸 */
 @media (min-width: 680px) {
   html[data-shell="mobile"] .page {
@@ -2475,7 +2738,8 @@ html[data-shell="mobile"][data-keyboard-open="true"] .settings-modal {
   html[data-shell="mobile"] .question-list,
   html[data-shell="mobile"] .library-book-grid,
   html[data-shell="mobile"] .review-hub-deck-grid,
-  html[data-shell="mobile"] .catalog-grid {
+  html[data-shell="mobile"] .catalog-grid,
+  html[data-shell="mobile"] .catalog-authors-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
   }
@@ -2516,6 +2780,10 @@ html[data-shell="mobile"][data-keyboard-open="true"] .settings-modal {
   }
   html[data-shell="mobile"] .main-layout {
     padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+  html[data-shell="mobile"] .catalog-batch-bar,
+  html[data-shell="mobile"] .batch-action-bar {
+    bottom: calc(56px + env(safe-area-inset-bottom));
   }
   html[data-shell="mobile"] .mobile-immersive .main-layout {
     padding-bottom: calc(68px + env(safe-area-inset-bottom));

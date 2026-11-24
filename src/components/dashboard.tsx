@@ -397,13 +397,18 @@ export function Dashboard({
                       <span className="deck-icon">
                         <BookOpen size={22} strokeWidth={1.5} />
                       </span>
-                      <ArrowUpRight size={16} />
+                      <div className="deck-card-top-right">
+                        {deck.groupName && (
+                          <span
+                            className="deck-group-badge"
+                            title={deck.groupName}
+                          >
+                            {deck.groupName}
+                          </span>
+                        )}
+                        <ArrowUpRight size={16} />
+                      </div>
                     </div>
-                    {deck.groupName && (
-                      <span className="deck-group-eyebrow">
-                        {deck.groupName}
-                      </span>
-                    )}
                     <h3>{deck.title}</h3>
                     <div className="deck-card-foot">
                       <span>{deck.count} 道题</span>

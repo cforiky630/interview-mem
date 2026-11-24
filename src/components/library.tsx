@@ -41,12 +41,12 @@ import {
   LayoutList,
   Layers2,
   Upload,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
   Workspace,
   QuestionView,
-  CatalogDeck,
   DeckGroupView,
 } from "@/lib/types";
 import {
@@ -106,9 +106,13 @@ export function Library({
   onCreateDeckInGroup,
   onReview,
   onPublish,
+  onBatchPublish,
   onFavorite,
   onGenerateAnswer,
   onAcknowledge,
+  onApplyUpdate,
+  onDismissUpdate,
+  onApplyAllUpdates,
   onUnsubscribe,
   onDelete,
   onDeleteQuestion,
@@ -141,9 +145,16 @@ export function Library({
   onCreateDeckInGroup?: (groupName: string) => void;
   onReview: (deckId?: string) => void;
   onPublish: (id: string) => void;
+  onBatchPublish?: () => void;
   onFavorite: (q: QuestionView) => void;
   onGenerateAnswer: (q: QuestionView) => void;
-  onAcknowledge: (id: string, version: number) => void;
+  onAcknowledge?: (id: string, version: number) => void;
+  onApplyUpdate?: (
+    deckId: string,
+    targetVersion: number,
+  ) => void | Promise<void>;
+  onDismissUpdate?: (deckId: string, version: number) => void | Promise<void>;
+  onApplyAllUpdates?: (deckIds?: string[]) => void | Promise<void>;
   onUnsubscribe: (id: string) => void;
   onDelete: (deck: Workspace["decks"][number]) => void;
   onDeleteQuestion: (q: QuestionView) => void;
@@ -198,6 +209,8 @@ export function Library({
   const [batchNewGroupCategory, setBatchNewGroupCategory] = useState("");
   const [batchNewGroupTitle, setBatchNewGroupTitle] = useState("");
   const [batchBusy, setBatchBusy] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updatingAll, setUpdatingAll] = useState(false);
   const batchCategoryListId = useId();
   const more = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -619,6 +632,49 @@ export function Library({
           ? activeCategory
           : heading;
   const ownedDecks = data.decks.filter((d) => d.isOwner);
+  const ownedChangedCount = ownedDecks.filter(
+    (d) => d.publishStatus === "changes",
+  ).length;
+  const outdatedSubDecks = data.decks.filter(
+    (d) => !d.isOwner && Boolean(d.pendingUpdate),
+  );
+  async function handleApplySingleUpdate(
+    targetDeckId: string,
+    targetVersion: number,
+  ) {
+    if (updateBusy) return;
+    setUpdateBusy(true);
+    try {
+      if (onApplyUpdate) {
+        await onApplyUpdate(targetDeckId, targetVersion);
+      } else if (onAcknowledge) {
+        onAcknowledge(targetDeckId, targetVersion);
+      }
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+  async function handleDismissSingleUpdate(
+    targetDeckId: string,
+    version: number,
+  ) {
+    if (updateBusy || !onDismissUpdate) return;
+    setUpdateBusy(true);
+    try {
+      await onDismissUpdate(targetDeckId, version);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+  async function handleApplyAllUpdates() {
+    if (updatingAll || !onApplyAllUpdates || !outdatedSubDecks.length) return;
+    setUpdatingAll(true);
+    try {
+      await onApplyAllUpdates(outdatedSubDecks.map((d) => d.id));
+    } finally {
+      setUpdatingAll(false);
+    }
+  }
   const batchTargetDeck = ownedDecks.find((d) => d.id === batchTargetDeckId);
   const batchTargetGroups = batchTargetDeck?.groups ?? [];
   const batchTargetCategories = useMemo(
@@ -819,6 +875,19 @@ export function Library({
             {d.groups.length > 0 ? ` · ${d.groups.length} 分组` : ""}
             {d.due > 0 ? ` · ${d.due} 待复习` : ""}
             {!d.isOwner ? ` · ${d.ownerName}` : ""}
+            {!d.isOwner && d.pendingUpdate ? (
+              <>
+                {" "}
+                <span className="deck-status-pill is-update">
+                  有更新 v{d.pendingUpdate.toVersion}
+                </span>
+              </>
+            ) : d.isOwner && d.publishStatus === "changes" ? (
+              <>
+                {" "}
+                <span className="deck-status-pill is-changes">有改动</span>
+              </>
+            ) : null}
           </p>
         </div>
         <ArrowUpRight size={17} />
@@ -1088,31 +1157,33 @@ export function Library({
               <ArrowLeft size={14} /> 全部题库
             </button>
           )}
-          <h1>{heading}</h1>
-          {deck && onSetDeckGroup && (
-            <button
-              type="button"
-              className={`deck-current-group-pill ${deck.groupName ? "" : "is-empty"}`}
-              onClick={() => onSetDeckGroup(deck)}
-              title={
-                deck.groupName
-                  ? `所属题库分组：${deck.groupName}（点击修改）`
-                  : "为当前题库设置分组"
-              }
-            >
-              {deck.groupName ? (
-                <>
-                  <FolderOpen size={13} aria-hidden="true" />
-                  <span>{deck.groupName}</span>
-                </>
-              ) : (
-                <>
-                  <FolderPlus size={13} aria-hidden="true" />
-                  <span>归入题库分组</span>
-                </>
-              )}
-            </button>
-          )}
+          <div className="deck-title-row">
+            <h1>{heading}</h1>
+            {deck && onSetDeckGroup && (
+              <button
+                type="button"
+                className={`deck-current-group-pill ${deck.groupName ? "" : "is-empty"}`}
+                onClick={() => onSetDeckGroup(deck)}
+                title={
+                  deck.groupName
+                    ? `所属题库分组：${deck.groupName}（点击修改）`
+                    : "为当前题库设置分组"
+                }
+              >
+                {deck.groupName ? (
+                  <>
+                    <FolderOpen size={13} aria-hidden="true" />
+                    <span>{deck.groupName}</span>
+                  </>
+                ) : (
+                  <>
+                    <FolderPlus size={13} aria-hidden="true" />
+                    <span>归入题库分组</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
         <div className="heading-actions">
           {deck?.isOwner && (
@@ -1131,6 +1202,17 @@ export function Library({
               </button>
             </ActionMenu>
           )}
+          {root &&
+            section === "decks" &&
+            ownedDecks.length > 0 &&
+            onBatchPublish && (
+              <Button variant="outline" onClick={onBatchPublish}>
+                <Rss size={15} />{" "}
+                {ownedChangedCount > 0
+                  ? `发布更新 (${ownedChangedCount})`
+                  : "批量发布"}
+              </Button>
+            )}
           {root &&
             section === "decks" &&
             data.decks.length > 0 &&
@@ -1219,8 +1301,29 @@ export function Library({
               {deck.sourceDeleted ? "已停止更新" : "持续订阅"} ·{" "}
               {deck.ownerName}
             </strong>
-            <span>v{deck.publishedVersion}</span>
+            <span>v{deck.syncedVersion ?? deck.seenVersion}</span>
           </div>
+          {deck.pendingUpdate &&
+            (deck.dismissedVersion ?? 0) >= deck.pendingUpdate.toVersion && (
+              <button
+                type="button"
+                className="subscription-update-pill"
+                disabled={updateBusy}
+                onClick={() =>
+                  void handleApplySingleUpdate(
+                    deck.id,
+                    deck.pendingUpdate!.toVersion,
+                  )
+                }
+              >
+                {updateBusy ? (
+                  <Loader2 size={12} className="spin" />
+                ) : (
+                  <Download size={12} />
+                )}
+                <span>有新版本 v{deck.pendingUpdate.toVersion} · 点击更新</span>
+              </button>
+            )}
           <Button
             variant="ghost"
             size="sm"
@@ -1230,23 +1333,105 @@ export function Library({
           </Button>
         </div>
       )}
-      {deck && !deck.isOwner && deck.publishedVersion > deck.seenVersion && (
-        <div className="update-banner">
-          <div>
-            <strong>题库已更新到 v{deck.publishedVersion}</strong>
-            <p>{deck.releaseSummary || "作者发布了新的内容，已为你同步。"}</p>
+      {deck &&
+        !deck.isOwner &&
+        deck.pendingUpdate &&
+        (deck.dismissedVersion ?? 0) < deck.pendingUpdate.toVersion && (
+          <div className="update-banner">
+            <div className="update-banner-main">
+              <div className="update-banner-head">
+                <strong>
+                  v{deck.pendingUpdate.fromVersion} → v
+                  {deck.pendingUpdate.toVersion} 有新更新
+                </strong>
+                <div className="update-diff-pills">
+                  {deck.pendingUpdate.added > 0 && (
+                    <span className="update-diff-pill is-added">
+                      +{deck.pendingUpdate.added} 新增
+                    </span>
+                  )}
+                  {deck.pendingUpdate.updated > 0 && (
+                    <span className="update-diff-pill is-updated">
+                      ~{deck.pendingUpdate.updated} 修改
+                    </span>
+                  )}
+                  {deck.pendingUpdate.removed > 0 && (
+                    <span className="update-diff-pill is-removed">
+                      -{deck.pendingUpdate.removed} 移除
+                    </span>
+                  )}
+                  {deck.pendingUpdate.added === 0 &&
+                    deck.pendingUpdate.updated === 0 &&
+                    deck.pendingUpdate.removed === 0 &&
+                    deck.pendingUpdate.groupsChanged && (
+                      <span className="update-diff-pill">分组已调整</span>
+                    )}
+                </div>
+              </div>
+              {deck.pendingUpdate.summary && (
+                <p className="update-banner-summary">
+                  {deck.pendingUpdate.summary}
+                </p>
+              )}
+            </div>
+            <div className="update-banner-actions">
+              {onDismissUpdate && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={updateBusy}
+                  onClick={() =>
+                    void handleDismissSingleUpdate(
+                      deck.id,
+                      deck.pendingUpdate!.toVersion,
+                    )
+                  }
+                >
+                  暂不更新
+                </Button>
+              )}
+              <Button
+                size="sm"
+                disabled={updateBusy}
+                onClick={() =>
+                  void handleApplySingleUpdate(
+                    deck.id,
+                    deck.pendingUpdate!.toVersion,
+                  )
+                }
+              >
+                {updateBusy ? (
+                  <Loader2 size={14} className="spin" />
+                ) : (
+                  <Download size={14} />
+                )}{" "}
+                立即更新
+              </Button>
+            </div>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => onAcknowledge(deck.id, deck.publishedVersion)}
-          >
-            <Check size={14} /> 知道了
-          </Button>
-        </div>
-      )}
+        )}
       {root && section === "decks" && (
         <>
+          {outdatedSubDecks.length > 0 && onApplyAllUpdates && (
+            <div className="library-updates-bar">
+              <div>
+                <strong>{outdatedSubDecks.length} 个订阅题库</strong>
+                <span>有新版本可更新</span>
+              </div>
+              <Button
+                size="sm"
+                disabled={updatingAll}
+                onClick={() => void handleApplyAllUpdates()}
+              >
+                {updatingAll ? (
+                  <Loader2 size={14} className="spin" />
+                ) : (
+                  <Download size={14} />
+                )}{" "}
+                一键更新全部
+              </Button>
+            </div>
+          )}
           {deckGrouping.hasGroups ? (
             <>
               <div
@@ -2460,120 +2645,4 @@ export function Library({
 }
 function ArrowRightIcon() {
   return <ArrowUpRight size={14} />;
-}
-
-export function Catalog({
-  entries,
-  busy,
-  onSubscribe,
-  onOpen,
-  onCreate,
-  onRefresh,
-}: {
-  entries: CatalogDeck[];
-  busy: boolean;
-  onSubscribe: (id: string) => void;
-  onOpen: (id: string) => void;
-  onCreate: () => void;
-  onRefresh: () => void;
-}) {
-  const [search, setSearch] = useState("");
-  const visible = entries.filter((e) =>
-    `${e.title} ${e.description} ${e.ownerName}`
-      .toLowerCase()
-      .includes(search.toLowerCase()),
-  );
-  return (
-    <div className="page catalog-page">
-      <div className="page-heading">
-        <div>
-          <h1>
-            发现题库
-            <span className="greeting-sprout">
-              <Rss size={25} />
-            </span>
-          </h1>
-        </div>
-        <Button variant="outline" onClick={onRefresh}>
-          刷新题库
-        </Button>
-      </div>
-      <div
-        className={`search-field catalog-search ${search ? "has-query" : ""}`}
-      >
-        <Search size={17} />
-        <input
-          aria-label="搜索公开题库"
-          placeholder="搜索公开题库名称、技术方向或创作者…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        {search && (
-          <button
-            type="button"
-            className="search-clear"
-            aria-label="清空搜索"
-            onClick={() => setSearch("")}
-          >
-            <X size={14} />
-          </button>
-        )}
-      </div>
-      {visible.length ? (
-        <div className="catalog-grid">
-          {visible.map((deck) => (
-            <article
-              key={deck.id}
-              className={`catalog-deck color-${deck.color}`}
-            >
-              <div className="catalog-deck-top">
-                <span className="deck-icon">
-                  <BookOpen size={25} />
-                </span>
-              </div>
-              <h2>{deck.title}</h2>
-              {deck.description && <p>{deck.description}</p>}
-              <div className="catalog-author">
-                <span>{deck.ownerName.slice(0, 1)}</span>
-                {deck.ownerName}
-                <small>{deck.count} 道题</small>
-              </div>
-              <Button
-                variant={
-                  deck.subscribed || deck.isOwner ? "outline" : "default"
-                }
-                disabled={busy}
-                onClick={() =>
-                  deck.subscribed || deck.isOwner
-                    ? onOpen(deck.id)
-                    : onSubscribe(deck.id)
-                }
-              >
-                {deck.isOwner
-                  ? "查看我的题库"
-                  : deck.subscribed
-                    ? "开始学习"
-                    : "订阅题库"}
-                <ArrowUpRight size={15} />
-              </Button>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state catalog-empty">
-          <Rss size={38} />
-          <h3>{search ? "没有找到这个题库" : "还没有公开题库"}</h3>
-          <p>
-            {search
-              ? "没有匹配到公开题库，换个关键词试试。"
-              : "在我的题库中选择任一题库发布，即可共享给他人订阅。"}
-          </p>
-          <Button variant="outline" onClick={onCreate}>
-            查看我的题库
-            <ArrowUpRight size={16} />
-          </Button>
-        </div>
-      )}
-    </div>
-  );
 }

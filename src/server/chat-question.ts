@@ -8,6 +8,7 @@ import {
   messages,
   releases,
   studyCards,
+  subscriptions,
 } from "@/db/schema";
 import { accessibleQuestion } from "@/server/workspace";
 import {
@@ -206,15 +207,20 @@ export async function handleQuestionChat(
               .then((rows) => rows[0] ?? null)
           : db
               .select({ groups: releases.groups })
-              .from(releases)
+              .from(subscriptions)
               .innerJoin(
-                decks,
+                releases,
                 and(
-                  eq(releases.deckId, decks.id),
-                  eq(releases.version, decks.publishedVersion),
+                  eq(releases.deckId, subscriptions.deckId),
+                  eq(releases.version, subscriptions.seenVersion),
                 ),
               )
-              .where(eq(releases.deckId, question.deckId))
+              .where(
+                and(
+                  eq(subscriptions.userId, user.id),
+                  eq(subscriptions.deckId, question.deckId),
+                ),
+              )
               .then(
                 (rows) =>
                   rows[0]?.groups?.find((g) => g.id === question.groupId) ??

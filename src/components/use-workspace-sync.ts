@@ -141,20 +141,6 @@ function applyLocalWorkspacePatch(
     }
   }
 
-  if (
-    url === "/api/decks" &&
-    action === "acknowledge" &&
-    typeof body.deckId === "string" &&
-    typeof body.version === "number"
-  ) {
-    return {
-      ...prev,
-      decks: prev.decks.map((d) =>
-        d.id === body.deckId ? { ...d, seenVersion: body.version as number } : d,
-      ),
-    };
-  }
-
   return null;
 }
 
@@ -166,7 +152,6 @@ export function useWorkspaceSync(sessionId: string) {
   const [syncError, setSyncError] = useState(false);
   const [pending, setPending] = useState(0);
   const pendingCount = useRef(0);
-  pendingCount.current = pending;
   const lifetime = useRef<AbortController | null>(null);
   const refreshAbort = useRef<AbortController | null>(null);
   const refreshSeq = useRef(0);
@@ -248,13 +233,16 @@ export function useWorkspaceSync(sessionId: string) {
 
     function onFocus() {
       if (document.visibilityState !== "visible") return;
+      if (pendingCount.current > 0) return;
       if (Date.now() - lastSyncedAt.current < FOCUS_STALE_MS) return;
       void refresh(true);
     }
     function onOnline() {
+      if (pendingCount.current > 0) return;
       if (document.visibilityState === "visible") void refresh(true);
     }
     const timer = window.setInterval(() => {
+      if (pendingCount.current > 0) return;
       if (document.visibilityState !== "visible" || !navigator.onLine) return;
       void refresh(true);
     }, POLL_INTERVAL_MS);
@@ -272,7 +260,12 @@ export function useWorkspaceSync(sessionId: string) {
     async (url, payload) => {
       const signal = lifetime.current?.signal;
       if (!signal || signal.aborted) return null;
+      pendingCount.current += 1;
       setPending((n) => n + 1);
+      // Invalidate any already-in-flight workspace refresh BEFORE the mutation starts
+      // so stale server snapshots can never race back and overwrite optimistic/fresh state.
+      mutationEpoch.current += 1;
+      refreshAbort.current?.abort();
       try {
         const result = await api<Record<string, unknown>>(url, payload, {
           userId: sessionId,
@@ -308,7 +301,8 @@ export function useWorkspaceSync(sessionId: string) {
         if (e instanceof RequestError && e.status === 409) await refresh(true);
         return null;
       } finally {
-        setPending((n) => n - 1);
+        pendingCount.current = Math.max(0, pendingCount.current - 1);
+        setPending((n) => Math.max(0, n - 1));
       }
     },
     [sessionId, refresh],

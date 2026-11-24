@@ -40,13 +40,11 @@ export function AuthScreen() {
   return (
     <main className="auth-layout">
       <section className="auth-story">
-        <div className="brand">
+        <div className="brand auth-brand">
           <span className="brand-mark">
-            <BookOpen size={24} />
+            <BookOpen size={19} />
           </span>
-          <div>
-            拾忆<span>SHIYI</span>
-          </div>
+          <span className="brand-wordmark">Shiyi</span>
         </div>
         <div className="auth-story-content">
           <h1>
@@ -66,11 +64,13 @@ export function AuthScreen() {
         <div className="auth-form-wrap">
           <div className="auth-mobile-brand">
             <span className="brand-mark">
-              <BookOpen size={20} />
+              <BookOpen size={17} />
             </span>
             <div>
-              <strong>拾忆 · SHIYI</strong>
-              <span>把每一道题内化成自己的表达</span>
+              <span className="brand-wordmark">Shiyi</span>
+              <span className="auth-mobile-tagline">
+                把每一道题内化成自己的表达
+              </span>
             </div>
           </div>
           <div className="auth-small-mark">

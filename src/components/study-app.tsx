@@ -35,7 +35,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
-import { api } from "@/lib/client";
+import {
+  applyAllDeckUpdates,
+  applyDeckUpdate,
+  dismissDeckUpdate,
+} from "@/lib/client";
 import { useDeviceProfile } from "@/lib/device-profile";
 import {
   computeDeckReadingOrder,
@@ -47,16 +51,26 @@ import {
 import type {
   Workspace,
   QuestionView,
-  CatalogDeck,
   DeckGroupView,
   DeckView,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
-import { syncDocumentTheme, type Palette } from "@/lib/theme";
+import {
+  hydrateServerTheme,
+  initAppearance,
+  setAppearancePalette,
+  setAppearanceSession,
+  setAppearanceTheme,
+  toggleAppearancePalette,
+  toggleAppearanceTheme,
+  useAppearance,
+  type Palette,
+} from "@/lib/theme";
 import {
   buildSearchFromRoute,
+  extractAuthorParam,
   extractSubscribeParam,
   parseRouteFromSearch,
   type AppView,
@@ -66,7 +80,8 @@ import { Button } from "./ui/button";
 import { ConfirmDialog } from "./ui/confirm-dialog";
 import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
-import { Library, Catalog } from "./library";
+import { Library } from "./library";
+import { Catalog } from "./catalog";
 import { ReviewHub } from "./review-hub";
 import { useAiAnswerDraft } from "./use-ai-answer-draft";
 import { useAppShortcuts } from "./use-app-shortcuts";
@@ -112,6 +127,9 @@ const ImportDialog = dynamic(() =>
 );
 const PublishDialog = dynamic(() =>
   import("./dialogs").then((m) => m.PublishDialog),
+);
+const PublishBatchDialog = dynamic(() =>
+  import("./publish-batch-dialog").then((m) => m.PublishBatchDialog),
 );
 const SettingsCard = dynamic(() =>
   import("./settings-card").then((m) => m.SettingsCard),
@@ -160,38 +178,95 @@ function clearCardPracticeDrafts(
   }
 }
 
+function TopbarAppearanceCluster() {
+  const { theme: activeTheme, palette } = useAppearance();
+  return (
+    <div className="topbar-cluster" role="group" aria-label="外观切换">
+      <button
+        type="button"
+        className="palette-quick-btn"
+        onClick={toggleAppearancePalette}
+        aria-label={
+          palette === "forest" ? "切换至熏衣紫主题色" : "切换至青瓷绿主题色"
+        }
+        title={
+          palette === "forest"
+            ? "当前：青瓷（点击切换熏衣紫）"
+            : "当前：熏衣（点击切换青瓷绿）"
+        }
+      >
+        <span className="palette-quick-dots" aria-hidden="true">
+          <i
+            style={{
+              background: palette === "forest" ? "#1A6347" : "#5D4B99",
+            }}
+          />
+          <i
+            style={{
+              background: palette === "forest" ? "#4EC496" : "#A796F0",
+            }}
+          />
+        </span>
+      </button>
+      <button
+        type="button"
+        className="topbar-theme-btn"
+        onClick={toggleAppearanceTheme}
+        aria-label={activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"}
+        title={activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"}
+      >
+        {activeTheme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+      </button>
+    </div>
+  );
+}
+
+function SidebarMobileAppearance() {
+  const { theme: activeTheme, palette } = useAppearance();
+  return (
+    <div className="sidebar-mobile-appearance">
+      <div className="sidebar-appearance-group" role="group" aria-label="色系切换">
+        <button
+          type="button"
+          className={palette === "forest" ? "is-active" : ""}
+          onClick={() => setAppearancePalette("forest")}
+        >
+          <span className="appearance-swatch" style={{ background: "#1A6347" }} />
+          青瓷
+        </button>
+        <button
+          type="button"
+          className={palette === "lavender" ? "is-active" : ""}
+          onClick={() => setAppearancePalette("lavender")}
+        >
+          <span className="appearance-swatch" style={{ background: "#5D4B99" }} />
+          熏衣
+        </button>
+      </div>
+      <div className="sidebar-appearance-group" role="group" aria-label="明暗切换">
+        <button
+          type="button"
+          className={activeTheme === "light" ? "is-active" : ""}
+          onClick={() => setAppearanceTheme("light")}
+        >
+          <Sun size={14} /> 浅色
+        </button>
+        <button
+          type="button"
+          className={activeTheme === "dark" ? "is-active" : ""}
+          onClick={() => setAppearanceTheme("dark")}
+        >
+          <Moon size={14} /> 深色
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function StudyApp() {
   const { data: session, isPending } = authClient.useSession();
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem("shiyi:theme");
-      const media = window.matchMedia?.("(prefers-color-scheme: dark)");
-      const resolved: "light" | "dark" =
-        cached === "light" || cached === "dark"
-          ? cached
-          : media?.matches
-            ? "dark"
-            : "light";
-      const savedPalette: Palette =
-        localStorage.getItem("shiyi:palette") === "lavender"
-          ? "lavender"
-          : "forest";
-      syncDocumentTheme(resolved, savedPalette);
-      if (cached !== "light" && cached !== "dark" && media) {
-        const onChange = (event: MediaQueryListEvent) => {
-          const next = event.matches ? "dark" : "light";
-          const activePal =
-            document.documentElement.dataset.palette === "lavender"
-              ? "lavender"
-              : "forest";
-          syncDocumentTheme(next, activePal);
-        };
-        media.addEventListener("change", onChange);
-        return () => media.removeEventListener("change", onChange);
-      }
-    } catch {
-      /* Ignore storage access failures. */
-    }
+    initAppearance();
   }, []);
   if (isPending)
     return (
@@ -209,11 +284,16 @@ export function StudyApp() {
 
 function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const initialRoute = useRef<RouteState | null>(null);
+  const initialShared = useRef<string | null>(null);
+  const initialAuthor = useRef<string | null>(null);
   if (initialRoute.current === null) {
     if (typeof window !== "undefined") {
       const sub = extractSubscribeParam(window.location.search);
+      const author = extractAuthorParam(window.location.search);
+      initialShared.current = sub;
+      initialAuthor.current = author;
       initialRoute.current = sub
-        ? { view: "catalog" }
+        ? { view: "catalog", ...(author ? { authorId: author } : {}) }
         : parseRouteFromSearch(window.location.search, true);
     } else {
       initialRoute.current = { view: "today" };
@@ -224,7 +304,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     error,
     syncError,
     pending,
-    lifetime,
     refresh,
     mutate,
   } = useWorkspaceSync(sessionId);
@@ -310,11 +389,17 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       tab: prev.open ? prev.tab : "study",
     }));
   }, []);
-  const [palette, setPalette] = useState<Palette>("forest");
-  const [themeOverride, setThemeOverride] = useState<"light" | "dark" | null>(
-    null,
-  );
   const [publishId, setPublishId] = useState<string | null>(null);
+  const [batchPublishOpen, setBatchPublishOpen] = useState(false);
+  const [sharedDeckId, setSharedDeckId] = useState<string | null>(
+    initialShared.current,
+  );
+  const [catalogAuthorId, setCatalogAuthorId] = useState<string | null>(
+    initialAuthor.current ??
+      (initialRoute.current.view === "catalog"
+        ? (initialRoute.current.authorId ?? null)
+        : null),
+  );
   const [deleteDeck, setDeleteDeck] = useState<
     Workspace["decks"][number] | null
   >(null);
@@ -350,8 +435,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     deckId?: string | null;
     questionId?: string | null;
   }>({ view: "today" });
-  const [catalog, setCatalog] = useState<CatalogDeck[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(false);
   const [queue, setQueue] = useState<QuestionView[]>([]);
   const queueLength = useRef(0);
   queueLength.current = queue.length;
@@ -495,38 +578,21 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     window.addEventListener("shiyi:open-note", openLinkedNote);
     return () => window.removeEventListener("shiyi:open-note", openLinkedNote);
   }, [data?.questions]);
-  const loadCatalog = useCallback(
-    async (shared?: string) => {
-      const signal = lifetime.current?.signal;
-      if (!signal || signal.aborted) return;
-      setCatalogLoading(true);
-      try {
-        const result = await api<CatalogDeck[]>(
-          `/api/catalog${shared ? `?id=${encodeURIComponent(shared)}` : ""}`,
-          undefined,
-          { userId: sessionId, signal },
-        );
-        setCatalog(result);
-      } catch (e) {
-        if (signal.aborted) return;
-        toast.error(e instanceof Error ? e.message : "题库暂时无法加载。");
-      } finally {
-        setCatalogLoading(false);
-      }
-    },
-    [sessionId, lifetime],
-  );
   useEffect(() => {
     if (!sessionId) return;
     const shared = extractSubscribeParam(window.location.search);
+    const author = extractAuthorParam(window.location.search);
     if (shared) {
+      setSharedDeckId(shared);
+      setCatalogAuthorId(author);
       setView("catalog");
       setNavigationTarget("catalog");
-      void loadCatalog(shared);
       return;
     }
     const hydrated = parseRouteFromSearch(window.location.search, true);
-    if (hydrated.view === "catalog") void loadCatalog();
+    if (hydrated.view === "catalog") {
+      setCatalogAuthorId(hydrated.authorId ?? null);
+    }
     const canonical = buildSearchFromRoute(hydrated);
     if (window.location.search !== canonical) {
       window.history.replaceState(
@@ -535,15 +601,33 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         `${window.location.pathname}${canonical}`,
       );
     }
-  }, [sessionId, loadCatalog]);
+  }, [sessionId]);
   useEffect(() => {
     function onPopState() {
       setSidebarOpen(false);
+      const shared = extractSubscribeParam(window.location.search);
+      const author = extractAuthorParam(window.location.search);
+      if (shared) {
+        setSharedDeckId(shared);
+        setCatalogAuthorId(author);
+        setNavigationTarget("catalog");
+        startTransition(() => {
+          setReviewSessionActive(false);
+          setView("catalog");
+        });
+        return;
+      }
+      setSharedDeckId(null);
       const next = parseRouteFromSearch(window.location.search);
       setNavigationTarget(next.view);
       startTransition(() => {
         if (next.view !== "review" || queueLength.current === 0) {
           setReviewSessionActive(false);
+        }
+        if (next.view === "catalog") {
+          setCatalogAuthorId(next.authorId ?? null);
+        } else {
+          setCatalogAuthorId(null);
         }
         if (next.view === "library") {
           setDeckId(next.deckId);
@@ -561,69 +645,20 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         }
         setView(next.view);
       });
-      if (next.view === "catalog") void loadCatalog();
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [loadCatalog]);
-  const paletteRef = useRef<Palette>(palette);
-  paletteRef.current = palette;
-  const activeThemeRef = useRef<"light" | "dark">("light");
-  activeThemeRef.current =
-    (themeOverride ?? data?.settings.theme) === "dark" ? "dark" : "light";
-
+  }, []);
   useEffect(() => {
-    try {
-      const savedPalette =
-        localStorage.getItem("shiyi:palette") === "lavender"
-          ? "lavender"
-          : "forest";
-      setPalette(savedPalette);
-      syncDocumentTheme(activeThemeRef.current, savedPalette);
-    } catch {
-      syncDocumentTheme(activeThemeRef.current, "forest");
-    }
-  }, []);
-  const applyPalette = useCallback((next: Palette) => {
-    setPalette(next);
-    syncDocumentTheme(activeThemeRef.current, next);
-    try {
-      localStorage.setItem("shiyi:palette", next);
-    } catch {
-      /* Ignore storage access failures. */
-    }
-  }, []);
+    setAppearanceSession(sessionId);
+    return () => {
+      setAppearanceSession(null);
+    };
+  }, [sessionId]);
   useEffect(() => {
     if (!data) return;
-    setThemeOverride(null);
-    const nextTheme = data.settings.theme === "dark" ? "dark" : "light";
-    syncDocumentTheme(nextTheme, paletteRef.current);
-    try {
-      localStorage.setItem("shiyi:theme", nextTheme);
-    } catch {
-      /* Ignore storage access failures. */
-    }
-  }, [data?.settings.theme]);
-  useEffect(() => {
-    syncDocumentTheme(activeThemeRef.current, palette);
-  }, [palette]);
-  useEffect(() => {
-    function onStorage(event: StorageEvent) {
-      if (event.key === "shiyi:theme") {
-        if (event.newValue === "light" || event.newValue === "dark") {
-          setThemeOverride(event.newValue);
-          syncDocumentTheme(event.newValue, paletteRef.current);
-        }
-      } else if (event.key === "shiyi:palette") {
-        const nextPal: Palette =
-          event.newValue === "lavender" ? "lavender" : "forest";
-        setPalette(nextPal);
-        syncDocumentTheme(activeThemeRef.current, nextPal);
-      }
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+    hydrateServerTheme(sessionId, data.settings.theme);
+  }, [sessionId, data?.settings.theme]);
   const preferredAiOpenMode = useRef<"docked" | "floating">("docked");
   const handleAiModeChange = useCallback((next: AiIslandMode) => {
     if (next !== "collapsed") preferredAiOpenMode.current = next;
@@ -725,6 +760,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           setDeckId(undefined);
           setLibraryGroupFilter({});
         }
+        if (next === "catalog") {
+          setSharedDeckId(null);
+          setCatalogAuthorId(null);
+        }
         if (next !== "question") {
           setReadingIds([]);
         }
@@ -732,7 +771,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       { route: { view: next } },
     );
     setSidebarOpen(false);
-    if (next === "catalog") void loadCatalog();
   }
   function changePage(
     next: View,
@@ -1002,38 +1040,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         )}
       </div>
     );
-  const activeTheme: "light" | "dark" =
-    (themeOverride ?? data.settings.theme) === "dark" ? "dark" : "light";
-  async function setThemeMode(next: "light" | "dark") {
-    if (!data || next === activeTheme) return;
-    const previousTheme = activeTheme;
-    setThemeOverride(next);
-    syncDocumentTheme(next, palette);
-    try {
-      localStorage.setItem("shiyi:theme", next);
-    } catch {
-      /* Ignore storage access failures. */
-    }
-    const result = await mutate("/api/settings", {
-      action: "preferences",
-      dailyGoal: data.settings.dailyGoal,
-      dailyNewLimit: data.settings.dailyNewLimit,
-      theme: next,
-      timeZone: data.settings.timeZone,
-    });
-    if (!result) {
-      setThemeOverride(null);
-      syncDocumentTheme(previousTheme, palette);
-      try {
-        localStorage.setItem("shiyi:theme", previousTheme);
-      } catch {
-        /* Ignore storage access failures. */
-      }
-    }
-  }
-  function toggleTheme() {
-    void setThemeMode(activeTheme === "dark" ? "light" : "dark");
-  }
   function openQuickSearch() {
     navigate("library");
     setSearchToken((n) => n + 1);
@@ -1240,14 +1246,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         <div className="sidebar-head">
           <button
             className="brand brand-button"
+            aria-label="Shiyi 返回今日"
             onClick={() => navigate("today")}
           >
             <span className="brand-mark">
-              <BookOpen size={23} />
+              <BookOpen size={17} />
             </span>
-            <div>
-              拾忆<span>SHIYI</span>
-            </div>
+            <span className="brand-wordmark">Shiyi</span>
           </button>
           <button
             type="button"
@@ -1378,42 +1383,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           )}
         </div>
         <div className="sidebar-bottom">
-          <div className="sidebar-mobile-appearance">
-            <div className="sidebar-appearance-group" role="group" aria-label="色系切换">
-              <button
-                type="button"
-                className={palette === "forest" ? "is-active" : ""}
-                onClick={() => applyPalette("forest")}
-              >
-                <span className="appearance-swatch" style={{ background: "#1A6347" }} />
-                青瓷
-              </button>
-              <button
-                type="button"
-                className={palette === "lavender" ? "is-active" : ""}
-                onClick={() => applyPalette("lavender")}
-              >
-                <span className="appearance-swatch" style={{ background: "#5D4B99" }} />
-                熏衣
-              </button>
-            </div>
-            <div className="sidebar-appearance-group" role="group" aria-label="明暗切换">
-              <button
-                type="button"
-                className={activeTheme === "light" ? "is-active" : ""}
-                onClick={() => setThemeMode("light")}
-              >
-                <Sun size={14} /> 浅色
-              </button>
-              <button
-                type="button"
-                className={activeTheme === "dark" ? "is-active" : ""}
-                onClick={() => setThemeMode("dark")}
-              >
-                <Moon size={14} /> 深色
-              </button>
-            </div>
-          </div>
+          <SidebarMobileAppearance />
           <button
             type="button"
             className="sidebar-mobile-ai-btn"
@@ -1620,53 +1590,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               </button>
             )}
             <span className="topbar-divider" />
-            <div className="topbar-cluster" role="group" aria-label="外观切换">
-              <button
-                type="button"
-                className="palette-quick-btn"
-                onClick={() =>
-                  applyPalette(palette === "forest" ? "lavender" : "forest")
-                }
-                aria-label={
-                  palette === "forest"
-                    ? "切换至熏衣紫主题色"
-                    : "切换至青瓷绿主题色"
-                }
-                title={
-                  palette === "forest"
-                    ? "当前：青瓷（点击切换熏衣紫）"
-                    : "当前：熏衣（点击切换青瓷绿）"
-                }
-              >
-                <span className="palette-quick-dots" aria-hidden="true">
-                  <i
-                    style={{
-                      background: palette === "forest" ? "#1A6347" : "#5D4B99",
-                    }}
-                  />
-                  <i
-                    style={{
-                      background: palette === "forest" ? "#4EC496" : "#A796F0",
-                    }}
-                  />
-                </span>
-              </button>
-              <button
-                type="button"
-                className="topbar-theme-btn"
-                onClick={toggleTheme}
-                aria-label={
-                  activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"
-                }
-                title={activeTheme === "dark" ? "切换浅色模式" : "切换深色模式"}
-              >
-                {activeTheme === "dark" ? (
-                  <Sun size={15} />
-                ) : (
-                  <Moon size={15} />
-                )}
-              </button>
-            </div>
+            <TopbarAppearanceCluster />
             <button
               type="button"
               className={cn(
@@ -1804,14 +1728,21 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   onSetDeckGroup={(deck) => setSetDeckGroupTarget(deck)}
                   onReview={startReview}
                   onPublish={setPublishId}
+                  onBatchPublish={() => setBatchPublishOpen(true)}
                   onFavorite={(q) => void favorite(q)}
                   onGenerateAnswer={answerDraft.open}
-                  onAcknowledge={async (id, version) => {
-                    await mutate("/api/decks", {
-                      action: "acknowledge",
-                      deckId: id,
-                      version,
-                    });
+                  onApplyUpdate={async (id, targetVersion) => {
+                    const res = await applyDeckUpdate(mutate, id, targetVersion);
+                    if (res) toast.success(`已更新到 v${targetVersion}。`);
+                  }}
+                  onDismissUpdate={async (id, version) => {
+                    await dismissDeckUpdate(mutate, id, version);
+                  }}
+                  onApplyAllUpdates={async (deckIds) => {
+                    const res = await applyAllDeckUpdates(mutate, deckIds);
+                    if (res) {
+                      toast.success(`已更新 ${Number(res.updated ?? 0)} 个订阅题库。`);
+                    }
                   }}
                   onUnsubscribe={(id) => {
                     setConfirmState({
@@ -1903,8 +1834,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               onFavorite={() => void favorite(currentQuestion)}
               mutate={mutate}
               onSingleReview={() => startReview(undefined, currentQuestion)}
-              activeTheme={activeTheme}
-              onToggleTheme={toggleTheme}
               aiOpen={aiMode !== "collapsed"}
               onToggleAi={toggleAi}
               onAskAi={askAi}
@@ -1990,8 +1919,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 progress={{ current: reviewIndex + 1, total: queue.length }}
                 onGrade={(rating, answer) => void grade(rating, answer)}
                 busy={reviewBusy}
-                activeTheme={activeTheme}
-                onToggleTheme={toggleTheme}
                 aiOpen={aiMode !== "collapsed"}
                 onToggleAi={toggleAi}
                 onAskAi={askAi}
@@ -2016,30 +1943,34 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               />
             ))}
           {view === "catalog" && (
-            <>
-              {catalogLoading && (
-                <div className="catalog-loading">
-                  <Loader2 size={16} className="spin" /> 正在更新题库列表
-                </div>
-              )}
-              <Catalog
-                entries={catalog}
-                busy={pending > 0}
-                onSubscribe={async (id) => {
-                  const result = await mutate("/api/decks", {
-                    action: "subscribe",
-                    deckId: id,
-                  });
-                  if (result) {
-                    toast.success("订阅成功，后续发布的更新会自动同步。");
-                    openDeck(id);
-                  }
-                }}
-                onOpen={openDeck}
-                onCreate={() => navigate("library")}
-                onRefresh={() => void loadCatalog()}
-              />
-            </>
+            <Catalog
+              data={data}
+              mutate={mutate}
+              initialAuthorId={catalogAuthorId}
+              initialSharedDeckId={sharedDeckId}
+              onOpenDeck={(id) => openDeck(id)}
+              onSetDeckGroup={(deck) => setSetDeckGroupTarget(deck)}
+              onClearDeepLink={() => {
+                setSharedDeckId(null);
+                pushRouteUrl(
+                  {
+                    view: "catalog",
+                    ...(catalogAuthorId ? { authorId: catalogAuthorId } : {}),
+                  },
+                  true,
+                );
+              }}
+              onSelectAuthorUrl={(authorId) => {
+                setCatalogAuthorId(authorId);
+                pushRouteUrl(
+                  {
+                    view: "catalog",
+                    ...(authorId ? { authorId } : {}),
+                  },
+                  false,
+                );
+              }}
+            />
           )}
           {view === "history" && (
             <HistoryView data={data} onQuestion={openQuestion} />
@@ -2205,10 +2136,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           }
           data={data}
           mutate={mutate}
-          palette={palette}
-          activeTheme={activeTheme}
-          onPaletteChange={applyPalette}
-          onThemeChange={(next) => void setThemeMode(next)}
           onSignOut={() => {
             setSettingsState((prev) => ({ ...prev, open: false }));
             signOutPrompt();
@@ -2220,6 +2147,15 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           deck={data.decks.find((d) => d.id === publishId) ?? null}
           onClose={() => setPublishId(null)}
           mutate={mutate}
+        />
+      )}
+      {batchPublishOpen && (
+        <PublishBatchDialog
+          open={batchPublishOpen}
+          userId={data.user.id}
+          decks={data.decks}
+          mutate={mutate}
+          onClose={() => setBatchPublishOpen(false)}
         />
       )}
       {answerDraft.question && <AiAnswerDialog draft={answerDraft} />}

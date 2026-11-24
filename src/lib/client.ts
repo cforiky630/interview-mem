@@ -1,3 +1,5 @@
+import type { CatalogDeckPreview, RichCatalogResponse } from "./types";
+
 export class RequestError extends Error {
   constructor(
     message: string,
@@ -178,5 +180,172 @@ export async function batchMoveQuestionsToSlot(
     operation: "move",
     deckId,
     groupId: deckId ? groupId : null,
+  });
+}
+
+export type BatchPublishItemInput = {
+  deckId: string;
+  expectedVersion: number;
+  visibility?: "public" | "unlisted";
+  summary?: string;
+};
+
+export async function batchPublishDecks(
+  mutate: WorkspaceMutate,
+  input: {
+    items: BatchPublishItemInput[];
+    defaultVisibility?: "public" | "unlisted";
+    defaultSummary?: string;
+    skipUnchanged?: boolean;
+  },
+) {
+  return mutate("/api/decks", {
+    action: "batchPublish",
+    items: input.items,
+    defaultVisibility: input.defaultVisibility ?? "public",
+    defaultSummary: input.defaultSummary ?? "",
+    skipUnchanged: input.skipUnchanged ?? false,
+  });
+}
+
+export async function unpublishDeck(mutate: WorkspaceMutate, deckId: string) {
+  return mutate("/api/decks", { action: "unpublish", deckId });
+}
+
+export async function applyDeckUpdate(
+  mutate: WorkspaceMutate,
+  deckId: string,
+  targetVersion?: number,
+) {
+  return mutate("/api/decks", {
+    action: "applyUpdate",
+    deckId,
+    ...(targetVersion !== undefined ? { targetVersion } : {}),
+  });
+}
+
+export async function dismissDeckUpdate(
+  mutate: WorkspaceMutate,
+  deckId: string,
+  version: number,
+) {
+  return mutate("/api/decks", {
+    action: "dismissUpdate",
+    deckId,
+    version,
+  });
+}
+
+export async function applyAllDeckUpdates(
+  mutate: WorkspaceMutate,
+  deckIds?: string[],
+) {
+  return mutate("/api/decks", {
+    action: "applyAllUpdates",
+    ...(deckIds?.length ? { deckIds } : {}),
+  });
+}
+
+export async function batchSubscribeDecks(
+  mutate: WorkspaceMutate,
+  deckIds: string[],
+  groupName = "",
+) {
+  return mutate("/api/decks", {
+    action: "batchSubscribe",
+    deckIds,
+    ...(groupName.trim() ? { groupName: groupName.trim() } : {}),
+  });
+}
+
+export async function batchUnsubscribeDecks(
+  mutate: WorkspaceMutate,
+  deckIds: string[],
+) {
+  return mutate("/api/decks", {
+    action: "batchUnsubscribe",
+    deckIds,
+  });
+}
+
+export async function fetchRichCatalog(
+  options: {
+    userId?: string;
+    signal?: AbortSignal;
+    sharedDeckId?: string | null;
+    authorId?: string | null;
+  } = {},
+): Promise<RichCatalogResponse> {
+  const params = new URLSearchParams({ mode: "rich" });
+  if (options.sharedDeckId) params.set("id", options.sharedDeckId);
+  if (options.authorId) params.set("author", options.authorId);
+  return api<RichCatalogResponse>(`/api/catalog?${params.toString()}`, undefined, {
+    userId: options.userId,
+    signal: options.signal,
+  });
+}
+
+export async function fetchCatalogDeckPreview(
+  deckId: string,
+  options: { userId?: string; signal?: AbortSignal } = {},
+): Promise<CatalogDeckPreview> {
+  const params = new URLSearchParams({ id: deckId, preview: "1" });
+  return api<CatalogDeckPreview>(`/api/catalog?${params.toString()}`, undefined, {
+    userId: options.userId,
+    signal: options.signal,
+  });
+}
+
+export async function followAuthor(
+  mutate: WorkspaceMutate,
+  input: {
+    authorId: string;
+    autoSubscribeNew?: boolean;
+    subscribeAll?: boolean;
+    groupName?: string;
+  },
+) {
+  return mutate("/api/authors", {
+    action: "follow",
+    authorId: input.authorId,
+    autoSubscribeNew: input.autoSubscribeNew ?? false,
+    subscribeAll: input.subscribeAll ?? false,
+    ...(input.groupName?.trim() ? { groupName: input.groupName.trim() } : {}),
+  });
+}
+
+export async function unfollowAuthor(
+  mutate: WorkspaceMutate,
+  authorId: string,
+  unsubscribeDecks = false,
+) {
+  return mutate("/api/authors", {
+    action: "unfollow",
+    authorId,
+    unsubscribeDecks,
+  });
+}
+
+export async function subscribeAllByAuthor(
+  mutate: WorkspaceMutate,
+  authorId: string,
+  groupName = "",
+) {
+  return mutate("/api/authors", {
+    action: "subscribeAll",
+    authorId,
+    ...(groupName.trim() ? { groupName: groupName.trim() } : {}),
+  });
+}
+
+export async function setAuthorAutoSubscribe(
+  mutate: WorkspaceMutate,
+  authorId: string,
+  autoSubscribeNew: boolean,
+) {
+  return mutate("/api/authors", {
+    action: "setAutoSubscribe",
+    authorId,
+    autoSubscribeNew,
   });
 }

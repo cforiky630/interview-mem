@@ -191,6 +191,23 @@ test("subscriptions: only published revisions propagate; notes and study state s
     }),
   );
   assert.equal(response.status, 200);
+  // Explicit subscriber opt-in: Bob stays pinned on v1 with pendingUpdate metadata until accepting v2.
+  const beforeOptIn = await snapshot(bob);
+  assert.equal(
+    beforeOptIn.questions.find((q: { id: string }) => q.id === questionId)
+      .revision,
+    1,
+    "subscriber stays pinned on accepted version until opting into update",
+  );
+  assert.equal(
+    beforeOptIn.decks.find((d: { id: string }) => d.id === deckId)
+      .pendingUpdate.toVersion,
+    2,
+  );
+  response = await deckRoute.POST(
+    request(bob, "/api/decks", { action: "applyUpdate", deckId }),
+  );
+  assert.equal(response.status, 200);
   const after = (await snapshot(bob)).questions.find(
     (q: { id: string }) => q.id === questionId,
   );
@@ -549,6 +566,10 @@ test("subscriptions: publishing removal of the final questions preserves notes a
     }),
   );
   assert.equal(published.status, 200);
+  const applied = await deckRoute.POST(
+    request(bob, "/api/decks", { action: "applyUpdate", deckId }),
+  );
+  assert.equal(applied.status, 200);
   const subscribed = await snapshot(bob);
   assert.ok(
     subscribed.questions.every((q: { archived: boolean }) => q.archived),

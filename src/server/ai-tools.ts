@@ -197,7 +197,7 @@ export async function assertDeckChatAccess(userId: string, deckId: string) {
       releases,
       and(
         eq(releases.deckId, decks.id),
-        eq(releases.version, decks.publishedVersion),
+        eq(releases.version, subscriptions.seenVersion),
       ),
     )
     .where(and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)));
@@ -227,15 +227,17 @@ async function resolveDeckTitle(
   }
   const [rel] = await db
     .select({ title: releases.title })
-    .from(releases)
+    .from(subscriptions)
     .innerJoin(
-      decks,
+      releases,
       and(
-        eq(releases.deckId, decks.id),
-        eq(releases.version, decks.publishedVersion),
+        eq(releases.deckId, subscriptions.deckId),
+        eq(releases.version, subscriptions.seenVersion),
       ),
     )
-    .where(eq(releases.deckId, deckId));
+    .where(
+      and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)),
+    );
   return rel?.title ?? "订阅题库";
 }
 
@@ -395,15 +397,20 @@ export async function loadScopedPool(
   if (subIds.length) {
     const published = await db
       .select({ release: releases })
-      .from(releases)
+      .from(subscriptions)
       .innerJoin(
-        decks,
+        releases,
         and(
-          eq(releases.deckId, decks.id),
-          eq(releases.version, decks.publishedVersion),
+          eq(releases.deckId, subscriptions.deckId),
+          eq(releases.version, subscriptions.seenVersion),
         ),
       )
-      .where(inArray(releases.deckId, subIds));
+      .where(
+        and(
+          eq(subscriptions.userId, userId),
+          inArray(subscriptions.deckId, subIds),
+        ),
+      );
     for (const { release } of published) {
       const releaseGroups = (release.groups ?? []).map((g) => ({
         id: g.id,
@@ -550,15 +557,20 @@ export async function executeWorkspaceTool(
                 .then((rows) => rows[0] ?? null)
             : db
                 .select({ groups: releases.groups })
-                .from(releases)
+                .from(subscriptions)
                 .innerJoin(
-                  decks,
+                  releases,
                   and(
-                    eq(releases.deckId, decks.id),
-                    eq(releases.version, decks.publishedVersion),
+                    eq(releases.deckId, subscriptions.deckId),
+                    eq(releases.version, subscriptions.seenVersion),
                   ),
                 )
-                .where(eq(releases.deckId, q.deckId))
+                .where(
+                  and(
+                    eq(subscriptions.userId, userId),
+                    eq(subscriptions.deckId, q.deckId),
+                  ),
+                )
                 .then(
                   (rows) =>
                     rows[0]?.groups?.find((g) => g.id === q.groupId) ?? null,

@@ -3,12 +3,14 @@ import { useEffect, useId, useState } from "react";
 import {
   Check,
   Loader2,
+  Lock,
   Plus,
   Rss,
   Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Workspace, DeckView } from "@/lib/types";
+import { unpublishDeck } from "@/lib/client";
 import { normalizeTagValue } from "@/lib/markdown-source";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -544,17 +546,35 @@ export function PublishDialog({
         const share = new URL("/", window.location.origin);
         share.searchParams.set("subscribe", deck.id);
         setLink(share.href);
-        toast.success("已发布更新，订阅者将自动同步");
+        const ver = Number(result.version ?? deck.publishedVersion + 1);
+        toast.success(`已发布 v${ver}，订阅者打开题库时将收到更新提示。`);
       }
     } finally {
       setBusy(false);
     }
   }
+  async function handleUnpublish() {
+    if (!deck || busy) return;
+    setBusy(true);
+    try {
+      const result = await unpublishDeck(mutate, deck.id);
+      if (result) {
+        toast.success("已转为私密，不再对外公开（既有订阅者的学习进度不受影响）。");
+        onClose();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  const diff = deck?.unpublishedDiff;
+  const canUnpublish = Boolean(
+    deck && deck.publishedVersion > 0 && deck.visibility !== "private",
+  );
   return (
     <Dialog
       open={!!deck}
       onOpenChange={(v) => {
-        if (!v) onClose();
+        if (!v && !busy) onClose();
       }}
       title={deck?.publishedVersion ? "发布更新" : "发布题库"}
       description={deck?.title}
@@ -562,12 +582,52 @@ export function PublishDialog({
       <div className="dialog-form">
         <div className="publish-notice">
           <Rss size={23} />
-          <p>发布只读快照供他人订阅；个人笔记与复习进度始终私有。</p>
+          <p>
+            发布只读快照供他人订阅；个人笔记与复习进度始终私有，订阅者可自行确认是否更新到新版本。
+          </p>
         </div>
+        {deck && deck.publishedVersion > 0 && (
+          <div className="update-diff-pills" aria-label="本次改动概览">
+            {deck.publishStatus === "changes" && diff ? (
+              <>
+                {diff.added > 0 && (
+                  <span className="update-diff-pill is-added">
+                    +{diff.added} 新增
+                  </span>
+                )}
+                {diff.updated > 0 && (
+                  <span className="update-diff-pill is-updated">
+                    ~{diff.updated} 修改
+                  </span>
+                )}
+                {diff.removed > 0 && (
+                  <span className="update-diff-pill is-removed">
+                    -{diff.removed} 移除
+                  </span>
+                )}
+                {diff.groupsChanged && (
+                  <span className="update-diff-pill">分组已调整</span>
+                )}
+                {diff.metaChanged && (
+                  <span className="update-diff-pill">题库信息已更新</span>
+                )}
+              </>
+            ) : deck.visibility === "private" ? (
+              <span className="muted small">
+                当前为私密状态（上次发布 v{deck.publishedVersion}），发布后将重新对外可见。
+              </span>
+            ) : (
+              <span className="muted small">
+                当前内容与已发布 v{deck.publishedVersion} 一致
+              </span>
+            )}
+          </div>
+        )}
         <label className="field">
           谁可以找到这个题库
           <select
             value={visibility}
+            disabled={busy}
             onChange={(e) => setVisibility(e.target.value)}
           >
             <option value="public">公开 · 显示在发现题库中</option>
@@ -578,6 +638,7 @@ export function PublishDialog({
           这次更新了什么？
           <textarea
             value={summary}
+            disabled={busy}
             onChange={(e) => setSummary(e.target.value)}
             maxLength={1000}
             rows={3}
@@ -604,6 +665,15 @@ export function PublishDialog({
       </div>
       <div className="dialog-footer">
         <span className="muted small">共 {deck?.count ?? 0} 道题</span>
+        {canUnpublish && !link && (
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void handleUnpublish()}
+          >
+            <Lock size={14} /> 转为私密
+          </Button>
+        )}
         {link ? (
           <Button onClick={onClose}>完成</Button>
         ) : (

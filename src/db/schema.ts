@@ -8,6 +8,7 @@ import {
   primaryKey,
   index,
   uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
 import type {
   ContentValidation,
@@ -243,11 +244,38 @@ export const subscriptions = pgTable(
       .references(() => decks.id),
     groupName: text("group_name").notNull().default(""),
     seenVersion: integer("seen_version").notNull().default(0),
+    dismissedVersion: integer("dismissed_version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.deckId] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.deckId] }),
+    index("subscription_deck_idx").on(t.deckId),
+  ],
+);
+export const authorSubscriptions = pgTable(
+  "author_subscriptions",
+  {
+    followerId: text("follower_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    authorId: text("author_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    autoSubscribeNew: boolean("auto_subscribe_new").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.followerId, t.authorId] }),
+    index("author_sub_author_idx").on(t.authorId),
+    check(
+      "author_subscriptions_no_self_follow",
+      sql`${t.followerId} <> ${t.authorId}`,
+    ),
+  ],
 );
 export const studyCards = pgTable(
   "study_cards",

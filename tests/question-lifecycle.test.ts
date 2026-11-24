@@ -572,6 +572,19 @@ test("30-day expiry clears the author's private data while subscribers keep thei
     ).status,
     200,
   );
+  // Bob remains pinned on v1 until opting into v2; once applied, the removed question leaves his view while studyCards stay intact.
+  assert.ok((await state(bob)).questions.some((item) => item.id === q.id));
+  assert.equal(
+    (
+      await decks.POST(
+        request(bob, "/api/decks", {
+          action: "applyUpdate",
+          deckId: category,
+        }),
+      )
+    ).status,
+    200,
+  );
   assert.ok(!(await state(bob)).questions.some((item) => item.id === q.id));
   assert.equal(
     (

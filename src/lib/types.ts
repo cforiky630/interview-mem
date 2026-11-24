@@ -50,6 +50,34 @@ export type QuestionView = {
   reviewedRevision: number;
   validation?: ContentValidationView | null;
 };
+export type PublishStatus = "unpublished" | "changes" | "synced";
+export type PendingDeckUpdate = {
+  fromVersion: number;
+  toVersion: number;
+  added: number;
+  updated: number;
+  removed: number;
+  groupsChanged: boolean;
+  titleChanged: boolean;
+  summary: string;
+  publishedAt: string;
+};
+export type UnpublishedDeckDiff = {
+  added: number;
+  updated: number;
+  removed: number;
+  metaChanged: boolean;
+  groupsChanged: boolean;
+};
+export type FollowedAuthorView = {
+  authorId: string;
+  authorName: string;
+  autoSubscribeNew: boolean;
+  createdAt: string;
+  publicDeckCount: number;
+  subscribedDeckCount: number;
+  unsubscribedDeckCount: number;
+};
 export type DeckView = {
   id: string;
   title: string;
@@ -59,9 +87,15 @@ export type DeckView = {
   color: string;
   visibility: string;
   isOwner: boolean;
+  ownerId?: string;
   ownerName: string;
   publishedVersion: number;
   seenVersion: number;
+  syncedVersion?: number;
+  dismissedVersion?: number;
+  pendingUpdate?: PendingDeckUpdate | null;
+  publishStatus?: PublishStatus;
+  unpublishedDiff?: UnpublishedDeckDiff | null;
   count: number;
   due: number;
   newCount: number;
@@ -74,12 +108,67 @@ export type CatalogDeck = {
   title: string;
   description: string;
   color: string;
+  ownerId: string;
   ownerName: string;
   publishedVersion: number;
+  releaseSummary: string;
+  publishedAt: string;
   count: number;
+  groupCount: number;
+  subscriberCount: number;
+  tags: string[];
   subscribed: boolean;
+  syncedVersion: number | null;
+  hasUpdate: boolean;
+  authorFollowed: boolean;
   isOwner: boolean;
   updatedAt: string;
+};
+export type CatalogAuthorView = {
+  id: string;
+  name: string;
+  deckCount: number;
+  questionCount: number;
+  followerCount: number;
+  subscriberCount: number;
+  followed: boolean;
+  autoSubscribeNew: boolean;
+  subscribedDeckCount: number;
+  unsubscribedDeckCount: number;
+  latestPublishedAt: string;
+  isSelf: boolean;
+  decks: {
+    id: string;
+    title: string;
+    count: number;
+    color: string;
+    subscribed: boolean;
+  }[];
+};
+export type RichCatalogResponse = {
+  decks: CatalogDeck[];
+  authors: CatalogAuthorView[];
+  sharedDeck?: CatalogDeck | null;
+  focusedAuthor?: CatalogAuthorView | null;
+};
+export type CatalogDeckPreview = {
+  deck: CatalogDeck;
+  groups: {
+    id: string;
+    category: string;
+    title: string;
+    description: string;
+    position: number;
+    count: number;
+  }[];
+  sampleQuestions: {
+    id: string;
+    title: string;
+    groupId: string | null;
+    tags: string[];
+    hasAnswer: boolean;
+  }[];
+  totalQuestions: number;
 };
 export type TrashedQuestion = {
   id: string;
@@ -93,6 +182,7 @@ export type Workspace = {
   user: { id: string; name: string; email: string };
   decks: DeckView[];
   questions: QuestionView[];
+  followedAuthors?: FollowedAuthorView[];
   stats: {
     due: number;
     new: number;

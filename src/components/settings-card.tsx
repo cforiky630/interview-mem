@@ -22,7 +22,11 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
-import type { Palette } from "@/lib/theme";
+import {
+  setAppearancePalette,
+  setAppearanceTheme,
+  useAppearance,
+} from "@/lib/theme";
 import { userInitials } from "@/lib/user-display";
 import type { Workspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -98,6 +102,120 @@ function detectBrowserTimeZone(): string | null {
   }
 }
 
+function AppearanceSettingsSection() {
+  const { theme: activeTheme, palette } = useAppearance();
+  return (
+    <>
+      <section className="settings-section-group">
+        <h3>主题色系</h3>
+        <div className="settings-option-grid">
+          <button
+            type="button"
+            className={cn(
+              "settings-option-card",
+              palette === "forest" && "is-selected",
+            )}
+            aria-pressed={palette === "forest"}
+            onClick={() => setAppearancePalette("forest")}
+          >
+            {palette === "forest" && (
+              <span className="option-check" aria-hidden="true">
+                <Check size={12} />
+              </span>
+            )}
+            <span className="palette-swatches" aria-hidden="true">
+              <i style={{ background: "#1A6347" }} />
+              <i style={{ background: "#4EC496" }} />
+              <i style={{ background: "#EFF3F1" }} />
+              <i style={{ background: "#0C0F0E" }} />
+            </span>
+            <span className="palette-card-text">
+              <strong>青瓷 · 松影</strong>
+              <small>晨光白与玄玉夜</small>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={cn(
+              "settings-option-card",
+              palette === "lavender" && "is-selected",
+            )}
+            aria-pressed={palette === "lavender"}
+            onClick={() => setAppearancePalette("lavender")}
+          >
+            {palette === "lavender" && (
+              <span className="option-check" aria-hidden="true">
+                <Check size={12} />
+              </span>
+            )}
+            <span className="palette-swatches" aria-hidden="true">
+              <i style={{ background: "#5D4B99" }} />
+              <i style={{ background: "#A796F0" }} />
+              <i style={{ background: "#F0ECF5" }} />
+              <i style={{ background: "#0D0C13" }} />
+            </span>
+            <span className="palette-card-text">
+              <strong>雾紫 · 星鸢</strong>
+              <small>月霜白与星夜紫</small>
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <section className="settings-section-group">
+        <h3>明暗模式</h3>
+        <div className="settings-option-grid">
+          <button
+            type="button"
+            className={cn(
+              "settings-option-card is-theme",
+              activeTheme === "light" && "is-selected",
+            )}
+            aria-pressed={activeTheme === "light"}
+            onClick={() => setAppearanceTheme("light")}
+          >
+            {activeTheme === "light" && (
+              <span className="option-check" aria-hidden="true">
+                <Check size={12} />
+              </span>
+            )}
+            <Sun size={20} />
+            <span className="palette-card-text">
+              <strong>清晨 · 浅色</strong>
+              <small>柔和纸感，适合日间阅读</small>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={cn(
+              "settings-option-card is-theme",
+              activeTheme === "dark" && "is-selected",
+            )}
+            aria-pressed={activeTheme === "dark"}
+            onClick={() => setAppearanceTheme("dark")}
+          >
+            {activeTheme === "dark" && (
+              <span className="option-check" aria-hidden="true">
+                <Check size={12} />
+              </span>
+            )}
+            <Moon size={20} />
+            <span className="palette-card-text">
+              <strong>夜读 · 深色</strong>
+              <small>低眩光暗面，适合夜间专注</small>
+            </span>
+          </button>
+        </div>
+        <p className="settings-group-desc">
+          外观切换立即生效，并与页面右上角的快捷按钮实时同步。
+        </p>
+      </section>
+    </>
+  );
+}
+
 export function SettingsCard({
   open,
   tab,
@@ -105,10 +223,6 @@ export function SettingsCard({
   onClose,
   data,
   mutate,
-  palette,
-  activeTheme,
-  onPaletteChange,
-  onThemeChange,
   onSignOut,
 }: {
   open: boolean;
@@ -117,10 +231,6 @@ export function SettingsCard({
   onClose: () => void;
   data: Workspace;
   mutate: Mutate;
-  palette: Palette;
-  activeTheme: "light" | "dark";
-  onPaletteChange: (palette: Palette) => void;
-  onThemeChange: (theme: "light" | "dark") => void;
   onSignOut: () => void;
 }) {
   const [goal, setGoal] = useState(data.settings.dailyGoal);
@@ -326,7 +436,6 @@ export function SettingsCard({
         action: "preferences",
         dailyGoal: goal,
         dailyNewLimit: newLimit,
-        theme: activeTheme,
         timeZone,
       });
       if (result) {
@@ -641,116 +750,7 @@ export function SettingsCard({
               </>
             )}
 
-            {tab === "appearance" && (
-              <>
-                <section className="settings-section-group">
-                  <h3>主题色系</h3>
-                  <div className="settings-option-grid">
-                    <button
-                      type="button"
-                      className={cn(
-                        "settings-option-card",
-                        palette === "forest" && "is-selected",
-                      )}
-                      aria-pressed={palette === "forest"}
-                      onClick={() => onPaletteChange("forest")}
-                    >
-                      {palette === "forest" && (
-                        <span className="option-check" aria-hidden="true">
-                          <Check size={12} />
-                        </span>
-                      )}
-                      <span className="palette-swatches" aria-hidden="true">
-                        <i style={{ background: "#1A6347" }} />
-                        <i style={{ background: "#4EC496" }} />
-                        <i style={{ background: "#EFF3F1" }} />
-                        <i style={{ background: "#0C0F0E" }} />
-                      </span>
-                      <span className="palette-card-text">
-                        <strong>青瓷 · 松影</strong>
-                        <small>晨光白与玄玉夜</small>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      className={cn(
-                        "settings-option-card",
-                        palette === "lavender" && "is-selected",
-                      )}
-                      aria-pressed={palette === "lavender"}
-                      onClick={() => onPaletteChange("lavender")}
-                    >
-                      {palette === "lavender" && (
-                        <span className="option-check" aria-hidden="true">
-                          <Check size={12} />
-                        </span>
-                      )}
-                      <span className="palette-swatches" aria-hidden="true">
-                        <i style={{ background: "#5D4B99" }} />
-                        <i style={{ background: "#A796F0" }} />
-                        <i style={{ background: "#F0ECF5" }} />
-                        <i style={{ background: "#0D0C13" }} />
-                      </span>
-                      <span className="palette-card-text">
-                        <strong>雾紫 · 星鸢</strong>
-                        <small>月霜白与星夜紫</small>
-                      </span>
-                    </button>
-                  </div>
-                </section>
-
-                <section className="settings-section-group">
-                  <h3>明暗模式</h3>
-                  <div className="settings-option-grid">
-                    <button
-                      type="button"
-                      className={cn(
-                        "settings-option-card is-theme",
-                        activeTheme === "light" && "is-selected",
-                      )}
-                      aria-pressed={activeTheme === "light"}
-                      onClick={() => onThemeChange("light")}
-                    >
-                      {activeTheme === "light" && (
-                        <span className="option-check" aria-hidden="true">
-                          <Check size={12} />
-                        </span>
-                      )}
-                      <Sun size={20} />
-                      <span className="palette-card-text">
-                        <strong>清晨 · 浅色</strong>
-                        <small>柔和纸感，适合日间阅读</small>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      className={cn(
-                        "settings-option-card is-theme",
-                        activeTheme === "dark" && "is-selected",
-                      )}
-                      aria-pressed={activeTheme === "dark"}
-                      onClick={() => onThemeChange("dark")}
-                    >
-                      {activeTheme === "dark" && (
-                        <span className="option-check" aria-hidden="true">
-                          <Check size={12} />
-                        </span>
-                      )}
-                      <Moon size={20} />
-                      <span className="palette-card-text">
-                        <strong>夜读 · 深色</strong>
-                        <small>低眩光暗面，适合夜间专注</small>
-                      </span>
-                    </button>
-                  </div>
-                  <p className="settings-group-desc">
-                    外观切换立即生效，并与页面右上角的快捷按钮实时同步。
-                  </p>
-                </section>
-              </>
-            )}
+            {tab === "appearance" && <AppearanceSettingsSection />}
 
             {tab === "ai" && (
               <div className="settings-ai-wrap">

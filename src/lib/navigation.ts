@@ -14,6 +14,7 @@ export type RouteState = {
   deckId?: string | null;
   groupId?: string;
   category?: string;
+  authorId?: string;
   questionId?: string | null;
   originView?: AppView;
   originDeckId?: string | null;
@@ -53,16 +54,28 @@ export function extractSubscribeParam(search: string): string | null {
   return normalizeIdParam(params.get("subscribe")) ?? null;
 }
 
+/** Extract `?author=<userId>` creator deep-link parameter if present. */
+export function extractAuthorParam(search: string): string | null {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  return normalizeIdParam(params.get("author")) ?? null;
+}
+
 /** Parse window location query string into an application route state. */
 export function parseRouteFromSearch(search: string, coldLoad = false): RouteState {
   void coldLoad;
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const rawView = params.get("view") as AppView | null;
   if (!rawView || !VALID_VIEWS.has(rawView)) {
+    const authorId = normalizeIdParam(params.get("author"));
+    if (authorId) return { view: "catalog", authorId };
     return { view: "today" };
   }
   if (rawView === "review") {
     return { view: "review" };
+  }
+  if (rawView === "catalog") {
+    const authorId = normalizeIdParam(params.get("author"));
+    return { view: "catalog", ...(authorId ? { authorId } : {}) };
   }
   if (rawView === "library") {
     const rawDeck = params.get("deck");
@@ -123,6 +136,9 @@ export function buildSearchFromRoute(state: RouteState): string {
     return `?${params.toString()}`;
   }
   params.set("view", state.view);
+  if (state.view === "catalog" && state.authorId?.trim()) {
+    params.set("author", state.authorId.trim());
+  }
   if (state.view === "library" && state.deckId !== undefined) {
     params.set("deck", state.deckId === null ? "unfiled" : state.deckId);
     if (typeof state.deckId === "string") {
