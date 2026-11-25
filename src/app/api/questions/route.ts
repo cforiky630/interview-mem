@@ -299,7 +299,12 @@ export const POST = route(async (request, user) => {
             "题目已在其他页面修改，请刷新后再保存。",
             "CONFLICT",
           );
-        return { revision: changed[0].revision };
+        return {
+          revision: changed[0].revision,
+          majorRevision: changed[0].majorRevision,
+          tags: changed[0].tags,
+          updatedAt: changed[0].updatedAt.toISOString(),
+        };
       }),
     );
   }

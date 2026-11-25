@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { getDb, type Database } from "@/db";
 import {
   authorSubscriptions,
@@ -31,6 +32,7 @@ import {
   computeUnpublishedDiff,
   diffReleaseVersions,
 } from "@/lib/subscriptions";
+import { isQuestionDue } from "@/lib/review-queue";
 import { dateKey } from "@/lib/utils";
 import { AppError } from "./errors";
 import { contentHash } from "./crypto";
@@ -220,6 +222,157 @@ export async function accessibleQuestion(
   );
   if (!question) throw new AppError(404, "这道题尚未发布或无权访问。");
   return { ...question, isOwner: false };
+}
+
+export async function getWorkspaceEtag(userId: string): Promise<string> {
+  const db = await getDb();
+  const [
+    [prefRow],
+    [credRow],
+    [ownDecksAgg],
+    [ownGroupsAgg],
+    [ownQuestionsAgg],
+    [subAgg],
+    [followAgg],
+    [studyAgg],
+    [reviewAgg],
+  ] = await Promise.all([
+    db
+      .select({
+        dailyGoal: preferences.dailyGoal,
+        dailyNewLimit: preferences.dailyNewLimit,
+        theme: preferences.theme,
+        timeZone: preferences.timeZone,
+        onboarded: preferences.onboarded,
+      })
+      .from(preferences)
+      .where(eq(preferences.userId, userId)),
+    db
+      .select({
+        keyHint: credentials.keyHint,
+        provider: credentials.provider,
+        baseUrl: credentials.baseUrl,
+        model: credentials.model,
+        updatedAt: credentials.updatedAt,
+      })
+      .from(credentials)
+      .where(eq(credentials.userId, userId)),
+    db
+      .select({
+        activeCount: sql<number>`(count(*) filter (where ${decks.deletedAt} is null))::int`,
+        totalCount: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
+        sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
+      })
+      .from(decks)
+      .where(eq(decks.ownerId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${deckGroups.updatedAt})::text, '')`,
+        sumPos: sql<string>`coalesce(sum(${deckGroups.position})::bigint, 0)::text`,
+      })
+      .from(deckGroups)
+      .where(eq(deckGroups.ownerId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${questions.updatedAt})::text, '')`,
+        sumRev: sql<string>`coalesce(sum(${questions.revision})::bigint, 0)::text`,
+        sumMajor: sql<string>`coalesce(sum(${questions.majorRevision})::bigint, 0)::text`,
+      })
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, userId),
+          isNull(questions.deletedAt),
+          isNull(questions.purgedAt),
+        ),
+      ),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxCreated: sql<string>`coalesce(max(${subscriptions.createdAt})::text, '')`,
+        sumSeen: sql<string>`coalesce(sum(${subscriptions.seenVersion})::bigint, 0)::text`,
+        sumDismissed: sql<string>`coalesce(sum(${subscriptions.dismissedVersion})::bigint, 0)::text`,
+        sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
+        maxDeckUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
+        deletedCount: sql<number>`(count(*) filter (where ${decks.deletedAt} is not null))::int`,
+        groupsSig: sql<string>`coalesce(string_agg(${subscriptions.deckId} || ':' || ${subscriptions.groupName}, ',' order by ${subscriptions.deckId}), '')`,
+      })
+      .from(subscriptions)
+      .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+      .where(eq(subscriptions.userId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxCreated: sql<string>`coalesce(max(${authorSubscriptions.createdAt})::text, '')`,
+        autoCount: sql<number>`(count(*) filter (where ${authorSubscriptions.autoSubscribeNew}))::int`,
+        maxAuthorUpdated: sql<string>`coalesce(max(${users.updatedAt})::text, '')`,
+      })
+      .from(authorSubscriptions)
+      .innerJoin(users, eq(authorSubscriptions.authorId, users.id))
+      .where(eq(authorSubscriptions.followerId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${studyCards.updatedAt})::text, '')`,
+        sumVersions: sql<string>`coalesce(sum(${studyCards.version} + ${studyCards.noteVersion} + ${studyCards.annotationsVersion})::bigint, 0)::text`,
+        favCount: sql<number>`(count(*) filter (where ${studyCards.favorite}))::int`,
+        dueCount: sql<number>`(count(*) filter (where ${studyCards.fsrs} is not null and case when (${studyCards.fsrs}->>'due') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' then (${studyCards.fsrs}->>'due')::timestamptz <= now() else false end))::int`,
+      })
+      .from(studyCards)
+      .where(eq(studyCards.userId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxCreated: sql<string>`coalesce(max(${reviewEvents.createdAt})::text, '')`,
+      })
+      .from(reviewEvents)
+      .where(eq(reviewEvents.userId, userId)),
+  ]);
+
+  let followedPublicSig = "";
+  if ((followAgg?.count ?? 0) > 0) {
+    const [pubAgg] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
+        sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
+      })
+      .from(decks)
+      .innerJoin(
+        authorSubscriptions,
+        eq(decks.ownerId, authorSubscriptions.authorId),
+      )
+      .where(
+        and(
+          eq(authorSubscriptions.followerId, userId),
+          eq(decks.visibility, "public"),
+          gt(decks.publishedVersion, 0),
+          isNull(decks.deletedAt),
+        ),
+      );
+    followedPublicSig = JSON.stringify(pubAgg ?? {});
+  }
+
+  const timeZone = prefRow?.timeZone ?? "Asia/Shanghai";
+  const today = dateKey(new Date(), timeZone);
+  const fingerprint = JSON.stringify([
+    today,
+    prefRow ?? null,
+    credRow ?? null,
+    ownDecksAgg ?? null,
+    ownGroupsAgg ?? null,
+    ownQuestionsAgg ?? null,
+    subAgg ?? null,
+    followAgg ?? null,
+    followedPublicSig,
+    studyAgg ?? null,
+    reviewAgg ?? null,
+  ]);
+  const hash = createHash("sha256").update(fingerprint).digest("hex").slice(0, 24);
+  return `W/"${hash}"`;
 }
 
 export async function getWorkspace(identity: Identity): Promise<Workspace> {
@@ -448,7 +601,14 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     const eligible = active.filter((q) => q.answer.trim());
     const due = eligible.filter((q) => {
       const s = stateMap.get(q.id);
-      return s?.fsrs && new Date(String(s.fsrs.due)).getTime() <= now;
+      return isQuestionDue(
+        {
+          fsrs: (s?.fsrs as StoredCard | null) ?? null,
+          majorRevision: q.majorRevision,
+          reviewedRevision: s?.reviewedRevision ?? 0,
+        },
+        now,
+      );
     }).length;
     const newCount = eligible.filter((q) => !stateMap.get(q.id)?.fsrs).length;
     const release = options.pinnedRelease;
@@ -604,8 +764,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     followedAuthors,
     stats: {
       due: active.filter(
-        (q) =>
-          q.answer.trim() && q.fsrs && new Date(q.fsrs.due).getTime() <= now,
+        (q) => q.answer.trim() && isQuestionDue(q, now),
       ).length,
       new: active.filter((q) => q.answer.trim() && !q.fsrs).length,
       reviewedToday: aggregate.today,
@@ -621,7 +780,9 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     recentReviews: logs.slice(0, 30).map((r) => ({
       id: r.id,
       questionId: r.questionId,
-      title: titles.get(r.questionId) ?? "已归档题目",
+      title: r.questionTitle ?? titles.get(r.questionId) ?? "已归档题目",
+      questionAnswer: r.questionAnswer ?? null,
+      questionRevision: r.questionRevision,
       rating: r.rating,
       answer: r.answer,
       createdAt: r.createdAt.toISOString(),

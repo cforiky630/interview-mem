@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { and, asc, desc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import {
   authorSubscriptions,
@@ -287,48 +287,69 @@ async function applySubscriptionUpdate(
   deckId: string,
   requestedVersion?: number,
 ) {
-  const [row] = await db
-    .select({
-      publishedVersion: decks.publishedVersion,
-      seenVersion: subscriptions.seenVersion,
-    })
-    .from(subscriptions)
-    .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-    .where(
-      and(
-        eq(subscriptions.userId, userId),
-        eq(subscriptions.deckId, deckId),
-      ),
-    );
-  if (!row) throw new AppError(404, "题库不可访问。");
-  const targetVersion =
-    requestedVersion === undefined || requestedVersion === 0
-      ? row.publishedVersion
-      : requestedVersion;
-  if (
-    targetVersion < 1 ||
-    targetVersion > row.publishedVersion ||
-    targetVersion < row.seenVersion
-  ) {
-    throw new AppError(400, "版本号无效。");
-  }
-  const [release] = await db
-    .select({ version: releases.version })
-    .from(releases)
-    .where(
-      and(eq(releases.deckId, deckId), eq(releases.version, targetVersion)),
-    );
-  if (!release) throw new AppError(404, "目标版本不存在。");
-  await db
-    .update(subscriptions)
-    .set({ seenVersion: targetVersion, dismissedVersion: 0 })
-    .where(
-      and(
-        eq(subscriptions.userId, userId),
-        eq(subscriptions.deckId, deckId),
-      ),
-    );
-  return { ok: true, syncedVersion: targetVersion };
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({
+        publishedVersion: decks.publishedVersion,
+        seenVersion: subscriptions.seenVersion,
+      })
+      .from(subscriptions)
+      .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+      .where(
+        and(
+          eq(subscriptions.userId, userId),
+          eq(subscriptions.deckId, deckId),
+        ),
+      )
+      .for("update");
+    if (!row) throw new AppError(404, "题库不可访问。");
+    const targetVersion =
+      requestedVersion === undefined || requestedVersion === 0
+        ? row.publishedVersion
+        : requestedVersion;
+    if (
+      targetVersion < 1 ||
+      targetVersion > row.publishedVersion ||
+      targetVersion < row.seenVersion
+    ) {
+      throw new AppError(400, "版本号无效。");
+    }
+    const [release] = await tx
+      .select({ version: releases.version })
+      .from(releases)
+      .where(
+        and(eq(releases.deckId, deckId), eq(releases.version, targetVersion)),
+      );
+    if (!release) throw new AppError(404, "目标版本不存在。");
+    const [updated] = await tx
+      .update(subscriptions)
+      .set({
+        seenVersion: sql`GREATEST(${subscriptions.seenVersion}, ${targetVersion})`,
+        dismissedVersion: 0,
+      })
+      .where(
+        and(
+          eq(subscriptions.userId, userId),
+          eq(subscriptions.deckId, deckId),
+          lte(subscriptions.seenVersion, targetVersion),
+        ),
+      )
+      .returning({ seenVersion: subscriptions.seenVersion });
+    if (updated) {
+      return { ok: true, syncedVersion: updated.seenVersion };
+    }
+    const [latest] = await tx
+      .select({ seenVersion: subscriptions.seenVersion })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.userId, userId),
+          eq(subscriptions.deckId, deckId),
+        ),
+      );
+    if (!latest) throw new AppError(404, "题库不可访问。");
+    return { ok: true, syncedVersion: latest.seenVersion };
+  });
 }
 
 export const GET = route(async (_request, user) =>

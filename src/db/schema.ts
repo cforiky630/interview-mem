@@ -317,6 +317,8 @@ export const reviewEvents = pgTable(
     questionId: text("question_id")
       .notNull()
       .references(() => questions.id),
+    questionTitle: text("question_title"),
+    questionAnswer: text("question_answer"),
     rating: integer("rating").notNull(),
     answer: text("answer"),
     questionRevision: integer("question_revision").notNull(),

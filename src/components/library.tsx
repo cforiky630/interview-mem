@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   BookOpen,
@@ -78,11 +79,37 @@ import { Dialog } from "./ui/dialog";
 import { LibraryTrash } from "./library-trash";
 import { DeckSelectOptions, GroupSelectOptions } from "./deck-select-options";
 import type { Mutate } from "./dialogs";
+import { useDiscretePresence } from "./use-discrete-presence";
 
 type SortKey = "default" | "due" | "lapses" | "updated";
 const UNGROUPED_KEY = "__ungrouped__";
 const NEW_GROUP_VALUE = "__new__";
 const GROUP_PAGE_SIZE = 24;
+
+function GroupAccordionBody({
+  expanded,
+  children,
+}: {
+  expanded: boolean;
+  children: ReactNode;
+}) {
+  const [mounted, setMounted] = useState(expanded);
+  useEffect(() => {
+    if (expanded) setMounted(true);
+  }, [expanded]);
+  return (
+    <div
+      className="group-accordion-collapse"
+      data-open={expanded ? "true" : "false"}
+      aria-hidden={!expanded}
+      inert={!expanded}
+    >
+      <div className="group-accordion-collapse-inner">
+        {mounted ? children : null}
+      </div>
+    </div>
+  );
+}
 
 export function Library({
   data,
@@ -202,6 +229,10 @@ export function Library({
   const [groupActionBusy, setGroupActionBusy] = useState(false);
   const [visibleCount, setVisibleCount] = useState(40);
   const [batchMode, setBatchMode] = useState(false);
+  const batchBarPresence = useDiscretePresence<HTMLDivElement>(batchMode);
+  const mobileTagBarOpen = Boolean(mobileTagsOpen || selectedTag);
+  const mobileTagBarPresence =
+    useDiscretePresence<HTMLDivElement>(mobileTagBarOpen);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchDialog, setBatchDialog] = useState<"move" | "delete" | null>(null);
   const [batchTargetDeckId, setBatchTargetDeckId] = useState("");
@@ -1791,6 +1822,13 @@ export function Library({
               )}
             {availableTags.length > 0 && (
               <div
+                ref={mobileTagBarPresence.ref}
+                data-mobile-hidden={
+                  mobileTagBarPresence.isHidden ? "" : undefined
+                }
+                data-mobile-closing={
+                  mobileTagBarPresence.isClosing ? "" : undefined
+                }
                 className={`library-tag-bar ${tagsExpanded ? "is-expanded" : ""} ${hasTagOverflow && !tagsExpanded ? "has-overflow" : ""} ${mobileTagsOpen || selectedTag ? "is-mobile-open" : ""}`}
                 role="region"
                 aria-label="按标签筛选"
@@ -1963,11 +2001,7 @@ export function Library({
                               aria-expanded={expanded}
                               onClick={() => toggleGroupCollapse(groupKey)}
                             >
-                              {expanded ? (
-                                <ChevronDown size={15} aria-hidden="true" />
-                              ) : (
-                                <ChevronRight size={15} aria-hidden="true" />
-                              )}
+                              <ChevronRight size={15} aria-hidden="true" />
                               <div className="group-accordion-title-wrap">
                                 <h3>{group ? group.title : UNGROUPED_LABEL}</h3>
                                 {group?.description && (
@@ -2063,7 +2097,7 @@ export function Library({
                               </div>
                             )}
                           </div>
-                          {expanded && (
+                          <GroupAccordionBody expanded={expanded}>
                             <div className="group-accordion-body">
                               {sec.questions.length ? (
                                 <>
@@ -2123,7 +2157,7 @@ export function Library({
                                 </div>
                               )}
                             </div>
-                          )}
+                          </GroupAccordionBody>
                         </div>
                       );
                     })}
@@ -2190,91 +2224,94 @@ export function Library({
           )}
         </div>
       )}
-      {batchMode && (
-        <div
-          className="batch-action-bar"
-          role="region"
-          aria-label="批量整理操作栏"
-        >
-          <div className="batch-bar-meta">
-            <strong>
-              已选 {activeSelectedIds.length} / {ownedVisibleIds.length}
-            </strong>
-            <button
-              type="button"
-              className="text-button"
-              disabled={batchBusy || ownedVisibleIds.length === 0}
-              onClick={() =>
-                setSelectedIds(
-                  activeSelectedIds.length === ownedVisibleIds.length
-                    ? []
-                    : ownedVisibleIds,
-                )
-              }
-            >
-              {activeSelectedIds.length === ownedVisibleIds.length
-                ? "清空"
-                : "全选"}
-            </button>
-          </div>
-          <div className="batch-bar-actions">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!activeSelectedIds.length || batchBusy}
-              onClick={() => {
-                if (deck?.isOwner) {
-                  setBatchTargetDeckId(deck.id);
-                  setBatchTargetGroupId("");
-                } else {
-                  const candidate = ownedDecks.find((d) => d.id !== deckId);
-                  setBatchTargetDeckId(candidate?.id ?? "");
-                  setBatchTargetGroupId("");
-                }
-                setBatchNewGroupCategory("");
-                setBatchNewGroupTitle("");
-                setBatchDialog("move");
-              }}
-            >
-              <FolderInput size={14} /> 移动
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!activeSelectedIds.length || batchBusy}
-              onClick={() =>
-                void runBatch(archived ? "unarchive" : "archive")
-              }
-            >
-              {archived ? (
-                <ArchiveRestore size={14} />
-              ) : (
-                <Archive size={14} />
-              )}{" "}
-              {archived ? "恢复" : "归档"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="danger-text"
-              disabled={!activeSelectedIds.length || batchBusy}
-              onClick={() => setBatchDialog("delete")}
-            >
-              <Trash2 size={14} /> 删除
-            </Button>
-            <Button
-              size="sm"
-              disabled={batchBusy}
-              onClick={() => {
-                setBatchMode(false);
-                setSelectedIds([]);
-              }}
-            >
-              完成
-            </Button>
-          </div>
+      <div
+        ref={batchBarPresence.ref}
+        hidden={batchBarPresence.isHidden}
+        data-closing={batchBarPresence.isClosing ? "" : undefined}
+        aria-hidden={!batchMode}
+        inert={!batchMode || batchBarPresence.isClosing}
+        className="batch-action-bar"
+        role="region"
+        aria-label="批量整理操作栏"
+      >
+        <div className="batch-bar-meta">
+          <strong>
+            已选 {activeSelectedIds.length} / {ownedVisibleIds.length}
+          </strong>
+          <button
+            type="button"
+            className="text-button"
+            disabled={batchBusy || ownedVisibleIds.length === 0}
+            onClick={() =>
+              setSelectedIds(
+                activeSelectedIds.length === ownedVisibleIds.length
+                  ? []
+                  : ownedVisibleIds,
+              )
+            }
+          >
+            {activeSelectedIds.length === ownedVisibleIds.length
+              ? "清空"
+              : "全选"}
+          </button>
         </div>
-      )}
+        <div className="batch-bar-actions">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!activeSelectedIds.length || batchBusy}
+            onClick={() => {
+              if (deck?.isOwner) {
+                setBatchTargetDeckId(deck.id);
+                setBatchTargetGroupId("");
+              } else {
+                const candidate = ownedDecks.find((d) => d.id !== deckId);
+                setBatchTargetDeckId(candidate?.id ?? "");
+                setBatchTargetGroupId("");
+              }
+              setBatchNewGroupCategory("");
+              setBatchNewGroupTitle("");
+              setBatchDialog("move");
+            }}
+          >
+            <FolderInput size={14} /> 移动
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!activeSelectedIds.length || batchBusy}
+            onClick={() =>
+              void runBatch(archived ? "unarchive" : "archive")
+            }
+          >
+            {archived ? (
+              <ArchiveRestore size={14} />
+            ) : (
+              <Archive size={14} />
+            )}{" "}
+            {archived ? "恢复" : "归档"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="danger-text"
+            disabled={!activeSelectedIds.length || batchBusy}
+            onClick={() => setBatchDialog("delete")}
+          >
+            <Trash2 size={14} /> 删除
+          </Button>
+          <Button
+            size="sm"
+            disabled={batchBusy}
+            onClick={() => {
+              setBatchMode(false);
+              setSelectedIds([]);
+            }}
+          >
+            完成
+          </Button>
+        </div>
+      </div>
       <Dialog
         open={batchDialog !== null}
         onOpenChange={(open) => {

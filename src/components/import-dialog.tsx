@@ -11,7 +11,12 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { api, type ImportGroupTarget } from "@/lib/client";
+import {
+  api,
+  discardImportPreviewBatches,
+  type ImportGroupTarget,
+} from "@/lib/client";
+import { createUuid } from "@/lib/utils";
 import { readPracticeDraft, savePracticeDraft } from "@/lib/drafts";
 import {
   formatGroupLabel,
@@ -146,6 +151,15 @@ export function ImportDialog({
     expandedKey: string | null;
   } | null>(null);
   const [sources, setSources] = useState<PreviewSource[]>([]);
+  const uncommittedBatchIdsRef = useRef<Set<string>>(new Set());
+  const activeSourceBatchIdsRef = useRef<Set<string>>(new Set());
+  activeSourceBatchIdsRef.current = new Set(sources.map((s) => s.batchId));
+  function flushDiscard(batchIds: string[]) {
+    const unique = [...new Set(batchIds.filter(Boolean))];
+    if (!unique.length) return;
+    for (const id of unique) uncommittedBatchIdsRef.current.delete(id);
+    void discardImportPreviewBatches(unique, data.user.id).catch(() => {});
+  }
   const [previewSignature, setPreviewSignature] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -334,6 +348,9 @@ export function ImportDialog({
           };
         });
         setSources(previousSources);
+        for (const src of previousSources) {
+          if (src.batchId) uncommittedBatchIdsRef.current.add(src.batchId);
+        }
         setFiles(previousFiles);
         setFileMode(!!saved.fileMode && previousFiles.length > 0);
         setPreviewSignature(saved.signature);
@@ -399,6 +416,12 @@ export function ImportDialog({
       controller.current = null;
       proofreadController.current?.abort();
       proofreadController.current = null;
+      const orphanIds = Array.from(uncommittedBatchIdsRef.current).filter(
+        (id) => !activeSourceBatchIdsRef.current.has(id),
+      );
+      if (orphanIds.length) {
+        flushDiscard(orphanIds);
+      }
     };
   }, [storage]);
   useEffect(() => {
@@ -620,11 +643,15 @@ export function ImportDialog({
     try {
       const options = { deckId: deckId || null, inputType, method };
       const request = { userId: data.user.id, signal: next.signal };
-      const inputs = materials.map((material) => ({
-        batchId: crypto.randomUUID(),
-        raw: material.raw,
-        ...(material.name ? { sourceName: material.name } : {}),
-      }));
+      const inputs = materials.map((material) => {
+        const batchId = createUuid();
+        uncommittedBatchIdsRef.current.add(batchId);
+        return {
+          batchId,
+          raw: material.raw,
+          ...(material.name ? { sourceName: material.name } : {}),
+        };
+      });
       let previews: ImportPreview[];
       if (inputs.length > 1 && method !== "ai") {
         ({ previews } = await api<{ previews: ImportPreview[] }>(
@@ -803,6 +830,12 @@ export function ImportDialog({
           : {}),
       });
       if (saved) {
+        const committedIds = new Set(batches.map((b) => b.batchId));
+        for (const id of committedIds) uncommittedBatchIdsRef.current.delete(id);
+        const leftoverIds = Array.from(uncommittedBatchIdsRef.current).filter(
+          (id) => !committedIds.has(id),
+        );
+        if (leftoverIds.length) flushDiscard(leftoverIds);
         setResult({
           added: Number(saved.added),
           duplicates: Number(saved.duplicates),
@@ -864,6 +897,11 @@ export function ImportDialog({
     setStep("source");
   }
   function discardPreview() {
+    flushDiscard([
+      ...Array.from(uncommittedBatchIdsRef.current),
+      ...sources.map((s) => s.batchId),
+    ]);
+    aiPreviews.current = null;
     if (fileMode || sources.some((s) => s.fileId || s.name)) {
       setFiles([]);
       setFileMode(false);
@@ -1019,7 +1057,7 @@ export function ImportDialog({
       sources.at(-1)?.batchId;
     if (!source) return;
     rememberPreview();
-    const key = crypto.randomUUID();
+    const key = createUuid();
     const sourcePosition = sources.findIndex((item) => item.batchId === source);
     const laterSources = new Set(
       sources.slice(sourcePosition + 1).map((item) => item.batchId),

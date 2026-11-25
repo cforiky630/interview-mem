@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
@@ -17,6 +18,7 @@ import {
   Plug,
   SlidersHorizontal,
   Sun,
+  Upload,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -223,6 +225,7 @@ export function SettingsCard({
   onClose,
   data,
   mutate,
+  onRefreshWorkspace,
   onSignOut,
 }: {
   open: boolean;
@@ -231,6 +234,7 @@ export function SettingsCard({
   onClose: () => void;
   data: Workspace;
   mutate: Mutate;
+  onRefreshWorkspace?: () => Promise<unknown>;
   onSignOut: () => void;
 }) {
   const [goal, setGoal] = useState(data.settings.dailyGoal);
@@ -240,6 +244,16 @@ export function SettingsCard({
   const [dragY, setDragY] = useState(0);
   const [aiSessionSeq, setAiSessionSeq] = useState(0);
   const [isMac, setIsMac] = useState(false);
+  const [restorePreview, setRestorePreview] = useState<{
+    fileName: string;
+    exportedAt: string;
+    decks: number;
+    questions: number;
+    reviews: number;
+    payload: Record<string, unknown>;
+  } | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
 
   const { isMobileShell } = useDeviceProfile();
 
@@ -470,6 +484,73 @@ export function SettingsCard({
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleSelectRestoreFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error("备份文件过大（最大支持 20 MB）。");
+      return;
+    }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        parsed.format !== "shiyi-backup" ||
+        (parsed.version !== 1 && parsed.version !== 2)
+      ) {
+        toast.error("请选择有效的拾忆 JSON 备份文件。");
+        return;
+      }
+      setRestorePreview({
+        fileName: file.name,
+        exportedAt:
+          typeof parsed.exportedAt === "string" ? parsed.exportedAt : "",
+        decks: Array.isArray(parsed.decks) ? parsed.decks.length : 0,
+        questions: Array.isArray(parsed.questions) ? parsed.questions.length : 0,
+        reviews: Array.isArray(parsed.reviews) ? parsed.reviews.length : 0,
+        payload: parsed,
+      });
+    } catch {
+      toast.error("备份文件无法解析，请确认文件完整且为 JSON 格式。");
+    }
+  }
+
+  async function confirmRestoreBackup() {
+    if (!restorePreview || restoreBusy) return;
+    setRestoreBusy(true);
+    try {
+      const res = await api<{
+        ok: boolean;
+        restored: {
+          decks: number;
+          questions: number;
+          studyCards: number;
+          reviews: number;
+        };
+        skipped: {
+          decks: number;
+          questions: number;
+        };
+      }>("/api/backup/restore", restorePreview.payload, {
+        userId: data.user.id,
+      });
+      await onRefreshWorkspace?.();
+      setRestorePreview(null);
+      toast.success(
+        `已合并恢复：新增 ${res.restored.decks} 个题库、${res.restored.questions} 道题、${res.restored.reviews} 条复习记录。`,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "恢复备份失败，请重试。",
+      );
+    } finally {
+      setRestoreBusy(false);
     }
   }
 
@@ -861,27 +942,87 @@ export function SettingsCard({
                 </section>
 
                 <section className="settings-section-group">
-                  <h3>本地备份</h3>
+                  <h3>本地备份与恢复</h3>
                   <div className="settings-card-group">
                     <div className="settings-row">
                       <div className="settings-row-info">
                         <strong>导出完整备份 (JSON)</strong>
                         <small>
-                          包含题库、分组、题目、个人笔记、复习记录与 AI
-                          对话，不含 API Key。仅用于本地备份，暂不支持导入恢复。
+                          包含题库、分组、发布快照、题目、复习偏好、个人笔记、复习记录与
+                          AI 对话，不含 API Key，可用于迁移或合并恢复。
                         </small>
                       </div>
                       <div className="settings-row-control">
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={busy}
+                          disabled={busy || restoreBusy}
                           onClick={() => void exportData()}
                         >
                           <Download size={15} /> 导出备份
                         </Button>
                       </div>
                     </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <strong>从备份合并恢复 (JSON)</strong>
+                        <small>
+                          补全缺失的题库、题目、记忆进度与历史记录；当前账号已存在的数据会保留不被覆盖。
+                        </small>
+                      </div>
+                      <div className="settings-row-control">
+                        <input
+                          ref={restoreInputRef}
+                          type="file"
+                          accept=".json,application/json"
+                          className="sr-only"
+                          aria-label="选择拾忆备份 JSON 文件"
+                          onChange={(event) =>
+                            void handleSelectRestoreFile(event)
+                          }
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy || restoreBusy}
+                          onClick={() => restoreInputRef.current?.click()}
+                        >
+                          <Upload size={15} /> 选择备份文件
+                        </Button>
+                      </div>
+                    </div>
+                    {restorePreview && (
+                      <div className="settings-restore-preview">
+                        <div className="settings-restore-meta">
+                          <strong>{restorePreview.fileName}</strong>
+                          <small>
+                            {restorePreview.decks} 个题库 ·{" "}
+                            {restorePreview.questions} 道题 ·{" "}
+                            {restorePreview.reviews} 条复习记录
+                            {restorePreview.exportedAt
+                              ? ` · 导出于 ${restorePreview.exportedAt.slice(0, 10)}`
+                              : ""}
+                          </small>
+                        </div>
+                        <div className="settings-restore-actions">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={restoreBusy}
+                            onClick={() => setRestorePreview(null)}
+                          >
+                            取消
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={restoreBusy}
+                            onClick={() => void confirmRestoreBackup()}
+                          >
+                            {restoreBusy ? "正在恢复…" : "确认合并恢复"}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </section>
               </>

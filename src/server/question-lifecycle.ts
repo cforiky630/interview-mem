@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, notExists } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import {
   conversations,
@@ -505,6 +505,34 @@ export async function cleanupExpiredQuestions({
   });
 }
 
+export const ORPHAN_IMPORT_TTL_MS = 24 * 60 * 60 * 1000;
+
+export async function cleanupOrphanedImportPreviews(
+  options: { userId?: string; now?: Date; ttlMs?: number } = {},
+) {
+  const db = await getDb();
+  const now = options.now ?? new Date();
+  const ttlMs = options.ttlMs ?? ORPHAN_IMPORT_TTL_MS;
+  const cutoff = new Date(now.getTime() - ttlMs);
+  const removed = await db
+    .delete(imports)
+    .where(
+      and(
+        ...(options.userId ? [eq(imports.userId, options.userId)] : []),
+        inArray(imports.status, ["draft", "failed", "parsing"]),
+        lte(imports.createdAt, cutoff),
+        notExists(
+          db
+            .select({ id: questions.id })
+            .from(questions)
+            .where(eq(questions.importId, imports.id)),
+        ),
+      ),
+    )
+    .returning({ id: imports.id });
+  return removed.length;
+}
+
 const cleanupState = globalThis as unknown as {
   interviewTrashTimer?: ReturnType<typeof setInterval>;
 };
@@ -513,6 +541,7 @@ export async function startQuestionTrashCleanup() {
   const sweep = async () => {
     for (let batch = 0; batch < 10; batch++)
       if ((await cleanupExpiredQuestions()) < 200) break;
+    await cleanupOrphanedImportPreviews();
   };
   await sweep();
   cleanupState.interviewTrashTimer = setInterval(

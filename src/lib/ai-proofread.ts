@@ -1,3 +1,5 @@
+import { createUuid } from "./utils";
+
 export type ProofreadCategory = "typo" | "term" | "concept" | "code";
 export type ProofreadField = "title" | "answer";
 
@@ -130,7 +132,7 @@ export function sanitizeProofreadCorrections(
 
     occupied[field].push({ start, end });
     results.push({
-      id: crypto.randomUUID(),
+      id: createUuid(),
       field,
       category,
       original: alignedOriginal,

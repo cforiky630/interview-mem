@@ -80,6 +80,7 @@ import {
 } from "./inline-answer-editor";
 import type { Mutate } from "./dialogs";
 import type { ImportSeed } from "./import-dialog";
+import { useDiscretePresence } from "./use-discrete-presence";
 
 type Insight = {
   previews: { rating: number; due: string; interval: string }[];
@@ -285,6 +286,10 @@ export function QuestionReader({
     x: number;
     y: number;
   } | null>(null);
+  const [lastSelection, setLastSelection] = useState(selection);
+  useEffect(() => {
+    if (selection) setLastSelection(selection);
+  }, [selection]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingAnswer, setEditingAnswer] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
@@ -305,7 +310,12 @@ export function QuestionReader({
   const insightVersion = useRef("");
   const answerRef = useRef<HTMLDivElement>(null);
   const titleInputId = useId();
+  const titleFormRef = useRef<HTMLFormElement>(null);
   const titleTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const titleComposingRef = useRef(false);
+  const editBusyRef = useRef(editBusy);
+  editBusyRef.current = editBusy;
+  const commitTitleRef = useRef<() => void>(() => {});
   const editorDraftKey = `shiyi:editor:${data.user.id}:${question.id}`;
   const draftSavedRef = useRef(false);
   const draftLoadedRef = useRef(false);
@@ -786,9 +796,12 @@ export function QuestionReader({
     merged?: boolean;
     closeTitle?: boolean;
     closeAnswer?: boolean;
+    titleOnly?: boolean;
+    titleOverride?: string;
   }) {
     if (!canInlineEdit || editBusy) return;
-    const trimmedTitle = editDraft.title.trim();
+    const titleSource = options?.titleOverride ?? editDraft.title;
+    const trimmedTitle = titleSource.trim();
     if (!trimmedTitle) {
       setEditError("请输入面试题目。");
       return;
@@ -797,16 +810,66 @@ export function QuestionReader({
       setEditError("题目最多 200 字。");
       return;
     }
+    if (question.revision !== editDraft.baseRevision && !options?.merged) {
+      setEditError("题目已在其他页面更新，请先在编辑区确认合并。");
+      return;
+    }
+    if (options?.titleOnly) {
+      if (trimmedTitle === question.title) {
+        setEditDraft((prev) => ({ ...prev, title: question.title }));
+        setEditError("");
+        if (options?.closeTitle) setEditingTitle(false);
+        return;
+      }
+      setEditBusy(true);
+      setEditError("");
+      try {
+        const result = await mutate("/api/questions", {
+          action: "edit",
+          id: question.id,
+          expectedRevision: options?.merged
+            ? question.revision
+            : editDraft.baseRevision,
+          title: trimmedTitle,
+          answer: question.answer,
+          tags: question.tags,
+          major: false,
+        });
+        if (result) {
+          const nextRevision =
+            typeof result.revision === "number"
+              ? result.revision
+              : question.revision + 1;
+          const hasAnswerDraft =
+            editDraft.answer !== question.answer ||
+            editDraft.tags !== question.tags.join(", ") ||
+            editDraft.major;
+          if (!hasAnswerDraft) {
+            draftSavedRef.current = true;
+            savePracticeDraft(editorDraftKey, "");
+            setRestoredDraft(false);
+          }
+          setEditDraft((prev) => ({
+            ...prev,
+            title: trimmedTitle,
+            baseRevision: nextRevision,
+          }));
+          if (options?.closeTitle) setEditingTitle(false);
+          toast.success("修改已保存。");
+        } else {
+          setEditError("没有保存成功，当前草稿已保留。");
+        }
+      } finally {
+        setEditBusy(false);
+      }
+      return;
+    }
     if (editDraft.answer.length > 100_000) {
       setEditError("答案超过 10 万字符限制。");
       return;
     }
     if (editTags.length > 12 || editTags.some((tag) => tag.length > 30)) {
       setEditError("标签最多 12 个，每个不超过 30 字。");
-      return;
-    }
-    if (question.revision !== editDraft.baseRevision && !options?.merged) {
-      setEditError("题目已在其他页面更新，请先在编辑区确认合并。");
       return;
     }
     if (!editDirty) {
@@ -854,6 +917,98 @@ export function QuestionReader({
       setEditBusy(false);
     }
   }
+  commitTitleRef.current = () => {
+    if (
+      !canInlineEdit ||
+      !editingTitle ||
+      editingAnswer ||
+      editBusyRef.current
+    ) {
+      return;
+    }
+    const rawTitle =
+      titleTextareaRef.current?.value ?? latestDraftRef.current.title;
+    const trimmedTitle = rawTitle.trim();
+    if (!trimmedTitle || trimmedTitle === question.title) {
+      cancelTitleEdit();
+      return;
+    }
+    void saveInlineQuestion({
+      closeTitle: true,
+      titleOnly: true,
+      titleOverride: rawTitle,
+    });
+  };
+  useEffect(() => {
+    if (!canInlineEdit || !editingTitle || editingAnswer) return;
+    let pendingOutside: { pointerId: number; x: number; y: number } | null =
+      null;
+    let rafId: number | null = null;
+
+    function onPointerDown(event: PointerEvent) {
+      if (editBusyRef.current) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      if (
+        event.clientX >= globalThis.document.documentElement.clientWidth ||
+        event.clientY >= globalThis.document.documentElement.clientHeight
+      ) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target && titleFormRef.current?.contains(target)) return;
+      if (target?.closest("[data-sonner-toaster]")) return;
+      pendingOutside = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+      };
+      if (titleComposingRef.current) {
+        titleTextareaRef.current?.blur();
+      }
+    }
+
+    function onPointerUp(event: PointerEvent) {
+      if (!pendingOutside || event.pointerId !== pendingOutside.pointerId) {
+        return;
+      }
+      const moved = Math.hypot(
+        event.clientX - pendingOutside.x,
+        event.clientY - pendingOutside.y,
+      );
+      pendingOutside = null;
+      if (moved >= 10) return;
+      const rawTitle =
+        titleTextareaRef.current?.value ?? latestDraftRef.current.title;
+      const trimmedTitle = rawTitle.trim();
+      if (
+        !titleComposingRef.current &&
+        trimmedTitle &&
+        trimmedTitle !== question.title
+      ) {
+        commitTitleRef.current();
+        return;
+      }
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        commitTitleRef.current();
+      });
+    }
+
+    function onPointerCancel() {
+      pendingOutside = null;
+    }
+
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerCancel, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerCancel, true);
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+  }, [canInlineEdit, editingTitle, editingAnswer, question.title]);
   const switchToNotesTab = useCallback(() => setTab("notes"), []);
   const annotations = useMemo(
     () => question.annotations ?? [],
@@ -887,6 +1042,39 @@ export function QuestionReader({
       return next;
     });
   }, []);
+  const hasOutline = Boolean(
+    !review &&
+      prevNext &&
+      prevNext.total > 1 &&
+      outlineSections.length > 0 &&
+      onJumpQuestion,
+  );
+  const desktopOutlineOpen = Boolean(
+    outlineOpen && hasOutline && !device.isMobileShell,
+  );
+  const mobileOutlineOpen = Boolean(
+    outlineOpen && hasOutline && device.isMobileShell,
+  );
+  const canAnnotateRail = Boolean(!review && !device.isMobileShell);
+  const hasDesktopAnnotationsOpen = Boolean(annotationsOpen && canAnnotateRail);
+  const mobileAnnotationsOpen = Boolean(
+    annotationsOpen && !review && device.isMobileShell,
+  );
+  const desktopAnnotationsPresence =
+    useDiscretePresence<HTMLDivElement>(hasDesktopAnnotationsOpen);
+  const mobileAnnotationsBackdropPresence =
+    useDiscretePresence<HTMLButtonElement>(mobileAnnotationsOpen);
+  const mobileAnnotationsSheetPresence =
+    useDiscretePresence<HTMLDivElement>(mobileAnnotationsOpen);
+  const desktopOutlinePresence =
+    useDiscretePresence<HTMLDivElement>(desktopOutlineOpen);
+  const mobileOutlineBackdropPresence =
+    useDiscretePresence<HTMLButtonElement>(mobileOutlineOpen);
+  const mobileOutlineSheetPresence =
+    useDiscretePresence<HTMLDivElement>(mobileOutlineOpen);
+  const selectionPresence = useDiscretePresence<HTMLDivElement>(
+    Boolean(selection),
+  );
   useEffect(() => {
     setPendingQuote(null);
     setActiveAnnotationId(null);
@@ -954,13 +1142,13 @@ export function QuestionReader({
     setAnnotationsVisible,
   ]);
   useEffect(() => {
-    if (!annotationsOpen || review || !device.isMobileShell) return;
+    if (!(mobileAnnotationsOpen || mobileOutlineOpen)) return;
     const prevOverflow = globalThis.document.body.style.overflow;
     globalThis.document.body.style.overflow = "hidden";
     return () => {
       globalThis.document.body.style.overflow = prevOverflow;
     };
-  }, [annotationsOpen, review, device.isMobileShell]);
+  }, [mobileAnnotationsOpen, mobileOutlineOpen]);
   useEffect(() => {
     const container = answerProseRef.current;
     if (
@@ -1039,8 +1227,8 @@ export function QuestionReader({
     review && revealed && !device.isMobileShell && !aiDocked,
   );
   const isCompareSplit = canSplitCompare && compareLayout === "split";
-  const hasDesktopAnnotationsOpen = Boolean(
-    annotationsOpen && !review && !device.isMobileShell,
+  const showOralScratchpad = Boolean(
+    oralScratchpadOpen || (revealed && Boolean(answer.trim())),
   );
   const ratings = [
     { rating: 1, label: "忘了", cramHint: "再巩固", className: "again" },
@@ -1191,35 +1379,42 @@ export function QuestionReader({
               {oralScratchpadOpen ? "收起口述要点" : "记录口述要点"}
             </button>
           )}
-          {(oralScratchpadOpen || (revealed && Boolean(answer.trim()))) && (
-            <div className="oral-scratchpad">
-              <textarea
-                aria-label="口述要点草稿"
-                placeholder="随手记下关键词或要点，对照参考答案时方便自查…"
-                value={answer}
-                maxLength={20000}
-                rows={3}
-                readOnly={revealed}
-                style={{ flex: "0 0 auto", minHeight: 84 }}
-                onChange={(event) => {
-                  setAnswer(event.target.value);
-                  if (!savePracticeDraft(answerKey, event.target.value))
-                    toast.error("草稿暂时无法保存在浏览器中。");
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    (event.ctrlKey || event.metaKey) &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    setOralRunning(false);
-                    setRevealed(true);
-                  }
-                }}
-              />
+          <div
+            className="oral-scratchpad-collapse"
+            data-open={showOralScratchpad ? "true" : "false"}
+            aria-hidden={!showOralScratchpad}
+            inert={!showOralScratchpad}
+          >
+            <div className="oral-scratchpad-collapse-inner">
+              <div className="oral-scratchpad">
+                <textarea
+                  aria-label="口述要点草稿"
+                  placeholder="随手记下关键词或要点，对照参考答案时方便自查…"
+                  value={answer}
+                  maxLength={20000}
+                  rows={3}
+                  readOnly={revealed}
+                  style={{ flex: "0 0 auto", minHeight: 84 }}
+                  onChange={(event) => {
+                    setAnswer(event.target.value);
+                    if (!savePracticeDraft(answerKey, event.target.value))
+                      toast.error("草稿暂时无法保存在浏览器中。");
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      (event.ctrlKey || event.metaKey) &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      setOralRunning(false);
+                      setRevealed(true);
+                    }
+                  }}
+                />
+              </div>
             </div>
-          )}
+          </div>
         </div>
       )}
       <div
@@ -1519,6 +1714,7 @@ export function QuestionReader({
         "notebook-reader",
         isReviewDrafting && "is-review-drafting",
         isCompareSplit && "is-compare-split",
+        canAnnotateRail && "can-annotate-rail",
         hasDesktopAnnotationsOpen && "has-annotations-open",
       ]
         .filter(Boolean)
@@ -1582,11 +1778,17 @@ export function QuestionReader({
                   <ChevronRight size={16} />
                 </button>
               </div>
-              {outlineOpen &&
-                !device.isMobileShell &&
-                outlineSections.length > 0 &&
-                onJumpQuestion && (
+              {hasOutline && !device.isMobileShell && (
                   <div
+                    ref={desktopOutlinePresence.ref}
+                    hidden={desktopOutlinePresence.isHidden}
+                    data-closing={
+                      desktopOutlinePresence.isClosing ? "" : undefined
+                    }
+                    aria-hidden={!desktopOutlineOpen}
+                    inert={
+                      !desktopOutlineOpen || desktopOutlinePresence.isClosing
+                    }
                     className="reader-outline-popover"
                     role="dialog"
                     aria-label="阅读目录"
@@ -1615,7 +1817,7 @@ export function QuestionReader({
                                 aria-current={isCurrent ? "true" : undefined}
                                 onClick={() => {
                                   setOutlineOpen(false);
-                                  if (!isCurrent) onJumpQuestion(item);
+                                  if (!isCurrent) onJumpQuestion?.(item);
                                 }}
                               >
                                 <span className="reader-outline-index">
@@ -1856,10 +2058,14 @@ export function QuestionReader({
             </div>
             {canInlineEdit && editingTitle ? (
               <form
+                ref={titleFormRef}
                 className="inline-title-form"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void saveInlineQuestion({ closeTitle: true });
+                  void saveInlineQuestion({
+                    closeTitle: true,
+                    titleOnly: !editingAnswer,
+                  });
                 }}
               >
                 <label htmlFor={titleInputId} className="sr-only">
@@ -1874,7 +2080,17 @@ export function QuestionReader({
                   value={editDraft.title}
                   disabled={editBusy}
                   placeholder="输入清晰、完整的面试题干（最多 200 字）"
-                  title="Enter 保存 · Esc 取消"
+                  title={
+                    editingAnswer
+                      ? "Enter 保存 · Esc 取消"
+                      : "Enter 或点击外部保存 · Esc 取消"
+                  }
+                  onCompositionStart={() => {
+                    titleComposingRef.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    titleComposingRef.current = false;
+                  }}
                   onChange={(event) =>
                     patchEditDraft({ title: event.target.value })
                   }
@@ -1886,7 +2102,10 @@ export function QuestionReader({
                         event.keyCode === 229
                       )
                         return;
-                      void saveInlineQuestion({ closeTitle: true });
+                      void saveInlineQuestion({
+                        closeTitle: true,
+                        titleOnly: !editingAnswer,
+                      });
                     } else if (
                       event.key === "Escape" &&
                       !event.nativeEvent.isComposing
@@ -2125,20 +2344,35 @@ export function QuestionReader({
             </nav>
           )}
         </article>
-          {hasDesktopAnnotationsOpen && (
-            <QuestionAnnotationsPanel
-              question={question}
-              userId={data.user.id}
-              mutate={mutate}
-              pendingQuote={pendingQuote}
-              activeAnnotationId={activeAnnotationId}
-              unmatchedIds={unmatchedIds}
-              onClearPendingQuote={() => setPendingQuote(null)}
-              onSelectAnnotation={handleSelectAnnotation}
-              onClose={() => setAnnotationsVisible(false)}
-              onEditingChange={setAnnotationEditing}
-              onSwitchToNotes={switchToNotesTab}
-            />
+          {canAnnotateRail && (
+            <div
+              ref={desktopAnnotationsPresence.ref}
+              hidden={desktopAnnotationsPresence.isHidden}
+              data-closing={
+                desktopAnnotationsPresence.isClosing ? "" : undefined
+              }
+              aria-hidden={!hasDesktopAnnotationsOpen}
+              inert={
+                !hasDesktopAnnotationsOpen ||
+                desktopAnnotationsPresence.isClosing
+              }
+              className="annotations-rail-shell"
+            >
+              <QuestionAnnotationsPanel
+                open={hasDesktopAnnotationsOpen}
+                question={question}
+                userId={data.user.id}
+                mutate={mutate}
+                pendingQuote={pendingQuote}
+                activeAnnotationId={activeAnnotationId}
+                unmatchedIds={unmatchedIds}
+                onClearPendingQuote={() => setPendingQuote(null)}
+                onSelectAnnotation={handleSelectAnnotation}
+                onClose={() => setAnnotationsVisible(false)}
+                onEditingChange={setAnnotationEditing}
+                onSwitchToNotes={switchToNotesTab}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -2240,10 +2474,18 @@ export function QuestionReader({
           </Button>
         </div>
       )}
-      {selection && (
+      {lastSelection && (
         <div
+          ref={selectionPresence.ref}
+          hidden={selectionPresence.isHidden}
+          data-closing={selectionPresence.isClosing ? "" : undefined}
+          aria-hidden={!selection}
+          inert={!selection || selectionPresence.isClosing}
           className={`selection-bubble ${device.isTouchInput ? "is-touch" : ""}`}
-          style={{ left: selection.x, top: selection.y }}
+          style={{
+            left: (selection ?? lastSelection).x,
+            top: (selection ?? lastSelection).y,
+          }}
           onPointerDown={(event) => event.preventDefault()}
           onMouseDown={(event) => event.preventDefault()}
         >
@@ -2262,7 +2504,9 @@ export function QuestionReader({
             <button
               type="button"
               onClick={() => {
-                const quoteText = selection.text.trim().slice(0, 600);
+                const quoteText = (selection ?? lastSelection).text
+                  .trim()
+                  .slice(0, 600);
                 if (!quoteText) return;
                 setPendingQuote(quoteText);
                 setAnnotationsVisible(true);
@@ -2279,84 +2523,125 @@ export function QuestionReader({
           </button>
         </div>
       )}
-      {outlineOpen &&
-        device.isMobileShell &&
-        outlineSections.length > 0 &&
-        onJumpQuestion && (
-          <div className="reader-outline-modal" role="dialog" aria-modal="true" aria-label="阅读目录">
-            <button
-              type="button"
-              className="reader-outline-backdrop"
-              aria-label="关闭目录"
-              onClick={() => setOutlineOpen(false)}
-            />
-            <div className="reader-outline-sheet">
-              <div className="sheet-grabber" aria-hidden="true" />
-              <div className="reader-outline-head">
-                <strong>阅读目录（{prevNext?.total ?? readingList?.length ?? 0} 题）</strong>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="关闭目录"
-                  onClick={() => setOutlineOpen(false)}
-                >
-                  <X size={17} />
-                </button>
-              </div>
-              <div className="reader-outline-list">
-                {outlineSections.map((sec) => (
-                  <div className="reader-outline-section" key={sec.key}>
-                    {sec.label && (
-                      <div className="reader-outline-group-head">
-                        <span>{sec.label}</span>
-                        <small>{sec.items.length}</small>
-                      </div>
-                    )}
-                    {sec.items.map(({ question: item, globalIndex }) => {
-                      const isCurrent = item.id === question.id;
-                      return (
-                        <button
-                          key={item.id}
-                          ref={isCurrent ? currentOutlineItemRef : undefined}
-                          type="button"
-                          className={`reader-outline-item ${isCurrent ? "is-current" : ""}`}
-                          aria-current={isCurrent ? "true" : undefined}
-                          onClick={() => {
-                            setOutlineOpen(false);
-                            if (!isCurrent) onJumpQuestion(item);
-                          }}
-                        >
-                          <span className="reader-outline-index">
-                            {String(globalIndex + 1).padStart(2, "0")}
-                          </span>
-                          <span className="reader-outline-title">
-                            {item.title}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
+      {hasOutline && device.isMobileShell && (
+        <>
+          <button
+            ref={mobileOutlineBackdropPresence.ref}
+            type="button"
+            hidden={mobileOutlineBackdropPresence.isHidden}
+            data-closing={
+              mobileOutlineBackdropPresence.isClosing ? "" : undefined
+            }
+            aria-hidden={!mobileOutlineOpen}
+            inert={
+              !mobileOutlineOpen || mobileOutlineBackdropPresence.isClosing
+            }
+            className="reader-outline-backdrop"
+            aria-label="关闭目录"
+            onClick={() => setOutlineOpen(false)}
+          />
+          <div
+            ref={mobileOutlineSheetPresence.ref}
+            hidden={mobileOutlineSheetPresence.isHidden}
+            data-closing={
+              mobileOutlineSheetPresence.isClosing ? "" : undefined
+            }
+            aria-hidden={!mobileOutlineOpen}
+            inert={!mobileOutlineOpen || mobileOutlineSheetPresence.isClosing}
+            className="reader-outline-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="阅读目录"
+          >
+            <div className="sheet-grabber" aria-hidden="true" />
+            <div className="reader-outline-head">
+              <strong>
+                阅读目录（{prevNext?.total ?? readingList?.length ?? 0} 题）
+              </strong>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="关闭目录"
+                onClick={() => setOutlineOpen(false)}
+              >
+                <X size={17} />
+              </button>
+            </div>
+            <div className="reader-outline-list">
+              {outlineSections.map((sec) => (
+                <div className="reader-outline-section" key={sec.key}>
+                  {sec.label && (
+                    <div className="reader-outline-group-head">
+                      <span>{sec.label}</span>
+                      <small>{sec.items.length}</small>
+                    </div>
+                  )}
+                  {sec.items.map(({ question: item, globalIndex }) => {
+                    const isCurrent = item.id === question.id;
+                    return (
+                      <button
+                        key={item.id}
+                        ref={isCurrent ? currentOutlineItemRef : undefined}
+                        type="button"
+                        className={`reader-outline-item ${isCurrent ? "is-current" : ""}`}
+                        aria-current={isCurrent ? "true" : undefined}
+                        onClick={() => {
+                          setOutlineOpen(false);
+                          if (!isCurrent) onJumpQuestion?.(item);
+                        }}
+                      >
+                        <span className="reader-outline-index">
+                          {String(globalIndex + 1).padStart(2, "0")}
+                        </span>
+                        <span className="reader-outline-title">
+                          {item.title}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           </div>
-        )}
-      {annotationsOpen && !review && device.isMobileShell && (
-        <div
-          className="annotations-mobile-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label="批注与笔记"
-        >
+        </>
+      )}
+      {!review && device.isMobileShell && (
+        <>
           <button
+            ref={mobileAnnotationsBackdropPresence.ref}
             type="button"
+            hidden={mobileAnnotationsBackdropPresence.isHidden}
+            data-closing={
+              mobileAnnotationsBackdropPresence.isClosing ? "" : undefined
+            }
+            aria-hidden={!mobileAnnotationsOpen}
+            inert={
+              !mobileAnnotationsOpen ||
+              mobileAnnotationsBackdropPresence.isClosing
+            }
             className="annotations-mobile-backdrop"
             aria-label="关闭批注"
             onClick={() => setAnnotationsVisible(false)}
           />
-          <div className="annotations-mobile-sheet">
+          <div
+            ref={mobileAnnotationsSheetPresence.ref}
+            hidden={mobileAnnotationsSheetPresence.isHidden}
+            data-closing={
+              mobileAnnotationsSheetPresence.isClosing ? "" : undefined
+            }
+            aria-hidden={!mobileAnnotationsOpen}
+            inert={
+              !mobileAnnotationsOpen ||
+              mobileAnnotationsSheetPresence.isClosing
+            }
+            className="annotations-mobile-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="批注与笔记"
+          >
             <div className="sheet-grabber" aria-hidden="true" />
             <QuestionAnnotationsPanel
+              open={mobileAnnotationsOpen}
               question={question}
               userId={data.user.id}
               mutate={mutate}
@@ -2373,7 +2658,7 @@ export function QuestionReader({
               }}
             />
           </div>
-        </div>
+        </>
       )}
       <Dialog
         open={validationOpen}

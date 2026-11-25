@@ -53,6 +53,7 @@ import { listDeckGroupNames } from "@/lib/grouping";
 import type { Mutate } from "./dialogs";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
+import { useDiscretePresence } from "./use-discrete-presence";
 
 type CatalogTab = "discover" | "authors" | "subscriptions";
 type CatalogSort = "recent" | "popular" | "questions";
@@ -103,6 +104,7 @@ export function Catalog({
     "all",
   );
   const [batchMode, setBatchMode] = useState(false);
+  const batchBarPresence = useDiscretePresence<HTMLDivElement>(batchMode);
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const [batchGroupName, setBatchGroupName] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -970,80 +972,83 @@ export function Catalog({
             )
           )}
 
-          {batchMode && (
-            <div
-              className="catalog-batch-bar"
-              role="region"
-              aria-label="批量订阅操作栏"
-            >
-              <div className="batch-bar-meta">
-                <strong>
-                  已选 {activeBatchIds.length} / {subscribableVisibleIds.length}
-                </strong>
-                <button
-                  type="button"
-                  className="text-button"
-                  disabled={
-                    busyKey !== null || subscribableVisibleIds.length === 0
-                  }
-                  onClick={() =>
-                    setBatchIds(
-                      activeBatchIds.length === subscribableVisibleIds.length
-                        ? []
-                        : subscribableVisibleIds,
-                    )
-                  }
-                >
-                  {activeBatchIds.length === subscribableVisibleIds.length
-                    ? "清空"
-                    : "全选"}
-                </button>
-              </div>
-              <div className="batch-bar-actions">
-                <input
-                  aria-label="批量订阅目标题库分组（可选）"
-                  list={existingDeckGroups.length ? batchGroupListId : undefined}
-                  value={batchGroupName}
-                  onChange={(e) => setBatchGroupName(e.target.value)}
-                  maxLength={40}
-                  disabled={busyKey === "batch-sub"}
-                  placeholder="归入题库分组（可选）"
-                />
-                {existingDeckGroups.length > 0 && (
-                  <datalist id={batchGroupListId}>
-                    {existingDeckGroups.map((g) => (
-                      <option key={g} value={g} />
-                    ))}
-                  </datalist>
-                )}
-                <Button
-                  size="sm"
-                  disabled={
-                    busyKey === "batch-sub" || activeBatchIds.length === 0
-                  }
-                  onClick={() => void handleBatchSubscribe()}
-                >
-                  {busyKey === "batch-sub" ? (
-                    <Loader2 size={14} className="spin" />
-                  ) : (
-                    <Download size={14} />
-                  )}{" "}
-                  批量订阅 ({activeBatchIds.length})
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busyKey === "batch-sub"}
-                  onClick={() => {
-                    setBatchMode(false);
-                    setBatchIds([]);
-                  }}
-                >
-                  取消
-                </Button>
-              </div>
+          <div
+            ref={batchBarPresence.ref}
+            hidden={batchBarPresence.isHidden}
+            data-closing={batchBarPresence.isClosing ? "" : undefined}
+            aria-hidden={!batchMode}
+            inert={!batchMode || batchBarPresence.isClosing}
+            className="catalog-batch-bar"
+            role="region"
+            aria-label="批量订阅操作栏"
+          >
+            <div className="batch-bar-meta">
+              <strong>
+                已选 {activeBatchIds.length} / {subscribableVisibleIds.length}
+              </strong>
+              <button
+                type="button"
+                className="text-button"
+                disabled={
+                  busyKey !== null || subscribableVisibleIds.length === 0
+                }
+                onClick={() =>
+                  setBatchIds(
+                    activeBatchIds.length === subscribableVisibleIds.length
+                      ? []
+                      : subscribableVisibleIds,
+                  )
+                }
+              >
+                {activeBatchIds.length === subscribableVisibleIds.length
+                  ? "清空"
+                  : "全选"}
+              </button>
             </div>
-          )}
+            <div className="batch-bar-actions">
+              <input
+                aria-label="批量订阅目标题库分组（可选）"
+                list={existingDeckGroups.length ? batchGroupListId : undefined}
+                value={batchGroupName}
+                onChange={(e) => setBatchGroupName(e.target.value)}
+                maxLength={40}
+                disabled={busyKey === "batch-sub"}
+                placeholder="归入题库分组（可选）"
+              />
+              {existingDeckGroups.length > 0 && (
+                <datalist id={batchGroupListId}>
+                  {existingDeckGroups.map((g) => (
+                    <option key={g} value={g} />
+                  ))}
+                </datalist>
+              )}
+              <Button
+                size="sm"
+                disabled={
+                  busyKey === "batch-sub" || activeBatchIds.length === 0
+                }
+                onClick={() => void handleBatchSubscribe()}
+              >
+                {busyKey === "batch-sub" ? (
+                  <Loader2 size={14} className="spin" />
+                ) : (
+                  <Download size={14} />
+                )}{" "}
+                批量订阅 ({activeBatchIds.length})
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busyKey === "batch-sub"}
+                onClick={() => {
+                  setBatchMode(false);
+                  setBatchIds([]);
+                }}
+              >
+                取消
+              </Button>
+            </div>
+          </div>
         </>
       )}
 

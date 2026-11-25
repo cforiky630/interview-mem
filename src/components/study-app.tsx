@@ -54,7 +54,8 @@ import type {
   DeckGroupView,
   DeckView,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, createUuid } from "@/lib/utils";
+import { buildReviewQueue } from "@/lib/review-queue";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
 import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
 import {
@@ -449,7 +450,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   >([]);
   const [reviewBusy, setReviewBusy] = useState(false);
   const grading = useRef(false);
-  const eventId = useRef(crypto.randomUUID());
+  const eventId = useRef(createUuid());
   const pageKey =
     view === "question"
       ? `question:${questionId}`
@@ -868,33 +869,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (view !== "review" || !reviewSessionActive) {
       reviewOrigin.current = { view, deckId, questionId };
     }
-    const active = data.questions.filter(
-      (q) =>
-        !q.archived &&
-        q.answer.trim() &&
-        (!targetDeck || q.deckId === targetDeck),
-    );
-    const majorReview = active
-      .filter((q) => q.fsrs && q.majorRevision > q.reviewedRevision)
-      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-    const majorIds = new Set(majorReview.map((q) => q.id));
-    const due = active
-      .filter(
-        (q) =>
-          !majorIds.has(q.id) &&
-          q.fsrs &&
-          new Date(q.fsrs.due).getTime() <= Date.now(),
-      )
-      .sort(
-        (a, b) =>
-          new Date(a.fsrs!.due).getTime() - new Date(b.fsrs!.due).getTime(),
-      );
-    const fresh = active
-      .filter((q) => !q.fsrs)
-      .slice(
-        0,
-        Math.max(0, data.settings.dailyNewLimit - data.stats.newLearnedToday),
-      );
+    const { queue: builtQueue } = buildReviewQueue(data.questions, {
+      dailyNewLimit: data.settings.dailyNewLimit,
+      newLearnedToday: data.stats.newLearnedToday,
+      deckId: targetDeck,
+    });
     setReviewRevealed(false);
     setReviewMode("fsrs");
     setCramLabel("");
@@ -903,14 +882,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       "review",
       () => {
         setReviewSessionActive(true);
-        setQueue(single ? [single] : [...majorReview, ...due, ...fresh]);
+        setQueue(single ? [single] : builtQueue);
         setReviewIndex(0);
         setRatings([]);
       },
       { replace: view === "review", route: { view: "review" } },
     );
     setSidebarOpen(false);
-    eventId.current = crypto.randomUUID();
+    eventId.current = createUuid();
     rememberScroll();
   }
   function startCram(items: QuestionView[], label: string) {
@@ -934,7 +913,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       { replace: view === "review", route: { view: "review" } },
     );
     setSidebarOpen(false);
-    eventId.current = crypto.randomUUID();
+    eventId.current = createUuid();
     rememberScroll();
   }
   async function favorite(question: QuestionView) {
@@ -970,7 +949,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         "这道题的复习进度已在其他页面更新或被归档，已跳过。",
       );
       setReviewIndex((n) => n + 1);
-      eventId.current = crypto.randomUUID();
+      eventId.current = createUuid();
       return;
     }
     grading.current = true;
@@ -997,7 +976,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           { question: latest, rating },
         ]);
         setReviewIndex((n) => n + 1);
-        eventId.current = crypto.randomUUID();
+        eventId.current = createUuid();
         rememberScroll();
       }
     } finally {
@@ -1022,7 +1001,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         idx > reviewIndex && data.questions.some((q) => q.id === item.id),
     );
     setReviewIndex(nextAlive >= 0 ? nextAlive : queue.length);
-    eventId.current = crypto.randomUUID();
+    eventId.current = createUuid();
   }, [data, view, queue, reviewIndex, queueQuestion, currentReview]);
   if (!data)
     return (
@@ -2175,6 +2154,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           }
           data={data}
           mutate={mutate}
+          onRefreshWorkspace={() => refresh(false)}
           onSignOut={() => {
             setSettingsState((prev) => ({ ...prev, open: false }));
             signOutPrompt();

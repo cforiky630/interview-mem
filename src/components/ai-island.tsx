@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
+import { createUuid } from "@/lib/utils";
 import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
 import {
   formatQuotePreview,
@@ -570,9 +571,9 @@ export function AiIsland({
     setBusy(true);
     setInput("");
     setError("");
-    const assistantId = crypto.randomUUID();
+    const assistantId = createUuid();
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: createUuid(),
       role: "user",
       content: text.trim(),
       createdAt: new Date().toISOString(),
@@ -1076,6 +1077,9 @@ export function AiIsland({
     displayScope !== "question"
       ? scopedView === "chat"
       : Boolean(displayQuestion);
+  const canShowHistoryPopover = Boolean(showThreadActions && threads.length > 0);
+  const historyPopoverOpen = Boolean(historyOpen && canShowHistoryPopover);
+  const historyPopoverPresence = useDiscretePresence<HTMLDivElement>(historyPopoverOpen);
 
   return (
     <>
@@ -1270,8 +1274,13 @@ export function AiIsland({
               </Button>
             </div>
           </div>
-          {historyOpen && showThreadActions && threads.length > 0 && (
+          {canShowHistoryPopover && (
             <div
+              ref={historyPopoverPresence.ref}
+              hidden={historyPopoverPresence.isHidden}
+              data-closing={historyPopoverPresence.isClosing ? "" : undefined}
+              aria-hidden={!historyPopoverOpen}
+              inert={!historyPopoverOpen || historyPopoverPresence.isClosing}
               className="ai-history-popover"
               role="menu"
               aria-label="历史对话列表"

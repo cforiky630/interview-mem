@@ -13,6 +13,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import type { DeckView, QuestionView, Workspace } from "@/lib/types";
+import { buildReviewQueue, isQuestionDue } from "@/lib/review-queue";
 import { Button } from "./ui/button";
 
 export type ReviewHubProps = {
@@ -54,27 +55,17 @@ export function ReviewHub({
     unfiledAnswerable,
   } = useMemo(() => {
     const now = Date.now();
-    const activeQuestions = data.questions.filter(
-      (q) => !q.archived && q.answer.trim(),
-    );
-    const remainingNew = Math.max(
-      0,
-      data.settings.dailyNewLimit - data.stats.newLearnedToday,
-    );
-
-    const majorReview = activeQuestions.filter(
-      (q) => q.fsrs && q.majorRevision > q.reviewedRevision,
-    );
-    const majorIds = new Set(majorReview.map((q) => q.id));
-    const dueReview = activeQuestions.filter(
-      (q) =>
-        !majorIds.has(q.id) &&
-        q.fsrs &&
-        new Date(q.fsrs.due).getTime() <= now,
-    );
-    const freshReview = activeQuestions
-      .filter((q) => !q.fsrs)
-      .slice(0, remainingNew);
+    const {
+      active: activeQuestions,
+      dueCount: totalDueCount,
+      fresh: freshReview,
+      queue,
+      remainingNew,
+    } = buildReviewQueue(data.questions, {
+      dailyNewLimit: data.settings.dailyNewLimit,
+      newLearnedToday: data.stats.newLearnedToday,
+      now,
+    });
 
     const weak = activeQuestions
       .filter((q) => q.fsrs && q.fsrs.lapses > 0)
@@ -105,10 +96,7 @@ export function ReviewHub({
       let weakInDeck = 0;
       for (const q of answerable) {
         if (q.fsrs) {
-          if (
-            q.majorRevision > q.reviewedRevision ||
-            new Date(q.fsrs.due).getTime() <= now
-          ) {
+          if (isQuestionDue(q, now)) {
             dueInDeck++;
           }
           if (q.fsrs.lapses > 0) weakInDeck++;
@@ -137,9 +125,9 @@ export function ReviewHub({
 
     return {
       active: activeQuestions,
-      dueCount: majorReview.length + dueReview.length,
+      dueCount: totalDueCount,
       freshCount: freshReview.length,
-      sessionTotal: majorReview.length + dueReview.length + freshReview.length,
+      sessionTotal: queue.length,
       weakQuestions: weak,
       missingOwned: missing,
       deckItems: decks,

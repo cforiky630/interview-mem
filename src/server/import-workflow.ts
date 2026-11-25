@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, notExists, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -349,6 +349,36 @@ async function parsePreview(
     questions: parsed.map((q) => ({ ...q, key: crypto.randomUUID() })),
     warning,
   };
+}
+
+export const discardPreviewSchema = z.object({
+  batchIds: z.array(z.string().uuid()).min(1).max(20),
+});
+
+export async function discardImportPreviews(
+  userId: string,
+  batchIds: string[],
+) {
+  const uniqueIds = [...new Set(batchIds)];
+  if (!uniqueIds.length) return { deleted: 0 };
+  const db = await getDb();
+  const removed = await db
+    .delete(imports)
+    .where(
+      and(
+        eq(imports.userId, userId),
+        inArray(imports.id, uniqueIds),
+        inArray(imports.status, ["draft", "failed", "parsing"]),
+        notExists(
+          db
+            .select({ id: questions.id })
+            .from(questions)
+            .where(eq(questions.importId, imports.id)),
+        ),
+      ),
+    )
+    .returning({ id: imports.id });
+  return { deleted: removed.length };
 }
 
 export async function previewBatch(

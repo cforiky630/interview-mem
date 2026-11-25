@@ -13,6 +13,10 @@ import {
 } from "lucide-react";
 import type { QuestionView, Workspace } from "@/lib/types";
 import { formatGroupLabel, resolveQuestionGroup } from "@/lib/grouping";
+import {
+  buildReviewQueue,
+  isQuestionMajorRevisionDue,
+} from "@/lib/review-queue";
 import { dateKey } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { NotebookSketch } from "./sketch";
@@ -85,30 +89,15 @@ export function Dashboard({
     y: number;
     locked: "h" | "v" | null;
   } | null>(null);
-  const remainingNew = Math.max(
-    0,
-    data.settings.dailyNewLimit - data.stats.newLearnedToday,
-  );
-  const active = data.questions.filter(
-    (question) => !question.archived && question.answer.trim(),
-  );
+  const { active, queue, remainingNew } = buildReviewQueue(data.questions, {
+    dailyNewLimit: data.settings.dailyNewLimit,
+    newLearnedToday: data.stats.newLearnedToday,
+  });
   const unanswered = data.questions.filter(
     (question) => !question.archived && !question.answer.trim(),
   );
   const missing = unanswered.filter((question) => question.isOwner).length;
-  const due = active
-    .filter(
-      (question) =>
-        question.fsrs && new Date(question.fsrs.due).getTime() <= Date.now(),
-    )
-    .sort(
-      (a, b) =>
-        new Date(a.fsrs!.due).getTime() - new Date(b.fsrs!.due).getTime(),
-    );
-  const cards = [
-    ...due,
-    ...active.filter((question) => !question.fsrs).slice(0, remainingNew),
-  ].slice(0, 12);
+  const cards = queue.slice(0, 12);
   const selectedIndex = cards.length ? index % cards.length : 0;
   const question = cards[selectedIndex];
   const currentGroup = question
@@ -391,7 +380,11 @@ export function Dashboard({
                       </>
                     )}
                     <span className="focus-card-state">
-                      {question.fsrs ? "待复习" : "新题"}
+                      {isQuestionMajorRevisionDue(question)
+                        ? "答案已更新"
+                        : question.fsrs
+                          ? "待复习"
+                          : "新题"}
                     </span>
                   </div>
                   <h3>{question.title}</h3>

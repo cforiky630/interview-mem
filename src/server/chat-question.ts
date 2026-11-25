@@ -156,57 +156,26 @@ export async function handleQuestionChat(
       .trim()
       .slice(0, 10_000);
 
-    const [[deckRow], [study], previous, groupInfo] = await Promise.all([
-      question.deckId
-        ? db
-            .select({
-              id: decks.id,
-              ownerId: decks.ownerId,
-              title: decks.title,
-              description: decks.description,
-              deletedAt: decks.deletedAt,
-            })
-            .from(decks)
-            .where(eq(decks.id, question.deckId))
-        : Promise.resolve([]),
-      db
-        .select({
-          note: studyCards.note,
-          noteVersion: studyCards.noteVersion,
-          fsrs: studyCards.fsrs,
-        })
-        .from(studyCards)
-        .where(
-          and(
-            eq(studyCards.userId, user.id),
-            eq(studyCards.questionId, question.id),
-          ),
-        ),
-      existingThread
-        ? db
-            .select()
-            .from(messages)
-            .where(eq(messages.conversationId, existingThread.id))
-            .orderBy(desc(messages.createdAt))
-            .limit(12)
-        : Promise.resolve([]),
-      question.groupId && question.deckId
-        ? question.isOwner
+    const [[deckRow], [subscribedRelease], [study], previous, ownGroupInfo] =
+      await Promise.all([
+        question.isOwner && question.deckId
           ? db
               .select({
-                title: deckGroups.title,
-                category: deckGroups.category,
+                id: decks.id,
+                ownerId: decks.ownerId,
+                title: decks.title,
+                description: decks.description,
+                deletedAt: decks.deletedAt,
               })
-              .from(deckGroups)
-              .where(
-                and(
-                  eq(deckGroups.id, question.groupId),
-                  eq(deckGroups.ownerId, user.id),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : db
-              .select({ groups: releases.groups })
+              .from(decks)
+              .where(eq(decks.id, question.deckId))
+          : Promise.resolve([]),
+        !question.isOwner && question.deckId
+          ? db
+              .select({
+                title: releases.title,
+                groups: releases.groups,
+              })
               .from(subscriptions)
               .innerJoin(
                 releases,
@@ -221,13 +190,55 @@ export async function handleQuestionChat(
                   eq(subscriptions.deckId, question.deckId),
                 ),
               )
-              .then(
-                (rows) =>
-                  rows[0]?.groups?.find((g) => g.id === question.groupId) ??
-                  null,
+          : Promise.resolve([]),
+        db
+          .select({
+            note: studyCards.note,
+            noteVersion: studyCards.noteVersion,
+            fsrs: studyCards.fsrs,
+          })
+          .from(studyCards)
+          .where(
+            and(
+              eq(studyCards.userId, user.id),
+              eq(studyCards.questionId, question.id),
+            ),
+          ),
+        existingThread
+          ? db
+              .select()
+              .from(messages)
+              .where(eq(messages.conversationId, existingThread.id))
+              .orderBy(desc(messages.createdAt))
+              .limit(12)
+          : Promise.resolve([]),
+        question.isOwner && question.groupId && question.deckId
+          ? db
+              .select({
+                title: deckGroups.title,
+                category: deckGroups.category,
+              })
+              .from(deckGroups)
+              .where(
+                and(
+                  eq(deckGroups.id, question.groupId),
+                  eq(deckGroups.ownerId, user.id),
+                ),
               )
-        : Promise.resolve(null),
-    ]);
+              .then((rows) => rows[0] ?? null)
+          : Promise.resolve(null),
+      ]);
+
+    const deckDisplayTitle = question.isOwner
+      ? (deckRow?.title ?? "")
+      : (subscribedRelease?.title ?? "");
+    const groupInfo =
+      question.groupId && question.deckId
+        ? question.isOwner
+          ? ownGroupInfo
+          : (subscribedRelease?.groups?.find((g) => g.id === question.groupId) ??
+            null)
+        : null;
 
     const editableDeck =
       question.isOwner &&
@@ -307,7 +318,9 @@ export async function handleQuestionChat(
       : "";
 
     const metaParts = [
-      deckRow?.title ? `所属题单：${sanitizeUntrustedText(deckRow.title, 80)}` : "",
+      deckDisplayTitle
+        ? `所属题单：${sanitizeUntrustedText(deckDisplayTitle, 80)}`
+        : "",
       groupDisplay ? `所属分组：${groupDisplay}` : "",
       question.tags.length
         ? `标签：${question.tags.map((t) => sanitizeUntrustedText(t, 30)).join("、")}`

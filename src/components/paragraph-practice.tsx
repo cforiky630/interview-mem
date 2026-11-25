@@ -33,6 +33,7 @@ export const ParagraphPractice = memo(function ParagraphPractice({
 }) {
   const [active, setActive] = useState(hideAll);
   const [showReference, setShowReference] = useState(false);
+  const [refMounted, setRefMounted] = useState(false);
   const [draft, setDraft] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -42,6 +43,9 @@ export const ParagraphPractice = memo(function ParagraphPractice({
     setActive(hideAll);
     setShowReference(false);
   }, [hideAll]);
+  useEffect(() => {
+    if (showReference) setRefMounted(true);
+  }, [showReference]);
   useEffect(() => {
     if (active && !hideAll) input.current?.focus({ preventScroll: true });
   }, [active, hideAll]);
@@ -127,11 +131,20 @@ export const ParagraphPractice = memo(function ParagraphPractice({
               </Button>
             )}
           </div>
-          {showReference && (
-            <div className="paragraph-reference">
-              <Markdown>{original}</Markdown>
+          <div
+            className="paragraph-reference-collapse"
+            data-open={showReference ? "true" : "false"}
+            aria-hidden={!showReference}
+            inert={!showReference}
+          >
+            <div className="paragraph-reference-collapse-inner">
+              {refMounted && (
+                <div className="paragraph-reference">
+                  <Markdown>{original}</Markdown>
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </>
       ) : (
         <>

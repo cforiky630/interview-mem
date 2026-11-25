@@ -209,6 +209,8 @@ export type Workspace = {
     id: string;
     questionId: string;
     title: string;
+    questionAnswer?: string | null;
+    questionRevision?: number;
     rating: number;
     answer: string | null;
     createdAt: string;

@@ -35,7 +35,7 @@ const schema = z.object({
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);
   const db = await getDb();
-  function replay(existing: typeof reviewEvents.$inferSelect) {
+  async function replay(existing: typeof reviewEvents.$inferSelect) {
     if (
       existing.userId !== user.id ||
       existing.questionId !== data.questionId ||
@@ -44,13 +44,37 @@ export const POST = route(async (request, user) => {
       (existing.answer ?? "") !== data.answer
     )
       throw new AppError(409, "复习提交标识已被使用。");
-    return { card: existing.after, duplicate: true };
+    const [cardRow] = await db
+      .select({
+        version: studyCards.version,
+        reviewedRevision: studyCards.reviewedRevision,
+      })
+      .from(studyCards)
+      .where(
+        and(
+          eq(studyCards.userId, user.id),
+          eq(studyCards.questionId, data.questionId),
+        ),
+      );
+    return {
+      card: existing.after,
+      duplicate: true,
+      studyVersion: cardRow?.version ?? data.expectedVersion + 1,
+      reviewedRevision: cardRow?.reviewedRevision ?? existing.questionRevision,
+      createdAt: existing.createdAt.toISOString(),
+      isFirstLearn: existing.before === null,
+      questionTitle: existing.questionTitle,
+      questionAnswer: existing.questionAnswer,
+      questionRevision: existing.questionRevision,
+      rating: existing.rating,
+      answer: existing.answer,
+    };
   }
   const [completed] = await db
     .select()
     .from(reviewEvents)
     .where(eq(reviewEvents.id, data.eventId));
-  if (completed) return NextResponse.json(replay(completed));
+  if (completed) return NextResponse.json(await replay(completed));
   const question = await accessibleQuestion(user.id, data.questionId);
   if (question.archived) throw new AppError(400, "题目已归档，不能继续复习。");
   if (question.revision !== data.questionRevision)
@@ -74,7 +98,7 @@ export const POST = route(async (request, user) => {
       .select()
       .from(reviewEvents)
       .where(eq(reviewEvents.id, data.eventId));
-    if (existing) return replay(existing);
+    if (existing) return await replay(existing);
     if (study.version !== data.expectedVersion)
       throw new AppError(
         409,
@@ -91,6 +115,8 @@ export const POST = route(async (request, user) => {
       id: data.eventId,
       userId: user.id,
       questionId: data.questionId,
+      questionTitle: question.title,
+      questionAnswer: question.answer,
       rating: data.rating,
       answer: data.answer || null,
       questionRevision: question.revision,
@@ -98,11 +124,12 @@ export const POST = route(async (request, user) => {
       after: next,
       createdAt: now,
     });
+    const nextVersion = study.version + 1;
     await tx
       .update(studyCards)
       .set({
         fsrs: next,
-        version: study.version + 1,
+        version: nextVersion,
         reviewedRevision: question.revision,
         updatedAt: now,
       })
@@ -112,7 +139,19 @@ export const POST = route(async (request, user) => {
           eq(studyCards.questionId, data.questionId),
         ),
       );
-    return { card: next, duplicate: false };
+    return {
+      card: next,
+      duplicate: false,
+      studyVersion: nextVersion,
+      reviewedRevision: question.revision,
+      createdAt: now.toISOString(),
+      isFirstLearn: study.fsrs === null,
+      questionTitle: question.title,
+      questionAnswer: question.answer,
+      questionRevision: question.revision,
+      rating: data.rating,
+      answer: data.answer || null,
+    };
   });
   return NextResponse.json(result);
 }, true);

@@ -29,44 +29,63 @@ export function HistoryView({
           <h2>最近 30 次复习</h2>
         </div>
         {data.recentReviews.length ? (
-          data.recentReviews.map((r) => (
-            <div className="history-row" key={r.id}>
-              <span
-                className={`history-icon rating-${["", "again", "hard", "good", "easy"][r.rating] ?? "good"}`}
-              >
-                {r.rating === 1 ? <RotateCcw size={16} /> : <Check size={16} />}
-              </span>
-              <div>
-                <button
-                  onClick={() => {
-                    const question = data.questions.find(
-                      (q) => q.id === r.questionId,
-                    );
-                    if (question) onQuestion(question);
-                  }}
+          data.recentReviews.map((r) => {
+            const currentQuestion = data.questions.find(
+              (q) => q.id === r.questionId,
+            );
+            const renamedSinceReview =
+              Boolean(currentQuestion) && currentQuestion!.title !== r.title;
+            return (
+              <div className="history-row" key={r.id}>
+                <span
+                  className={`history-icon rating-${["", "again", "hard", "good", "easy"][r.rating] ?? "good"}`}
                 >
-                  {r.title}
-                  <ArrowUpRight size={13} />
-                </button>
-                <p>
-                  {new Intl.DateTimeFormat("zh-CN", {
-                    timeZone: data.settings.timeZone,
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  }).format(new Date(r.createdAt))}
-                </p>
-                {r.answer && (
-                  <details className="past-answer">
-                    <summary>我的作答</summary>
-                    <p>{r.answer}</p>
-                  </details>
-                )}
+                  {r.rating === 1 ? (
+                    <RotateCcw size={16} />
+                  ) : (
+                    <Check size={16} />
+                  )}
+                </span>
+                <div>
+                  <button
+                    onClick={() => {
+                      if (currentQuestion) onQuestion(currentQuestion);
+                    }}
+                  >
+                    {r.title}
+                    <ArrowUpRight size={13} />
+                  </button>
+                  {renamedSinceReview && (
+                    <small className="history-renamed-note">
+                      现题名：{currentQuestion!.title}
+                    </small>
+                  )}
+                  <p>
+                    {new Intl.DateTimeFormat("zh-CN", {
+                      timeZone: data.settings.timeZone,
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }).format(new Date(r.createdAt))}
+                  </p>
+                  {r.answer && (
+                    <details className="past-answer">
+                      <summary>我的作答</summary>
+                      <p>{r.answer}</p>
+                    </details>
+                  )}
+                  {r.questionAnswer && (
+                    <details className="past-answer">
+                      <summary>当时的参考答案</summary>
+                      <p>{r.questionAnswer}</p>
+                    </details>
+                  )}
+                </div>
+                <span className="tag">{labels[r.rating]}</span>
               </div>
-              <span className="tag">{labels[r.rating]}</span>
-            </div>
-          ))
+            );
+          })
         ) : (
           <div className="empty-state">
             <History size={32} />

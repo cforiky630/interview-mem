@@ -45,6 +45,7 @@ export function QuestionAnnotationsPanel({
   question,
   userId,
   mutate,
+  open = true,
   pendingQuote,
   activeAnnotationId,
   unmatchedIds,
@@ -57,6 +58,7 @@ export function QuestionAnnotationsPanel({
   question: QuestionView;
   userId: string;
   mutate: Mutate;
+  open?: boolean;
   pendingQuote: string | null;
   activeAnnotationId: string | null;
   unmatchedIds?: Set<string>;
@@ -92,8 +94,14 @@ export function QuestionAnnotationsPanel({
 
   // Report editing state to QuestionReader so global shortcuts pause while typing.
   useEffect(() => {
-    onEditingChange?.(composerOpen || editingId !== null || noteEditing);
-  }, [composerOpen, editingId, noteEditing, onEditingChange]);
+    onEditingChange?.(
+      open && (composerOpen || editingId !== null || noteEditing),
+    );
+  }, [open, composerOpen, editingId, noteEditing, onEditingChange]);
+
+  useEffect(() => {
+    if (!open) setConfirmDeleteId(null);
+  }, [open]);
 
   useEffect(() => {
     return () => {
@@ -133,12 +141,12 @@ export function QuestionAnnotationsPanel({
 
   // Gently scroll active annotation card into view when selected from prose highlight.
   useEffect(() => {
-    if (!activeAnnotationId) return;
+    if (!open || !activeAnnotationId) return;
     const node = cardRefs.current.get(activeAnnotationId);
     if (node) {
       node.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
-  }, [activeAnnotationId]);
+  }, [open, activeAnnotationId]);
 
   function openStandaloneComposer() {
     if (atLimit) return;
@@ -275,128 +283,135 @@ export function QuestionAnnotationsPanel({
       </div>
 
       <div className="annotations-rail-body">
-        {composerOpen && (
-          <div className="annotation-composer">
-            {draftQuote.trim() && (
-              <div
-                className="annotation-quote-box"
-                title={draftQuote.trim()}
-              >
-                {draftQuote.trim()}
-              </div>
-            )}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-              }}
-            >
-              <div
-                className="annotation-color-dots"
-                role="radiogroup"
-                aria-label="批注颜色"
-              >
-                {ANNOTATION_COLORS.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    className={`annotation-color-dot color-${c.id}${
-                      draftColor === c.id ? " is-selected" : ""
-                    }`}
-                    aria-label={c.label}
-                    aria-pressed={draftColor === c.id}
-                    title={c.label}
-                    onClick={() => setDraftColor(c.id)}
-                  />
-                ))}
-              </div>
+        <div
+          className="annotation-composer-collapse"
+          data-open={composerOpen ? "true" : "false"}
+          aria-hidden={!composerOpen}
+          inert={!composerOpen}
+        >
+          <div className="annotation-composer-collapse-inner">
+            <div className="annotation-composer">
               {draftQuote.trim() && (
-                <button
-                  type="button"
-                  className="text-button"
-                  style={{ fontSize: "0.72rem" }}
-                  onClick={() => {
-                    setDraftQuote("");
-                    onClearPendingQuote();
-                  }}
+                <div
+                  className="annotation-quote-box"
+                  title={draftQuote.trim()}
                 >
-                  移除摘录
-                </button>
+                  {draftQuote.trim()}
+                </div>
               )}
-            </div>
-            <label htmlFor={composerId} className="sr-only">
-              批注内容
-            </label>
-            <textarea
-              id={composerId}
-              ref={composerTextareaRef}
-              value={draftComment}
-              maxLength={2000}
-              placeholder={
-                draftQuote.trim()
-                  ? "写下你对这段话的理解、反问或易混点…"
-                  : "记录一条侧边批注…"
-              }
-              disabled={savingNew}
-              onChange={(event) => setDraftComment(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  (event.ctrlKey || event.metaKey) &&
-                  event.key === "Enter" &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  void submitNewAnnotation();
-                } else if (
-                  event.key === "Escape" &&
-                  !event.nativeEvent.isComposing &&
-                  !draftComment.trim()
-                ) {
-                  event.preventDefault();
-                  closeComposer();
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <div
+                  className="annotation-color-dots"
+                  role="radiogroup"
+                  aria-label="批注颜色"
+                >
+                  {ANNOTATION_COLORS.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className={`annotation-color-dot color-${c.id}${
+                        draftColor === c.id ? " is-selected" : ""
+                      }`}
+                      aria-label={c.label}
+                      aria-pressed={draftColor === c.id}
+                      title={c.label}
+                      onClick={() => setDraftColor(c.id)}
+                    />
+                  ))}
+                </div>
+                {draftQuote.trim() && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    style={{ fontSize: "0.72rem" }}
+                    onClick={() => {
+                      setDraftQuote("");
+                      onClearPendingQuote();
+                    }}
+                  >
+                    移除摘录
+                  </button>
+                )}
+              </div>
+              <label htmlFor={composerId} className="sr-only">
+                批注内容
+              </label>
+              <textarea
+                id={composerId}
+                ref={composerTextareaRef}
+                value={draftComment}
+                maxLength={2000}
+                placeholder={
+                  draftQuote.trim()
+                    ? "写下你对这段话的理解、反问或易混点…"
+                    : "记录一条侧边批注…"
                 }
-              }}
-            />
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-              }}
-            >
-              <span style={{ fontSize: "0.71rem", color: "var(--muted)" }}>
-                Ctrl/⌘ + Enter 保存
-              </span>
-              <div style={{ display: "inline-flex", gap: 6 }}>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={savingNew}
-                  onClick={closeComposer}
-                >
-                  取消
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={savingNew || !draftComment.trim()}
-                  onClick={() => void submitNewAnnotation()}
-                >
-                  {savingNew ? (
-                    <Loader2 size={13} className="spin" />
-                  ) : (
-                    <Check size={13} />
-                  )}
-                  保存批注
-                </Button>
+                disabled={savingNew}
+                onChange={(event) => setDraftComment(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    (event.ctrlKey || event.metaKey) &&
+                    event.key === "Enter" &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    void submitNewAnnotation();
+                  } else if (
+                    event.key === "Escape" &&
+                    !event.nativeEvent.isComposing &&
+                    !draftComment.trim()
+                  ) {
+                    event.preventDefault();
+                    closeComposer();
+                  }
+                }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: "0.71rem", color: "var(--muted)" }}>
+                  Ctrl/⌘ + Enter 保存
+                </span>
+                <div style={{ display: "inline-flex", gap: 6 }}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={savingNew}
+                    onClick={closeComposer}
+                  >
+                    取消
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={savingNew || !draftComment.trim()}
+                    onClick={() => void submitNewAnnotation()}
+                  >
+                    {savingNew ? (
+                      <Loader2 size={13} className="spin" />
+                    ) : (
+                      <Check size={13} />
+                    )}
+                    保存批注
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
-        )}
+        </div>
 
         {annotations.length > 0 ? (
           <div className="annotation-list" role="list" aria-label="批注列表">

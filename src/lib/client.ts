@@ -16,10 +16,16 @@ export class RequestError extends Error {
 export async function api<T = Record<string, unknown>>(
   url: string,
   data?: unknown,
-  options: { userId?: string; signal?: AbortSignal } = {},
+  options: {
+    userId?: string;
+    signal?: AbortSignal;
+    method?: "GET" | "POST" | "DELETE";
+    keepalive?: boolean;
+  } = {},
 ): Promise<T> {
+  const method = options.method ?? (data === undefined ? "GET" : "POST");
   const response = await fetch(url, {
-    method: data === undefined ? "GET" : "POST",
+    method,
     headers: {
       ...(data === undefined ? {} : { "Content-Type": "application/json" }),
       ...(options.userId ? { "X-Workspace-User": options.userId } : {}),
@@ -27,6 +33,7 @@ export async function api<T = Record<string, unknown>>(
     body: data === undefined ? undefined : JSON.stringify(data),
     cache: "no-store",
     signal: options.signal,
+    keepalive: options.keepalive,
   });
   const rawText = await response.text();
   let result: Record<string, unknown> | null = null;
@@ -402,4 +409,17 @@ export async function deleteQuestionAnnotation(
     id: input.id,
     annotationId: input.annotationId,
   });
+}
+
+export async function discardImportPreviewBatches(
+  batchIds: string[],
+  userId?: string,
+) {
+  const uniqueIds = [...new Set(batchIds.filter(Boolean))];
+  if (!uniqueIds.length) return { deleted: 0 };
+  return api<{ deleted: number }>(
+    "/api/import/preview",
+    { batchIds: uniqueIds },
+    { method: "DELETE", userId, keepalive: true },
+  );
 }

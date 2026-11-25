@@ -3,20 +3,43 @@ import { getWorkspace } from "@/server/workspace";
 import { getDb } from "@/db";
 import {
   conversations,
+  deckGroups,
   messages,
   imports,
+  preferences,
+  releases,
   reviewEvents,
   questions,
   studyCards,
+  subscriptions,
 } from "@/db/schema";
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { cleanupExpiredQuestions } from "@/server/question-lifecycle";
+import {
+  cleanupExpiredQuestions,
+  cleanupOrphanedImportPreviews,
+} from "@/server/question-lifecycle";
 import { TRASH_RETENTION_MS, questionExpiresAt } from "@/lib/question-trash";
+export const runtime = "nodejs";
 export const GET = route(async (_request, user) => {
   await cleanupExpiredQuestions({ userId: user.id });
+  await cleanupOrphanedImportPreviews({ userId: user.id });
   const workspace = await getWorkspace(user);
   const db = await getDb();
-  const [threads, rawImports, logs, sourceRows] = await Promise.all([
+  const ownedDeckIds = workspace.decks
+    .filter((d) => d.isOwner)
+    .map((d) => d.id);
+  const [
+    threads,
+    rawImports,
+    logs,
+    sourceRows,
+    prefRows,
+    ownGroups,
+    ownReleases,
+    subRows,
+    trashRows,
+    studyCardRows,
+  ] = await Promise.all([
     db.select().from(conversations).where(eq(conversations.userId, user.id)),
     db
       .select({
@@ -30,6 +53,7 @@ export const GET = route(async (_request, user) => {
       .select({
         id: questions.id,
         sourceText: questions.sourceText,
+        importId: questions.importId,
       })
       .from(questions)
       .where(
@@ -39,8 +63,44 @@ export const GET = route(async (_request, user) => {
           isNull(questions.purgedAt),
         ),
       ),
+    db.select().from(preferences).where(eq(preferences.userId, user.id)),
+    db.select().from(deckGroups).where(eq(deckGroups.ownerId, user.id)),
+    ownedDeckIds.length
+      ? db
+          .select()
+          .from(releases)
+          .where(inArray(releases.deckId, ownedDeckIds))
+      : Promise.resolve([]),
+    db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)),
+    db
+      .select()
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, user.id),
+          gt(questions.deletedAt, new Date(Date.now() - TRASH_RETENTION_MS)),
+          isNull(questions.purgedAt),
+        ),
+      ),
+    db.select().from(studyCards).where(eq(studyCards.userId, user.id)),
   ]);
   const sourceMap = new Map(sourceRows.map((row) => [row.id, row.sourceText]));
+  const referencedImportIds = new Set<string>();
+  for (const row of sourceRows) {
+    if (row.importId) referencedImportIds.add(row.importId);
+  }
+  for (const row of trashRows) {
+    if (row.importId) referencedImportIds.add(row.importId);
+  }
+  const exportedImports = rawImports
+    .filter(
+      ({ record }) =>
+        record.status === "complete" || referencedImportIds.has(record.id),
+    )
+    .map(({ record, rawJson }) => ({
+      ...record,
+      raw: JSON.parse(rawJson),
+    }));
   const chat = threads.length
     ? await db
         .select()
@@ -52,40 +112,33 @@ export const GET = route(async (_request, user) => {
           ),
         )
     : [];
+  const pref = prefRows[0];
   const exported = {
     format: "shiyi-backup",
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     user: workspace.user,
+    preferences: {
+      dailyGoal: pref?.dailyGoal ?? workspace.settings.dailyGoal,
+      dailyNewLimit: pref?.dailyNewLimit ?? workspace.settings.dailyNewLimit,
+      theme: pref?.theme ?? workspace.settings.theme,
+      timeZone: pref?.timeZone ?? workspace.settings.timeZone,
+    },
     decks: workspace.decks,
+    deckGroups: ownGroups,
+    releases: ownReleases,
+    subscriptions: subRows,
     followedAuthors: workspace.followedAuthors ?? [],
     questions: workspace.questions.map((q) =>
       q.isOwner ? { ...q, sourceText: sourceMap.get(q.id) ?? "" } : q,
     ),
-    trash: (
-      await db
-        .select()
-        .from(questions)
-        .where(
-          and(
-            eq(questions.ownerId, user.id),
-            gt(questions.deletedAt, new Date(Date.now() - TRASH_RETENTION_MS)),
-            isNull(questions.purgedAt),
-          ),
-        )
-    ).map((q) => ({
+    trash: trashRows.map((q) => ({
       ...q,
       expiresAt: questionExpiresAt(q.deletedAt!).toISOString(),
     })),
-    personalStudyState: await db
-      .select()
-      .from(studyCards)
-      .where(eq(studyCards.userId, user.id)),
+    personalStudyState: studyCardRows,
     reviews: logs,
-    imports: rawImports.map(({ record, rawJson }) => ({
-      ...record,
-      raw: JSON.parse(rawJson),
-    })),
+    imports: exportedImports,
     conversations: threads.map((t) => ({
       ...t,
       messages: chat.filter((m) => m.conversationId === t.id),

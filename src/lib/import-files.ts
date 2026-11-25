@@ -1,4 +1,5 @@
 import { IMPORT_LIMITS, validImportPath } from "./import-material";
+import { createUuid } from "./utils";
 
 export type ImportFile = { id: string; name: string; raw: string };
 type FileEntry = { name: string; file: File };
@@ -110,7 +111,7 @@ export async function readImportFiles(
     if (chars > IMPORT_LIMITS.batchChars)
       throw new Error("本批原文超过 15 万字符，请分批添加。");
     seen.add(key);
-    files.push({ id: crypto.randomUUID(), name, raw });
+    files.push({ id: createUuid(), name, raw });
   }
   return { files, ignored, failures, duplicates };
 }
