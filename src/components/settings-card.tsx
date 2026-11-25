@@ -814,6 +814,12 @@ export function SettingsCard({
                         </span>
                       </div>
                       <div className="settings-shortcut-row">
+                        <span>展开 / 收起侧边批注</span>
+                        <span className="settings-shortcut-keys">
+                          <kbd>N</kbd>
+                        </span>
+                      </div>
+                      <div className="settings-shortcut-row">
                         <span>显示答案</span>
                         <span className="settings-shortcut-keys">
                           <kbd>Space</kbd>

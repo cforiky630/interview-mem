@@ -6,11 +6,13 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Flame,
   Plus,
   PenLine,
   Sprout,
 } from "lucide-react";
 import type { QuestionView, Workspace } from "@/lib/types";
+import { formatGroupLabel, resolveQuestionGroup } from "@/lib/grouping";
 import { dateKey } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { NotebookSketch } from "./sketch";
@@ -59,6 +61,9 @@ export function Dashboard({
   onSeed,
   onLibrary,
   onInbox,
+  onCram,
+  onQuestion,
+  onApplyAllUpdates,
 }: {
   data: Workspace;
   onReview: () => void;
@@ -69,6 +74,9 @@ export function Dashboard({
   onSeed: () => void;
   onLibrary: () => void;
   onInbox: () => void;
+  onCram?: (questions: QuestionView[], label: string) => void;
+  onQuestion?: (q: QuestionView, orderedIds?: string[]) => void;
+  onApplyAllUpdates?: (deckIds?: string[]) => void;
 }) {
   const [index, setIndex] = useState(0);
   const [dragX, setDragX] = useState(0);
@@ -103,12 +111,88 @@ export function Dashboard({
   ].slice(0, 12);
   const selectedIndex = cards.length ? index % cards.length : 0;
   const question = cards[selectedIndex];
+  const currentGroup = question
+    ? resolveQuestionGroup(data.decks, question)
+    : null;
+  const currentGroupLabel = formatGroupLabel(currentGroup);
+
+  const queueWindowStart =
+    cards.length <= 4
+      ? 0
+      : Math.max(0, Math.min(selectedIndex - 1, cards.length - 4));
+  const queueChips = cards
+    .slice(queueWindowStart, queueWindowStart + 4)
+    .map((item, offset) => ({ item, idx: queueWindowStart + offset }));
+
   const percent = Math.min(
     100,
     (data.stats.reviewedToday / data.settings.dailyGoal) * 100,
   );
-  const nonEmptyDecks = data.decks.filter((deck) => deck.count > 0);
-  const decks = (nonEmptyDecks.length ? nonEmptyDecks : data.decks).slice(0, 4);
+
+  // Smart 2-row deck ordering: due > 0, pendingUpdate, count > 0, up to 8 decks.
+  const sortedDecks = [...data.decks].sort((a, b) => {
+    const aHasDue = a.due > 0 ? 1 : 0;
+    const bHasDue = b.due > 0 ? 1 : 0;
+    if (aHasDue !== bHasDue) return bHasDue - aHasDue;
+    if (a.due !== b.due) return b.due - a.due;
+    const aHasUpdate = a.pendingUpdate ? 1 : 0;
+    const bHasUpdate = b.pendingUpdate ? 1 : 0;
+    if (aHasUpdate !== bHasUpdate) return bHasUpdate - aHasUpdate;
+    const aNonEmpty = a.count > 0 ? 1 : 0;
+    const bNonEmpty = b.count > 0 ? 1 : 0;
+    if (aNonEmpty !== bNonEmpty) return bNonEmpty - aNonEmpty;
+    if (a.newCount !== b.newCount) return b.newCount - a.newCount;
+    return b.count - a.count;
+  });
+  const activeDecks = sortedDecks.filter(
+    (deck) => deck.count > 0 || Boolean(deck.pendingUpdate),
+  );
+  const decks = (activeDecks.length ? activeDecks : sortedDecks).slice(0, 8);
+
+  // Weak/lapsed questions (Priority 1) or favorite / owned unanswered fallback.
+  const weakList = active
+    .filter((q) => (q.fsrs?.lapses ?? 0) >= 1)
+    .sort(
+      (a, b) =>
+        (b.fsrs?.lapses ?? 0) - (a.fsrs?.lapses ?? 0) ||
+        (b.fsrs?.difficulty ?? 0) - (a.fsrs?.difficulty ?? 0),
+    )
+    .slice(0, 5);
+  const weakIds = weakList.map((q) => q.id);
+
+  const fallbackFocusList: QuestionView[] = [];
+  if (weakList.length === 0) {
+    const seenIds = new Set<string>();
+    for (const q of data.questions) {
+      if (q.archived || !q.favorite || seenIds.has(q.id)) continue;
+      seenIds.add(q.id);
+      fallbackFocusList.push(q);
+      if (fallbackFocusList.length >= 4) break;
+    }
+    if (fallbackFocusList.length < 4) {
+      for (const q of unanswered) {
+        if (!q.isOwner || seenIds.has(q.id)) continue;
+        seenIds.add(q.id);
+        fallbackFocusList.push(q);
+        if (fallbackFocusList.length >= 4) break;
+      }
+    }
+  }
+  const fallbackFocusIds = fallbackFocusList.map((q) => q.id);
+
+  // Mastery breakdown across all active studyable questions.
+  const masteredCount = active.filter(
+    (q) => q.fsrs && q.fsrs.reps >= 2 && q.fsrs.stability >= 14,
+  ).length;
+  const learningCount = active.filter(
+    (q) => q.fsrs && !(q.fsrs.reps >= 2 && q.fsrs.stability >= 14),
+  ).length;
+  const unseenCount = active.length - masteredCount - learningCount;
+
+  const pendingUpdates = data.decks.filter(
+    (deck) => !deck.isOwner && Boolean(deck.pendingUpdate),
+  );
+
   const today = dateKey(new Date(), data.settings.timeZone);
   const days = Array.from({ length: 7 }, (_, offset) => {
     const date = new Date(`${today}T12:00:00Z`);
@@ -120,6 +204,7 @@ export function Dashboard({
       count: data.activity.find((row) => row.date === key)?.count ?? 0,
     };
   });
+  const weekTotal = days.reduce((sum, day) => sum + day.count, 0);
   return (
     <div className="page dashboard-page notebook-dashboard">
       <div className="page-heading">
@@ -292,11 +377,31 @@ export function Dashboard({
                       Q{String(selectedIndex + 1).padStart(2, "0")}
                     </span>
                     <span>{question.deckTitle}</span>
+                    {currentGroupLabel && (
+                      <>
+                        <span
+                          className="focus-card-group-sep"
+                          aria-hidden="true"
+                        >
+                          /
+                        </span>
+                        <span title={currentGroupLabel}>
+                          {currentGroupLabel}
+                        </span>
+                      </>
+                    )}
                     <span className="focus-card-state">
                       {question.fsrs ? "待复习" : "新题"}
                     </span>
                   </div>
                   <h3>{question.title}</h3>
+                  {question.tags.length > 0 && (
+                    <div className="focus-card-tags">
+                      {question.tags.slice(0, 3).map((tag) => (
+                        <span key={tag}>#{tag}</span>
+                      ))}
+                    </div>
+                  )}
                   <div className="focus-card-bottom">
                     <button
                       className="text-button"
@@ -364,6 +469,23 @@ export function Dashboard({
               )}
             </div>
             {cards.length > 1 && (
+              <div className="focus-queue-strip" aria-label="今日队列预览">
+                {queueChips.map(({ item, idx }) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`focus-queue-chip${idx === selectedIndex ? " is-active" : ""}`}
+                    aria-current={idx === selectedIndex ? "true" : undefined}
+                    title={item.title}
+                    onClick={() => setIndex(idx)}
+                  >
+                    <span>Q{String(idx + 1).padStart(2, "0")}</span>
+                    <span>{item.title}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {cards.length > 1 && (
               <div className="focus-swipe-dots" aria-label="滑动切换练习卡">
                 {cards.map((item, i) => (
                   <button
@@ -415,11 +537,13 @@ export function Dashboard({
                       <span>
                         {deck.due
                           ? `${deck.due} 题待复习`
-                          : deck.newCount
-                            ? `${deck.newCount} 道新题`
-                            : unanswered.some((q) => q.deckId === deck.id)
-                              ? `${unanswered.filter((q) => q.deckId === deck.id).length} 道待补答案`
-                              : "已学完"}
+                          : deck.pendingUpdate
+                            ? `v${deck.pendingUpdate.toVersion} 可更新`
+                            : deck.newCount
+                              ? `${deck.newCount} 道新题`
+                              : unanswered.some((q) => q.deckId === deck.id)
+                                ? `${unanswered.filter((q) => q.deckId === deck.id).length} 道待补答案`
+                                : "已学完"}
                       </span>
                     </div>
                   </button>
@@ -435,6 +559,132 @@ export function Dashboard({
               </button>
             )}
           </section>
+          {weakList.length > 0 ? (
+            <section
+              className="section-block dashboard-focus-list"
+              aria-label="薄弱易忘"
+            >
+              <div className="section-heading">
+                <h2>薄弱易忘</h2>
+                {onCram && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onCram(weakList, "薄弱易忘题")}
+                  >
+                    <Flame size={14} /> 突击薄弱题
+                  </Button>
+                )}
+              </div>
+              <div className="focus-list-card">
+                {weakList.map((item) => {
+                  const groupLabel = formatGroupLabel(
+                    resolveQuestionGroup(data.decks, item),
+                  );
+                  return (
+                    <div key={item.id} className="focus-list-row">
+                      <button
+                        type="button"
+                        className="focus-list-main"
+                        onClick={() =>
+                          onQuestion
+                            ? onQuestion(item, weakIds)
+                            : onPractice(item)
+                        }
+                      >
+                        <span className="focus-list-title">{item.title}</span>
+                        <span className="focus-list-meta">
+                          <span>{item.deckTitle}</span>
+                          {groupLabel && (
+                            <>
+                              <span>·</span>
+                              <span>{groupLabel}</span>
+                            </>
+                          )}
+                          <span className="focus-list-lapse">
+                            易忘 {item.fsrs?.lapses ?? 0} 次
+                          </span>
+                        </span>
+                      </button>
+                      <div className="focus-list-actions">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onPractice(item)}
+                        >
+                          开练
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : fallbackFocusList.length > 0 ? (
+            <section
+              className="section-block dashboard-focus-list"
+              aria-label="快捷关注"
+            >
+              <div className="section-heading">
+                <h2>快捷关注</h2>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={missing > 0 ? onInbox : onLibrary}
+                >
+                  {missing > 0 ? "去补答案" : "查看全部"}
+                  <ArrowUpRight size={15} />
+                </button>
+              </div>
+              <div className="focus-list-card">
+                {fallbackFocusList.map((item) => {
+                  const hasAnswer = Boolean(item.answer.trim());
+                  const groupLabel = formatGroupLabel(
+                    resolveQuestionGroup(data.decks, item),
+                  );
+                  return (
+                    <div key={item.id} className="focus-list-row">
+                      <button
+                        type="button"
+                        className="focus-list-main"
+                        onClick={() =>
+                          onQuestion
+                            ? onQuestion(item, fallbackFocusIds)
+                            : onDeck(item.deckId)
+                        }
+                      >
+                        <span className="focus-list-title">{item.title}</span>
+                        <span className="focus-list-meta">
+                          <span>{item.deckTitle}</span>
+                          {groupLabel && (
+                            <>
+                              <span>·</span>
+                              <span>{groupLabel}</span>
+                            </>
+                          )}
+                          <span>{item.favorite ? "已收藏" : "待补答案"}</span>
+                        </span>
+                      </button>
+                      {hasAnswer && (
+                        <div className="focus-list-actions">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onPractice(item)}
+                          >
+                            开练
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
         </div>
         <aside className="notebook-home-aside">
           <section className="today-plan sketch-card">
@@ -488,6 +738,64 @@ export function Dashboard({
                 </strong>
               </div>
             </div>
+            {active.length > 0 && (
+              <div className="mastery-bar-wrap" aria-label="总体掌握进度">
+                <div className="mastery-bar-track">
+                  {masteredCount > 0 && (
+                    <span
+                      className="seg-mastered"
+                      style={{
+                        width: `${(masteredCount / active.length) * 100}%`,
+                      }}
+                    />
+                  )}
+                  {learningCount > 0 && (
+                    <span
+                      className="seg-learning"
+                      style={{
+                        width: `${(learningCount / active.length) * 100}%`,
+                      }}
+                    />
+                  )}
+                  {unseenCount > 0 && (
+                    <span
+                      className="seg-new"
+                      style={{
+                        width: `${(unseenCount / active.length) * 100}%`,
+                      }}
+                    />
+                  )}
+                </div>
+                <div className="mastery-bar-legend">
+                  <span>
+                    <i className="seg-mastered" aria-hidden="true" />
+                    已掌握 {masteredCount}
+                  </span>
+                  <span>
+                    <i className="seg-learning" aria-hidden="true" />
+                    复习中 {learningCount}
+                  </span>
+                  <span>
+                    <i className="seg-new" aria-hidden="true" />
+                    未学 {unseenCount}
+                  </span>
+                </div>
+              </div>
+            )}
+            {pendingUpdates.length > 0 && (
+              <button
+                type="button"
+                className="plan-item plan-item-link is-update"
+                onClick={() =>
+                  onApplyAllUpdates ? onApplyAllUpdates() : onLibrary()
+                }
+              >
+                <span>{pendingUpdates.length} 个订阅题库有更新</span>
+                <strong>
+                  <ArrowUpRight size={13} />
+                </strong>
+              </button>
+            )}
             {missing > 0 && (
               <button
                 type="button"
@@ -525,6 +833,12 @@ export function Dashboard({
                   </i>
                 </div>
               ))}
+            </div>
+            <div className="week-heatmap-wrap">
+              <div className="week-heatmap-head">
+                <span>近 10 周 · 本周 {weekTotal} 次</span>
+              </div>
+              <Activity data={data} days={70} />
             </div>
           </section>
           <button className="discover-note" onClick={onCatalog}>

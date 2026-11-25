@@ -171,7 +171,8 @@ export function ReviewHub({
         </div>
       </div>
 
-      <section className="review-hub-hero" aria-label="今日复习概览">
+      <div className="review-hub-overview">
+        <section className="review-hub-hero" aria-label="今日复习概览">
         <div className="review-hub-hero-top">
           <div
             className="plan-ring review-hub-ring"
@@ -308,7 +309,7 @@ export function ReviewHub({
             <small>
               累计 {data.stats.totalReviews} 次复习
               {data.stats.retention !== null
-                ? ` · 近期掌握率 ${Math.round(data.stats.retention * 100)}%`
+                ? ` · 近期掌握率 ${Math.round(data.stats.retention)}%`
                 : ""}
             </small>
           </span>
@@ -331,6 +332,7 @@ export function ReviewHub({
             <ArrowUpRight size={16} />
           </button>
         )}
+      </div>
       </div>
 
       {deckItems.length > 0 && (

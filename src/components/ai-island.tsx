@@ -71,6 +71,43 @@ export type AiTrigger = {
   nonce: number;
 };
 
+export type AiStreamSession = {
+  scope: AiScope;
+  scopeKey: string;
+  label: string;
+  questionId?: string;
+  deckId?: string;
+  status: "streaming" | "completed";
+};
+
+export function shouldDeferAiScopeReload(state: {
+  inFlight: boolean;
+  streamSession: AiStreamSession | null;
+}): boolean {
+  return state.inFlight || state.streamSession !== null;
+}
+
+export function resolveAiStreamCompletion(state: {
+  mode: AiIslandMode;
+  hidden: boolean;
+  targetKey: string;
+  currentScopeKey: string;
+}): {
+  finishedInBackground: boolean;
+  markUnread: boolean;
+  keepPinnedCompleted: boolean;
+  showToastAction: boolean;
+} {
+  const finishedInBackground = state.mode === "collapsed" || state.hidden;
+  return {
+    finishedInBackground,
+    markUnread: finishedInBackground,
+    keepPinnedCompleted:
+      finishedInBackground || state.targetKey !== state.currentScopeKey,
+    showToastAction: finishedInBackground && !state.hidden,
+  };
+}
+
 export function AiIsland({
   data,
   question,
@@ -86,6 +123,7 @@ export function AiIsland({
   onOpenQuestion,
   onSettings,
   onBusyChange,
+  onUnreadChange,
   mutate,
 }: {
   data: Workspace;
@@ -102,6 +140,7 @@ export function AiIsland({
   onOpenQuestion: (question: QuestionView) => void;
   onSettings: (anchor?: HTMLElement | null) => void;
   onBusyChange?: (busy: boolean) => void;
+  onUnreadChange?: (unread: boolean) => void;
   mutate: Mutate;
 }) {
   const contextDeck = useMemo(
@@ -126,6 +165,9 @@ export function AiIsland({
   const [attemptExpanded, setAttemptExpanded] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [streamSession, setStreamSession] = useState<AiStreamSession | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [applying, setApplying] = useState<string | null>(null);
@@ -159,6 +201,31 @@ export function AiIsland({
   const scroll = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
+  const streamSessionRef = useRef<AiStreamSession | null>(null);
+  const modeRef = useRef<AiIslandMode>(mode);
+  modeRef.current = mode;
+  const hiddenRef = useRef<boolean>(hidden);
+  hiddenRef.current = hidden;
+  const onModeChangeRef = useRef(onModeChange);
+  onModeChangeRef.current = onModeChange;
+  const onUnreadChangeRef = useRef(onUnreadChange);
+  onUnreadChangeRef.current = onUnreadChange;
+  const lastOpenSurfaceRef = useRef<"floating" | "docked">(
+    allowDock ? "docked" : "floating",
+  );
+  const latestScopeKeyRef = useRef("");
+  const userStoppedRef = useRef(false);
+  const viewedCompletedSessionRef = useRef(false);
+
+  function updateStreamSession(next: AiStreamSession | null) {
+    streamSessionRef.current = next;
+    setStreamSession(next);
+  }
+
+  function stopStreaming() {
+    userStoppedRef.current = true;
+    abort.current?.abort();
+  }
 
   const autoKey = question
     ? `q:${question.id}`
@@ -173,10 +240,18 @@ export function AiIsland({
   }, [question?.id]);
 
   useEffect(() => {
+    if (
+      shouldDeferAiScopeReload({
+        inFlight: inFlight.current,
+        streamSession,
+      })
+    ) {
+      return;
+    }
     if (lastAutoKey.current === autoKey) return;
     lastAutoKey.current = autoKey;
     setScope(question ? "question" : contextDeck ? "deck" : "workspace");
-  }, [autoKey, question, contextDeck]);
+  }, [autoKey, question, contextDeck, streamSession]);
 
   const effectiveScope: AiScope =
     question && scope === "question"
@@ -186,22 +261,62 @@ export function AiIsland({
         ? "deck"
         : "workspace";
 
-  useEffect(() => {
-    if (effectiveScope === "question") {
-      setScopedView("chat");
-    }
-  }, [effectiveScope]);
-
   const scopeKey = buildScopeKey(
     effectiveScope,
     data.user.id,
     question?.id,
     contextDeck?.id,
   );
+  latestScopeKeyRef.current = scopeKey;
+
+  const displayScope: AiScope = streamSession
+    ? streamSession.scope
+    : effectiveScope;
+  const displayQuestion: QuestionView | undefined = streamSession
+    ? streamSession.scope === "question" && streamSession.questionId
+      ? data.questions.find((q) => q.id === streamSession.questionId)
+      : undefined
+    : question;
+  const displayDeck: DeckView | undefined = streamSession
+    ? streamSession.scope === "deck" && streamSession.deckId
+      ? data.decks.find((d) => d.id === streamSession.deckId)
+      : displayQuestion?.deckId
+        ? data.decks.find((d) => d.id === displayQuestion.deckId)
+        : undefined
+    : contextDeck;
+  const isCrossContextStream = Boolean(
+    streamSession && streamSession.scopeKey !== scopeKey,
+  );
+
+  useEffect(() => {
+    if (displayScope === "question") {
+      setScopedView("chat");
+    }
+  }, [displayScope]);
 
   useEffect(() => {
     onBusyChange?.(busy);
   }, [busy, onBusyChange]);
+
+  useEffect(() => {
+    const visibleOpen = !hidden && mode !== "collapsed";
+    if (visibleOpen) {
+      onUnreadChangeRef.current?.(false);
+      if (streamSessionRef.current?.status === "completed") {
+        viewedCompletedSessionRef.current = true;
+        if (streamSessionRef.current.scopeKey === scopeKey) {
+          viewedCompletedSessionRef.current = false;
+          updateStreamSession(null);
+        }
+      }
+    } else if (
+      streamSessionRef.current?.status === "completed" &&
+      viewedCompletedSessionRef.current
+    ) {
+      viewedCompletedSessionRef.current = false;
+      updateStreamSession(null);
+    }
+  }, [mode, hidden, scopeKey]);
 
   useEffect(
     () => () => {
@@ -246,6 +361,14 @@ export function AiIsland({
   }, [historyOpen]);
 
   useEffect(() => {
+    if (
+      shouldDeferAiScopeReload({
+        inFlight: inFlight.current,
+        streamSession: streamSessionRef.current,
+      })
+    ) {
+      return;
+    }
     if (effectiveScope === "question" && !question?.id) return;
     if (effectiveScope === "deck" && !contextDeck?.id) return;
     if (
@@ -255,19 +378,15 @@ export function AiIsland({
       return;
     }
     if (mode === "collapsed") {
-      if (!inFlight.current || inFlightTargetKeyRef.current !== scopeKey) {
-        loadedTargetRef.current = { key: "", userId: data.user.id };
-      }
-      if (!inFlight.current) {
-        setThreads([]);
-        setActiveId(null);
-        setItems([]);
-        setQuote("");
-        setQuoteExpanded(false);
-        setAttempt("");
-        setAttemptExpanded(false);
-        setError("");
-      }
+      loadedTargetRef.current = { key: "", userId: data.user.id };
+      setThreads([]);
+      setActiveId(null);
+      setItems([]);
+      setQuote("");
+      setQuoteExpanded(false);
+      setAttempt("");
+      setAttemptExpanded(false);
+      setError("");
       return;
     }
     loadedTargetRef.current = {
@@ -275,13 +394,6 @@ export function AiIsland({
       userId: data.user.id,
     };
     loadAbort.current?.abort();
-    if (abort.current) {
-      abort.current.abort();
-      abort.current = null;
-    }
-    inFlight.current = false;
-    inFlightTargetKeyRef.current = "";
-    setBusy(false);
     setThreads([]);
     setActiveId(null);
     setItems([]);
@@ -331,12 +443,13 @@ export function AiIsland({
     contextDeck?.id,
     data.user.id,
     mode,
+    streamSession,
   ]);
 
   useEffect(() => {
     if (
       mode === "collapsed" ||
-      (effectiveScope !== "question" && scopedView !== "chat")
+      (displayScope !== "question" && scopedView !== "chat")
     )
       return;
     const container = scroll.current;
@@ -349,7 +462,7 @@ export function AiIsland({
         behavior: "auto",
       });
     }
-  }, [items, busy, mode, effectiveScope, scopedView]);
+  }, [items, busy, mode, displayScope, scopedView]);
 
   useEffect(() => {
     if (!trigger || trigger.nonce === lastTrigger.current) return;
@@ -360,6 +473,9 @@ export function AiIsland({
       return;
     }
     lastTrigger.current = trigger.nonce;
+    viewedCompletedSessionRef.current = false;
+    updateStreamSession(null);
+    onUnreadChangeRef.current?.(false);
     loadAbort.current?.abort();
     loadAbort.current = null;
     setLoading(false);
@@ -413,9 +529,9 @@ export function AiIsland({
     conversationId = activeId,
     fresh = false,
     submittedAttempt = attempt,
-    targetScope = effectiveScope,
-    targetQuestionId = question?.id,
-    targetDeckId = contextDeck?.id,
+    targetScope = displayScope,
+    targetQuestionId = displayQuestion?.id,
+    targetDeckId = displayDeck?.id,
   ) {
     if (!text.trim() || inFlight.current || !data.settings.hasKey) return;
     if (targetScope === "question" && !targetQuestionId) return;
@@ -427,10 +543,30 @@ export function AiIsland({
       targetQuestionId,
       targetDeckId,
     );
+    const targetLabel =
+      targetScope === "question"
+        ? (data.questions.find((q) => q.id === targetQuestionId)?.title ??
+          "当前题目")
+        : targetScope === "deck"
+          ? (data.decks.find((d) => d.id === targetDeckId)?.title ?? "当前题库")
+          : "全局题库工作区";
     const controller = new AbortController();
     abort.current = controller;
     inFlight.current = true;
     inFlightTargetKeyRef.current = targetKey;
+    loadedTargetRef.current = { key: targetKey, userId: data.user.id };
+    userStoppedRef.current = false;
+    viewedCompletedSessionRef.current = false;
+    onUnreadChangeRef.current?.(false);
+    setScopedView("chat");
+    updateStreamSession({
+      scope: targetScope,
+      scopeKey: targetKey,
+      label: targetLabel,
+      questionId: targetQuestionId,
+      deckId: targetDeckId,
+      status: "streaming",
+    });
     setBusy(true);
     setInput("");
     setError("");
@@ -613,7 +749,44 @@ export function AiIsland({
           setAttempt("");
         }
       }
+      if (abort.current === controller) {
+        const completion = resolveAiStreamCompletion({
+          mode: modeRef.current,
+          hidden: hiddenRef.current,
+          targetKey,
+          currentScopeKey: latestScopeKeyRef.current,
+        });
+        if (completion.keepPinnedCompleted) {
+          viewedCompletedSessionRef.current = !completion.finishedInBackground;
+          updateStreamSession({
+            scope: targetScope,
+            scopeKey: targetKey,
+            label: targetLabel,
+            questionId: targetQuestionId,
+            deckId: targetDeckId,
+            status: "completed",
+          });
+        } else {
+          viewedCompletedSessionRef.current = false;
+          updateStreamSession(null);
+        }
+        if (completion.markUnread) {
+          onUnreadChangeRef.current?.(true);
+          toast.success("AI 已回复完成", {
+            action: completion.showToastAction
+              ? {
+                  label: "查看",
+                  onClick: () => {
+                    onUnreadChangeRef.current?.(false);
+                    onModeChangeRef.current(lastOpenSurfaceRef.current);
+                  },
+                }
+              : undefined,
+          });
+        }
+      }
     } catch (e) {
+      const wasAbort = e instanceof DOMException && e.name === "AbortError";
       if (loadedTargetRef.current.key === targetKey) {
         setItems((previous) =>
           previous.filter(
@@ -632,7 +805,25 @@ export function AiIsland({
             .catch(() => {});
         }
       }
-      if (!(e instanceof DOMException && e.name === "AbortError")) {
+      if (abort.current === controller) {
+        const staysCrossContext = targetKey !== latestScopeKeyRef.current;
+        if (staysCrossContext && (!wasAbort || userStoppedRef.current)) {
+          viewedCompletedSessionRef.current =
+            modeRef.current !== "collapsed" && !hiddenRef.current;
+          updateStreamSession({
+            scope: targetScope,
+            scopeKey: targetKey,
+            label: targetLabel,
+            questionId: targetQuestionId,
+            deckId: targetDeckId,
+            status: "completed",
+          });
+        } else {
+          viewedCompletedSessionRef.current = false;
+          updateStreamSession(null);
+        }
+      }
+      if (!wasAbort) {
         const message = e instanceof Error ? e.message : "回答未完成。";
         setError(message);
         toast.error(message);
@@ -642,29 +833,30 @@ export function AiIsland({
         setBusy(false);
         inFlight.current = false;
         inFlightTargetKeyRef.current = "";
+        userStoppedRef.current = false;
         abort.current = null;
       }
     }
   }
 
   const active = threads.find((t) => t.id === activeId);
-  const ownedDeck = question
-    ? data.decks.find((d) => d.id === question.deckId && d.isOwner)
+  const ownedDeck = displayQuestion
+    ? data.decks.find((d) => d.id === displayQuestion.deckId && d.isOwner)
     : undefined;
   const visibleAttempt = (active ? active.attempt : attempt).trim();
   const resolvedReaderTarget: AiReaderTarget | null =
     readerTarget?.kind === "edit"
-      ? question && question.id === readerTarget.question.id
-        ? { ...readerTarget, question, deck: ownedDeck }
+      ? displayQuestion && displayQuestion.id === readerTarget.question.id
+        ? { ...readerTarget, question: displayQuestion, deck: ownedDeck }
         : readerTarget
       : readerTarget;
 
   async function applyEdit(edit: ChatEdit, key: string) {
     if (
-      !question ||
+      !displayQuestion ||
       inFlight.current ||
       editInFlight.current ||
-      chatEditState(edit, question, ownedDeck) !== "ready"
+      chatEditState(edit, displayQuestion, ownedDeck) !== "ready"
     )
       return;
     editInFlight.current = true;
@@ -675,9 +867,9 @@ export function AiIsland({
           action: "edit",
           id: edit.id,
           expectedRevision: edit.revision,
-          title: question.title,
-          answer: question.answer,
-          tags: question.tags,
+          title: displayQuestion.title,
+          answer: displayQuestion.answer,
+          tags: displayQuestion.tags,
           ...edit.fields,
         });
         if (result) toast.success("已应用到题目");
@@ -725,32 +917,34 @@ export function AiIsland({
     content: string,
     heading = "AI 补充",
   ): Promise<boolean> {
-    if (!question || editInFlight.current) return false;
+    if (!displayQuestion || editInFlight.current) return false;
     editInFlight.current = true;
     setNoteSaveBusy(true);
     try {
       const { nextNote, expectedVersion } = appendToStoredNote(
         data.user.id,
-        question,
+        displayQuestion,
         content,
         heading,
       );
       const result = await mutate("/api/questions", {
         action: "note",
-        id: question.id,
+        id: displayQuestion.id,
         note: nextNote,
         expectedVersion,
       });
       if (result) {
         try {
-          localStorage.removeItem(`shiyi:note:${data.user.id}:${question.id}`);
+          localStorage.removeItem(
+            `shiyi:note:${data.user.id}:${displayQuestion.id}`,
+          );
         } catch {
           /* Ignore storage restrictions. */
         }
         window.dispatchEvent(
           new CustomEvent("shiyi:note-updated", {
             detail: {
-              questionId: question.id,
+              questionId: displayQuestion.id,
               note: nextNote,
               version: Number(result.version),
               switchToNotes: true,
@@ -785,12 +979,12 @@ export function AiIsland({
     message: ChatMessage,
     options: { title: string; deckId: string | null },
   ): Promise<boolean> {
-    if (!question || copyBusy) return false;
+    if (!displayQuestion || copyBusy) return false;
     setCopyBusy(true);
     try {
       const response = await mutate("/api/questions", {
         action: "copy",
-        id: question.id,
+        id: displayQuestion.id,
         deckId: options.deckId,
         title: options.title.trim().slice(0, 200),
         answer: message.content,
@@ -849,11 +1043,13 @@ export function AiIsland({
   const isOpen = !hidden && mode !== "collapsed";
   const isDockedNow = mode === "docked" && allowDock;
   const [lastOpenSurface, setLastOpenSurface] = useState<"floating" | "docked">(
-    "floating",
+    allowDock ? "docked" : "floating",
   );
   useEffect(() => {
     if (mode !== "collapsed") {
-      setLastOpenSurface(mode === "docked" && allowDock ? "docked" : "floating");
+      const surface = mode === "docked" && allowDock ? "docked" : "floating";
+      lastOpenSurfaceRef.current = surface;
+      setLastOpenSurface(surface);
     }
   }, [mode, allowDock]);
 
@@ -863,7 +1059,7 @@ export function AiIsland({
   if (hidden) return null;
 
   const recentQuestion =
-    !question && lastQuestionIdRef.current
+    !displayQuestion && lastQuestionIdRef.current
       ? data.questions.find(
           (q) => q.id === lastQuestionIdRef.current && !q.archived,
         )
@@ -877,7 +1073,9 @@ export function AiIsland({
 
   const isDocked = isOpen ? isDockedNow : lastOpenSurface === "docked";
   const showThreadActions =
-    effectiveScope !== "question" ? scopedView === "chat" : Boolean(question);
+    displayScope !== "question"
+      ? scopedView === "chat"
+      : Boolean(displayQuestion);
 
   return (
     <>
@@ -1108,7 +1306,9 @@ export function AiIsland({
                   disabled={busy}
                   onClick={() => selectThread(t.id)}
                 >
-                  <span>{formatThreadLabel(t, effectiveScope, question?.answer)}</span>
+                  <span>
+                    {formatThreadLabel(t, displayScope, displayQuestion?.answer)}
+                  </span>
                   {activeId === t.id && (
                     <Check size={14} className="ai-history-check" aria-hidden="true" />
                   )}
@@ -1125,9 +1325,21 @@ export function AiIsland({
                 key={item.id}
                 type="button"
                 role="tab"
-                aria-selected={effectiveScope === item.id}
-                className={effectiveScope === item.id ? "is-active" : ""}
-                onClick={() => setScope(item.id)}
+                aria-selected={displayScope === item.id && !isCrossContextStream}
+                className={
+                  displayScope === item.id && !isCrossContextStream
+                    ? "is-active"
+                    : ""
+                }
+                onClick={() => {
+                  if (busy) {
+                    toast.info("当前回答还未结束，请稍候或先停止");
+                    return;
+                  }
+                  viewedCompletedSessionRef.current = false;
+                  updateStreamSession(null);
+                  setScope(item.id);
+                }}
               >
                 {item.label}
               </button>
@@ -1135,7 +1347,33 @@ export function AiIsland({
           </div>
         )}
 
-        {effectiveScope !== "question" && (
+        {isCrossContextStream && streamSession && (
+          <div className="ai-bg-stream-banner" role="status" aria-live="polite">
+            <span
+              className={`ai-bg-stream-dot ${streamSession.status === "streaming" ? "is-pulsing" : ""}`}
+              aria-hidden="true"
+            />
+            <span className="ai-bg-stream-text">
+              {streamSession.status === "streaming"
+                ? `正在后台回复「${streamSession.label}」…`
+                : `已完成「${streamSession.label}」的回复`}
+            </span>
+            {streamSession.status === "completed" && (
+              <button
+                type="button"
+                className="ai-bg-stream-return"
+                onClick={() => {
+                  viewedCompletedSessionRef.current = false;
+                  updateStreamSession(null);
+                }}
+              >
+                切回当前页
+              </button>
+            )}
+          </div>
+        )}
+
+        {displayScope !== "question" && (
           <div className="ai-scope-subtabs" role="tablist" aria-label="题库助手视图">
             <button
               type="button"
@@ -1160,45 +1398,45 @@ export function AiIsland({
           </div>
         )}
 
-        {effectiveScope !== "question" && scopedView === "launcher" ? (
+        {displayScope !== "question" && scopedView === "launcher" ? (
           <ScopeLauncher
-            key={effectiveScope === "deck" ? (contextDeck?.id ?? "deck") : "workspace"}
-            scope={effectiveScope}
+            key={displayScope === "deck" ? (displayDeck?.id ?? "deck") : "workspace"}
+            scope={displayScope}
             data={data}
-            deck={contextDeck}
+            deck={displayDeck}
             recentQuestion={recentQuestion}
             onOpenQuestion={handleOpenQuestion}
           />
-        ) : effectiveScope !== "question" || question ? (
+        ) : displayScope !== "question" || displayQuestion ? (
           <>
             <div
-              className={`ai-context-chip ${effectiveScope === "question" ? "is-question-scope" : ""}`}
+              className={`ai-context-chip ${displayScope === "question" ? "is-question-scope" : ""}`}
               title={
-                effectiveScope === "question" && question
-                  ? question.title
-                  : effectiveScope === "deck" && contextDeck
-                    ? contextDeck.title
+                displayScope === "question" && displayQuestion
+                  ? displayQuestion.title
+                  : displayScope === "deck" && displayDeck
+                    ? displayDeck.title
                     : "全局题库"
               }
             >
               <span className="ai-context-icon" aria-hidden="true">
-                {effectiveScope === "question" ? (
+                {displayScope === "question" ? (
                   <FileText size={13} />
-                ) : effectiveScope === "deck" ? (
+                ) : displayScope === "deck" ? (
                   <Folder size={13} />
                 ) : (
                   <Globe size={13} />
                 )}
               </span>
               <strong>
-                {effectiveScope === "question" && question
-                  ? question.title
-                  : effectiveScope === "deck" && contextDeck
-                    ? contextDeck.title
+                {displayScope === "question" && displayQuestion
+                  ? displayQuestion.title
+                  : displayScope === "deck" && displayDeck
+                    ? displayDeck.title
                     : "全局题库工作区"}
               </strong>
-              {effectiveScope === "question" &&
-                question?.answer.trim() &&
+              {displayScope === "question" &&
+                displayQuestion?.answer.trim() &&
                 !quote.trim() && (
                   <span
                     className="ai-context-ref"
@@ -1209,13 +1447,13 @@ export function AiIsland({
                   </span>
                 )}
             </div>
-            {effectiveScope === "question" &&
+            {displayScope === "question" &&
               quote.trim() &&
               (() => {
                 const trimmedQuote = quote.trim();
                 const fullAnswerQuoted = isFullAnswerQuote(
                   trimmedQuote,
-                  active?.answerSnapshot || question?.answer,
+                  active?.answerSnapshot || displayQuestion?.answer,
                 );
                 const inlineHighlight =
                   !fullAnswerQuoted &&
@@ -1278,7 +1516,7 @@ export function AiIsland({
                   </div>
                 );
               })()}
-            {effectiveScope === "question" && visibleAttempt && (
+            {displayScope === "question" && visibleAttempt && (
               <div className="ai-attempt-card">
                 <div className="ai-attempt-head">
                   <PenLine size={14} />
@@ -1327,30 +1565,30 @@ export function AiIsland({
                     <Sparkles size={30} strokeWidth={1.2} />
                   </span>
                   <h3>
-                    {effectiveScope === "question"
+                    {displayScope === "question"
                       ? "哪里没想明白？"
-                      : effectiveScope === "deck"
+                      : displayScope === "deck"
                         ? "梳理当前题库"
                         : "盘点全局题库"}
                   </h3>
                   <p>
-                    {effectiveScope === "question" && question
-                      ? question.isOwner
+                    {displayScope === "question" && displayQuestion
+                      ? displayQuestion.isOwner
                         ? "围绕本题提问，或让我帮你润色答案、整理笔记。"
                         : "围绕本题提问，也可以划选正文追问。"
-                      : effectiveScope === "deck" && contextDeck
-                        ? `围绕「${contextDeck.title}」查找题目、排查重复或安排复习。`
+                      : displayScope === "deck" && displayDeck
+                        ? `围绕「${displayDeck.title}」查找题目、排查重复或安排复习。`
                         : "跨题库查重、梳理知识结构，或安排今天的复习顺序。"}
                   </p>
                   {data.settings.hasKey ? (
                     <div className="prompt-suggestions">
-                      {(effectiveScope === "question"
+                      {(displayScope === "question"
                         ? [
                             "用生活比喻或代码示例讲透底层机制",
                             "两分钟面试口述，这段答案怎么凝练？",
                             "这道题最容易答偏或被深挖的点有哪些？",
                           ]
-                        : effectiveScope === "deck"
+                        : displayScope === "deck"
                           ? [
                               "梳理当前题库的知识脉络与重点分组",
                               "排查当前题库中可能重复或相似的题目",
@@ -1453,14 +1691,14 @@ export function AiIsland({
                         </div>
                       </div>
                     )}
-                  {question &&
+                  {displayQuestion &&
                     message.edits?.map((edit) => {
                       const key = `${message.id}:${edit.target}`;
                       return (
                         <ChatEditCard
                           key={key}
                           edit={edit}
-                          question={question}
+                          question={displayQuestion}
                           deck={ownedDeck}
                           busy={busy || applying !== null}
                           applying={applying === key}
@@ -1469,7 +1707,7 @@ export function AiIsland({
                             setReaderTarget({
                               kind: "edit",
                               edit,
-                              question,
+                              question: displayQuestion,
                               deck: ownedDeck,
                               keyId: key,
                             })
@@ -1492,10 +1730,10 @@ export function AiIsland({
                                 kind: "message",
                                 message,
                                 title:
-                                  effectiveScope === "question" && question
-                                    ? question.title
-                                    : effectiveScope === "deck" && contextDeck
-                                      ? contextDeck.title
+                                  displayScope === "question" && displayQuestion
+                                    ? displayQuestion.title
+                                    : displayScope === "deck" && displayDeck
+                                      ? displayDeck.title
                                       : "AI 回答阅读",
                               })
                             }
@@ -1520,7 +1758,7 @@ export function AiIsland({
                             <Copy size={14} />
                           )}
                         </button>
-                        {question && !message.edits?.length && (
+                        {displayQuestion && !message.edits?.length && (
                           <>
                             <button
                               type="button"
@@ -1563,11 +1801,11 @@ export function AiIsland({
                   placeholder={
                     !data.settings.hasKey
                       ? "请先配置 AI 模型后提问"
-                      : effectiveScope === "question" && question
-                        ? question.isOwner
+                      : displayScope === "question" && displayQuestion
+                        ? displayQuestion.isOwner
                           ? "提问，或让我帮你优化答案和笔记…"
                           : "围绕本题或划选内容追问…"
-                        : effectiveScope === "deck"
+                        : displayScope === "deck"
                           ? "查重、归纳考点或安排本组复习…"
                           : "全库搜题、查重或制定复习计划…"
                   }
@@ -1613,7 +1851,7 @@ export function AiIsland({
                       className="send-button"
                       title="停止回答"
                       aria-label="停止回答"
-                      onClick={() => abort.current?.abort()}
+                      onClick={stopStreaming}
                     >
                       <Square size={13} fill="currentColor" />
                     </button>
@@ -1643,29 +1881,29 @@ export function AiIsland({
         copyBusy={copyBusy}
         onApplyEdit={applyEdit}
         onSaveToNote={
-          question
+          displayQuestion
             ? (message) => setSaveTarget({ kind: "note", message })
             : undefined
         }
         onSaveAsCard={
-          question
+          displayQuestion
             ? (message) => setSaveTarget({ kind: "card", message })
             : undefined
         }
       />
       <AiSaveDialog
         target={saveTarget}
-        question={question}
+        question={displayQuestion}
         ownedDecks={data.decks.filter((d) => d.isOwner)}
         defaultCardTitle={
-          question && saveTarget?.kind === "card"
-            ? suggestCardTitle(question.title, items, saveTarget.message)
+          displayQuestion && saveTarget?.kind === "card"
+            ? suggestCardTitle(displayQuestion.title, items, saveTarget.message)
             : ""
         }
         defaultDeckId={
           (
             data.decks.find(
-              (d) => d.isOwner && d.id === question?.deckId,
+              (d) => d.isOwner && d.id === displayQuestion?.deckId,
             ) ?? data.decks.find((d) => d.isOwner)
           )?.id ?? null
         }

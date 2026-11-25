@@ -499,6 +499,8 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         deckTitle: title,
         note: s?.note ?? "",
         noteVersion: s?.noteVersion ?? 0,
+        annotations: Array.isArray(s?.annotations) ? s.annotations : [],
+        annotationsVersion: s?.annotationsVersion ?? 0,
         favorite: s?.favorite ?? false,
         fsrs: (s?.fsrs as StoredCard | null) ?? null,
         studyVersion: s?.version ?? 0,

@@ -68,11 +68,15 @@
 }
 
 /* ============================================================================
- * 复习中心（Tab #3 持久主页面，桌面端与移动端通用）
+ * 复习中心（Tab #3 持久主页面，桌面端与移动端通用；继承 .page 的 1440px 统一容器宽度）
  * ========================================================================== */
 
-.review-hub-page {
-  max-width: 1040px;
+.review-hub-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 308px;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 24px;
 }
 
 .review-hub-hero {
@@ -80,11 +84,12 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
-  padding: 20px 22px;
+  padding: 22px 26px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  margin-bottom: 16px;
+  min-width: 0;
+  margin-bottom: 0;
 }
 
 .review-hub-hero-top {
@@ -104,7 +109,7 @@
 }
 
 .review-hub-summary h2 {
-  font-size: 1.15rem;
+  font-size: 1.22rem;
   font-weight: 600;
   line-height: 1.35;
   color: var(--text);
@@ -112,7 +117,7 @@
 }
 
 .review-hub-summary p {
-  font-size: 0.84rem;
+  font-size: 0.875rem;
   line-height: 1.6;
 }
 
@@ -126,19 +131,19 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 12px;
+  padding: 11px 14px;
   border-radius: var(--radius-sm);
   background: var(--surface-recessed);
   border: 1px solid var(--border-subtle);
 }
 
 .review-hub-metric > span {
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted);
 }
 
 .review-hub-metric > strong {
-  font-size: 1.25rem;
+  font-size: 1.35rem;
   font-weight: 700;
   line-height: 1.25;
   color: var(--text);
@@ -165,10 +170,11 @@
 }
 
 .review-hub-shortcuts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  margin-bottom: 22px;
+  min-width: 0;
+  margin-bottom: 0;
 }
 
 .review-hub-shortcut {
@@ -240,14 +246,14 @@
 .review-hub-deck-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .review-hub-deck-card {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -281,7 +287,7 @@
 }
 
 .review-hub-deck-meta h3 {
-  font-size: 0.92rem;
+  font-size: 0.95rem;
   font-weight: 600;
   line-height: 1.35;
   white-space: nowrap;
@@ -290,7 +296,7 @@
 }
 
 .review-hub-deck-meta p {
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: var(--subtle);
   margin-top: 2px;
   white-space: nowrap;
@@ -300,6 +306,76 @@
 
 .review-hub-deck-cta {
   flex-shrink: 0;
+}
+
+@media (min-width: 1600px) {
+  .review-hub-overview {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 30px;
+  }
+}
+
+@container page-content (max-width: 880px) {
+  .review-hub-overview {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .review-hub-shortcuts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+}
+
+/* —— AI 后台流式状态横条（跨页面或后台回复时安静提示，不抢焦点） —— */
+.ai-bg-stream-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 16px 0;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-accent);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.ai-bg-stream-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.ai-bg-stream-dot.is-pulsing {
+  animation: ai-pulse 1.35s ease-in-out infinite;
+}
+
+.ai-bg-stream-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.ai-bg-stream-return {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-accent);
+  background: var(--surface);
+  color: var(--accent-dark);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+  transition:
+    background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -312,6 +388,10 @@
     border-color: var(--deck-accent, var(--border-accent));
     box-shadow: var(--shadow-card-hover);
     transform: translateY(-1px);
+  }
+  .ai-bg-stream-return:hover {
+    background: var(--surface-elevated);
+    border-color: var(--accent);
   }
 }
 
@@ -370,6 +450,9 @@ html[data-input="touch"] :where(
   .followup-card textarea,
   .practice-block textarea,
   .answer-draft textarea,
+  .oral-scratchpad textarea,
+  .annotation-composer textarea,
+  .annotation-card textarea,
   .ai-island-panel textarea,
   .ai-island-panel input,
   .settings-modal input,
@@ -543,7 +626,11 @@ html[data-input="touch"] :where(
   .settings-signout-btn,
   .deck-group-heading-actions > .button-ghost,
   .deck-group-heading-actions > .icon-button,
-  .catalog-deck-author-row
+  .catalog-deck-author-row,
+  .focus-list-main,
+  .oral-scratchpad-toggle,
+  .compare-layout-toggle,
+  .reader-annotations-toggle
 ):active:not(:disabled) {
   background: transparent;
   border-color: transparent;
@@ -568,7 +655,8 @@ html[data-input="touch"] :where(
   .catalog-filter-toggle,
   .catalog-author-decks > button,
   .publish-batch-filters > button,
-  .catalog-tabs > button:not(.is-active):not(.selected)
+  .catalog-tabs > button:not(.is-active):not(.selected),
+  .focus-queue-chip
 ):active:not(:disabled) {
   opacity: 0.74;
   transform: scale(0.97);
@@ -609,7 +697,9 @@ html[data-input="touch"] :where(
   .catalog-deck-card,
   .catalog-author-card,
   .catalog-sub-row,
-  .publish-batch-row
+  .publish-batch-row,
+  .annotation-card,
+  .focus-list-row
 ):active:not(:disabled) {
   translate: 0 0;
   transform: scale(0.98);
@@ -1107,6 +1197,11 @@ html[data-shell="mobile"] {
   }
 
   /* —— 复习中心移动端紧致排布 —— */
+  & .review-hub-overview {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-bottom: 18px;
+  }
   & .review-hub-hero {
     padding: 15px 14px;
     gap: 13px;
@@ -1141,9 +1236,10 @@ html[data-shell="mobile"] {
     width: 100%;
   }
   & .review-hub-shortcuts {
+    display: grid;
     grid-template-columns: 1fr;
     gap: 9px;
-    margin-bottom: 18px;
+    margin-bottom: 0;
   }
   & .review-hub-shortcut {
     padding: 11px 13px;
@@ -1232,8 +1328,34 @@ html[data-shell="mobile"] {
     min-height: 40px;
     padding-inline: 13px;
   }
-  & .today-plan {
+  & .today-plan,
+  & .week-heatmap-wrap,
+  & .focus-queue-strip {
     display: none;
+  }
+  & .focus-card-tags {
+    margin: -2px 0 6px;
+  }
+  & .dashboard-focus-list {
+    margin-top: 16px;
+  }
+  & .focus-list-row {
+    padding: 10px 12px;
+    gap: 10px;
+    min-height: 48px;
+  }
+  & .focus-list-main {
+    min-height: 40px;
+    justify-content: center;
+  }
+  & .focus-list-actions > .button {
+    min-height: 36px;
+    padding: 4px 11px;
+    font-size: 0.78rem;
+  }
+  & .mastery-bar-wrap {
+    margin-top: 10px;
+    padding-top: 9px;
   }
   & .section-heading h2 {
     font-size: 0.96rem;
@@ -1746,8 +1868,38 @@ html[data-shell="mobile"] {
   & .answer-draft textarea {
     min-height: 148px;
   }
+  & .notebook-reader.is-review-drafting .answer-draft textarea {
+    min-height: clamp(220px, 38dvh, 380px);
+    max-height: calc(var(--vvh, 100dvh) - 180px);
+  }
+  & .notebook-reader.is-review-drafting .oral-recall {
+    min-height: clamp(200px, 34dvh, 320px);
+  }
+  & .answer-draft-meta {
+    font-size: 0.75rem;
+  }
+  & .oral-scratchpad textarea {
+    min-height: 84px;
+    max-height: 160px;
+  }
   & .answer-submit-row.is-pre-reveal {
     display: none;
+  }
+  & .mobile-dock-icon-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  & .mobile-dock-dot {
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--surface);
   }
   & .mobile-reader-dock {
     display: flex;
@@ -2707,6 +2859,65 @@ html[data-shell="mobile"] {
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
   }
+  /* —— 移动端侧边批注底部抽屉 —— */
+  & .annotations-mobile-modal {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-sheet);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  & .annotations-mobile-backdrop {
+    position: absolute;
+    inset: 0;
+    background: var(--backdrop-bg);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    touch-action: none;
+    overscroll-behavior: contain;
+  }
+  & .annotations-mobile-sheet {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: calc(
+      min(86dvh, calc(var(--vvh, 100dvh) - 32px - env(safe-area-inset-top))) + 48px
+    );
+    max-height: calc(
+      min(90dvh, calc(var(--vvh, 100dvh) - 24px - env(safe-area-inset-top))) + 48px
+    );
+    margin-bottom: -48px;
+    padding-bottom: 48px;
+    border-radius: 22px 22px 0 0;
+    border-top: 1px solid var(--border);
+    background: var(--surface-floating-card);
+    box-shadow: var(--shadow-popover);
+    overflow: hidden;
+    animation: sheet-spring-up 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  & .annotations-mobile-sheet .annotations-rail {
+    position: static;
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  & .annotations-mobile-sheet .annotations-rail-head {
+    padding: 8px 14px 10px 18px;
+  }
+  & .annotations-mobile-sheet .annotations-rail-body {
+    padding: 12px 16px max(18px, env(safe-area-inset-bottom));
+  }
+  & .annotations-mobile-sheet .annotation-color-dot {
+    width: 24px;
+    height: 24px;
+  }
 }
 
 /* 软键盘唤起时隐藏主底栏并收敛底部留白（不影响答题对照条与浮层） */
@@ -2718,10 +2929,16 @@ html[data-shell="mobile"][data-keyboard-open="true"] .main-layout {
   padding-bottom: 16px;
 }
 
+html[data-shell="mobile"][data-keyboard-open="true"] .notebook-reader.is-review-drafting .answer-draft textarea {
+  min-height: 120px;
+  max-height: calc(var(--vvh, 100dvh) - 148px);
+}
+
 html[data-shell="mobile"][data-keyboard-open="true"] .ai-island-panel,
 html[data-shell="mobile"][data-keyboard-open="true"] .ai-island-panel.is-floating,
 html[data-shell="mobile"][data-keyboard-open="true"] .ai-island-panel.is-docked,
-html[data-shell="mobile"][data-keyboard-open="true"] .settings-modal {
+html[data-shell="mobile"][data-keyboard-open="true"] .settings-modal,
+html[data-shell="mobile"][data-keyboard-open="true"] .annotations-mobile-sheet {
   height: calc(var(--vvh, 100dvh) - 16px - env(safe-area-inset-top) + 48px);
 }
 
@@ -2870,8 +3087,10 @@ html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
   .followup-card,
   .ai-island-panel,
   .ai-live-dot.is-pulsing,
+  .ai-bg-stream-dot.is-pulsing,
   .action-sheet-card,
   .reader-outline-sheet,
+  .annotations-mobile-sheet,
   .dialog-content {
     animation: none;
   }

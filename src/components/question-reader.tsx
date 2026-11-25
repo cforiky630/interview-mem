@@ -36,10 +36,21 @@ import {
   Sun,
   Moon,
   List,
+  MessageSquareText,
+  Highlighter,
+  Columns2,
+  Rows2,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { QuestionView, Workspace } from "@/lib/types";
 import { api } from "@/lib/client";
+import {
+  applyAnnotationHighlights,
+  readAnnotationSidebarPref,
+  readReviewCompareLayoutPref,
+  writeAnnotationSidebarPref,
+  writeReviewCompareLayoutPref,
+} from "@/lib/annotations";
 import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
 import { toggleAppearanceTheme, useAppearance } from "@/lib/theme";
 import {
@@ -61,6 +72,7 @@ import { Dialog } from "./ui/dialog";
 import { ObsidianProperties } from "./markdown";
 import { ParagraphPractice, FollowupCards } from "./paragraph-practice";
 import { ContentValidationPanel } from "./content-validation";
+import { QuestionAnnotationsPanel } from "./question-annotations-panel";
 import { QuestionNotePanel } from "./question-note-panel";
 import {
   InlineAnswerEditor,
@@ -165,8 +177,10 @@ export function QuestionReader({
   prevNext,
   onSingleReview,
   aiOpen = false,
+  aiDocked = false,
   onToggleAi,
   onAskAi,
+  onBeforeOpenAnnotations,
   onRevealedChange,
   groupContext = null,
   readingList,
@@ -201,12 +215,14 @@ export function QuestionReader({
   };
   onSingleReview?: () => void;
   aiOpen?: boolean;
+  aiDocked?: boolean;
   onToggleAi?: (open?: boolean) => void;
   onAskAi?: (request: {
     quote: string;
     prompt: string;
     attempt?: string;
   }) => void;
+  onBeforeOpenAnnotations?: () => void;
   onRevealedChange?: (revealed: boolean) => void;
   groupContext?: ReaderGroupContext | null;
   readingList?: QuestionView[];
@@ -221,6 +237,28 @@ export function QuestionReader({
   const outlineWrapRef = useRef<HTMLDivElement>(null);
   const currentOutlineItemRef = useRef<HTMLButtonElement>(null);
   const [revealed, setRevealed] = useState(!review);
+  const [compareLayout, setCompareLayout] = useState<"split" | "stack">(() =>
+    readReviewCompareLayoutPref(),
+  );
+  const [oralScratchpadOpen, setOralScratchpadOpen] = useState(false);
+  const [annotationsOpen, setAnnotationsOpen] = useState<boolean>(
+    () =>
+      !review &&
+      !getDeviceProfile().isMobileShell &&
+      readAnnotationSidebarPref(data.user.id),
+  );
+  const [pendingQuote, setPendingQuote] = useState<string | null>(null);
+  const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(
+    null,
+  );
+  const [unmatchedIds, setUnmatchedIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [annotationEditing, setAnnotationEditing] = useState(false);
+  const answerProseRef = useRef<HTMLDivElement>(null);
+  const restoreAnnotationsAfterAiRef = useRef(false);
+  const prevAiDockedRef = useRef(Boolean(aiDocked));
+  const pulseTimerRef = useRef<number | null>(null);
   const noteMeta = useMemo(
     () => markdownDocument(question.answer),
     [question.answer],
@@ -281,7 +319,8 @@ export function QuestionReader({
   const latestDraftRef = useRef(editDraft);
   latestDraftRef.current = editDraft;
   const inlineEditingRef = useRef(false);
-  inlineEditingRef.current = editingTitle || editingAnswer || editingNote;
+  inlineEditingRef.current =
+    editingTitle || editingAnswer || editingNote || annotationEditing;
   const editTags = useMemo(
     () => [
       ...new Set(
@@ -684,7 +723,7 @@ export function QuestionReader({
         !busy
       ) {
         event.preventDefault();
-        onGrade?.(Number(event.key), inputMode === "written" ? answer : "");
+        onGrade?.(Number(event.key), answer);
       }
     }
     window.addEventListener("keydown", keys);
@@ -816,6 +855,193 @@ export function QuestionReader({
     }
   }
   const switchToNotesTab = useCallback(() => setTab("notes"), []);
+  const annotations = useMemo(
+    () => question.annotations ?? [],
+    [question.annotations],
+  );
+  const annotationBadgeCount = annotations.length;
+  const setAnnotationsVisible = useCallback(
+    (nextOpen: boolean) => {
+      if (review) return;
+      restoreAnnotationsAfterAiRef.current = false;
+      if (nextOpen && aiDocked) {
+        onBeforeOpenAnnotations?.();
+      }
+      setAnnotationsOpen(nextOpen);
+      if (!device.isMobileShell) {
+        writeAnnotationSidebarPref(data.user.id, nextOpen);
+      }
+    },
+    [
+      review,
+      aiDocked,
+      onBeforeOpenAnnotations,
+      device.isMobileShell,
+      data.user.id,
+    ],
+  );
+  const toggleCompareLayout = useCallback(() => {
+    setCompareLayout((prev) => {
+      const next = prev === "split" ? "stack" : "split";
+      writeReviewCompareLayoutPref(next);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    setPendingQuote(null);
+    setActiveAnnotationId(null);
+    setUnmatchedIds(new Set());
+    setOralScratchpadOpen(false);
+    if (review) setAnnotationsOpen(false);
+  }, [question.id, review]);
+  useEffect(() => {
+    const wasDocked = prevAiDockedRef.current;
+    const nowDocked = Boolean(aiDocked);
+    prevAiDockedRef.current = nowDocked;
+    if (!wasDocked && nowDocked && !review && !device.isMobileShell) {
+      if (annotationsOpen) {
+        restoreAnnotationsAfterAiRef.current = true;
+        setAnnotationsOpen(false);
+      }
+    } else if (wasDocked && !nowDocked && restoreAnnotationsAfterAiRef.current) {
+      restoreAnnotationsAfterAiRef.current = false;
+      if (!review && !device.isMobileShell) {
+        setAnnotationsOpen(true);
+      }
+    }
+  }, [aiDocked, annotationsOpen, review, device.isMobileShell]);
+  useEffect(() => {
+    if (review) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && annotationsOpen && device.isMobileShell) {
+        event.preventDefault();
+        event.stopPropagation();
+        setAnnotationsVisible(false);
+        return;
+      }
+      if (
+        outlineOpen ||
+        inlineEditingRef.current ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey ||
+        event.isComposing
+      )
+        return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(
+          "input,textarea,select,[contenteditable='true'],[role='dialog']:not([hidden]),button",
+        ) ||
+        globalThis.document.querySelector(
+          "[role='dialog']:not([hidden]), .action-menu[open], .action-menu:popover-open, .user-menu-popover:popover-open",
+        )
+      )
+        return;
+      if (event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setAnnotationsVisible(!annotationsOpen);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    review,
+    outlineOpen,
+    annotationsOpen,
+    device.isMobileShell,
+    setAnnotationsVisible,
+  ]);
+  useEffect(() => {
+    if (!annotationsOpen || review || !device.isMobileShell) return;
+    const prevOverflow = globalThis.document.body.style.overflow;
+    globalThis.document.body.style.overflow = "hidden";
+    return () => {
+      globalThis.document.body.style.overflow = prevOverflow;
+    };
+  }, [annotationsOpen, review, device.isMobileShell]);
+  useEffect(() => {
+    const container = answerProseRef.current;
+    if (
+      !container ||
+      !annotationsOpen ||
+      review ||
+      editingAnswer ||
+      tab !== "answer" ||
+      annotations.length === 0
+    ) {
+      setUnmatchedIds((prev) => (prev.size ? new Set() : prev));
+      return;
+    }
+    const { matchedIds, cleanup } = applyAnnotationHighlights(
+      container,
+      annotations,
+      activeAnnotationId,
+    );
+    const nextUnmatched = new Set<string>();
+    for (const item of annotations) {
+      if (item.quote.trim() && !matchedIds.has(item.id)) {
+        nextUnmatched.add(item.id);
+      }
+    }
+    setUnmatchedIds(nextUnmatched);
+    return () => {
+      cleanup();
+    };
+  }, [
+    annotationsOpen,
+    review,
+    editingAnswer,
+    tab,
+    annotations,
+    activeAnnotationId,
+    hideAll,
+    question.answer,
+  ]);
+  useEffect(() => {
+    return () => {
+      if (pulseTimerRef.current !== null) {
+        window.clearTimeout(pulseTimerRef.current);
+      }
+    };
+  }, []);
+  const handleSelectAnnotation = useCallback((id: string | null) => {
+    setActiveAnnotationId(id);
+    if (!id) return;
+    const container = answerProseRef.current;
+    if (!container) return;
+    const escaped =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(id)
+        : id.replace(/"/g, '\\"');
+    const marks = container.querySelectorAll<HTMLElement>(
+      `mark.prose-annotation-mark[data-annotation-id="${escaped}"]`,
+    );
+    const first = marks[0];
+    if (!first) return;
+    first.scrollIntoView({ behavior: "smooth", block: "center" });
+    marks.forEach((mark) => {
+      mark.classList.remove("is-pulse");
+      void mark.offsetWidth;
+      mark.classList.add("is-pulse");
+    });
+    if (pulseTimerRef.current !== null) {
+      window.clearTimeout(pulseTimerRef.current);
+    }
+    pulseTimerRef.current = window.setTimeout(() => {
+      marks.forEach((mark) => mark.classList.remove("is-pulse"));
+      pulseTimerRef.current = null;
+    }, 760);
+  }, []);
+  const isReviewDrafting = Boolean(review && !revealed);
+  const canSplitCompare = Boolean(
+    review && revealed && !device.isMobileShell && !aiDocked,
+  );
+  const isCompareSplit = canSplitCompare && compareLayout === "split";
+  const hasDesktopAnnotationsOpen = Boolean(
+    annotationsOpen && !review && !device.isMobileShell,
+  );
   const ratings = [
     { rating: 1, label: "忘了", cramHint: "再巩固", className: "again" },
     { rating: 2, label: "困难", cramHint: "有卡顿", className: "hard" },
@@ -830,8 +1056,474 @@ export function QuestionReader({
     { id: "notes", label: "笔记" },
     { id: "memory", label: "记忆" },
   ];
+  const answerDraftSection = review ? (
+    <section className="answer-draft">
+      <div className="answer-draft-heading">
+        <strong>你的作答</strong>
+        <div
+          className="answer-draft-controls"
+          style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+        >
+          {canSplitCompare && (
+            <button
+              type="button"
+              className="text-button compare-layout-toggle"
+              aria-label={
+                compareLayout === "split" ? "切换为上下对照" : "切换为左右对照"
+              }
+              title={
+                compareLayout === "split" ? "切换为上下对照" : "切换为左右对照"
+              }
+              onClick={toggleCompareLayout}
+            >
+              {compareLayout === "split" ? (
+                <>
+                  <Rows2 size={14} /> 上下对照
+                </>
+              ) : (
+                <>
+                  <Columns2 size={14} /> 左右对照
+                </>
+              )}
+            </button>
+          )}
+          <div className="segmented-control" aria-label="作答方式">
+            <button
+              type="button"
+              aria-pressed={inputMode === "written"}
+              disabled={revealed}
+              onClick={() => {
+                setOralRunning(false);
+                setInputMode("written");
+              }}
+            >
+              <PenLine size={14} /> 默写
+            </button>
+            <button
+              type="button"
+              aria-pressed={inputMode === "oral"}
+              disabled={revealed}
+              onClick={() => setInputMode("oral")}
+            >
+              <Mic size={14} /> 口述
+            </button>
+          </div>
+        </div>
+      </div>
+      {inputMode === "written" ? (
+        <textarea
+          aria-label="本题作答"
+          placeholder="先合上参考答案，按自己的理解默写出核心结论、关键机制与举例说明（Ctrl/⌘ + Enter 对照答案）…"
+          value={answer}
+          maxLength={20000}
+          rows={7}
+          readOnly={revealed}
+          onChange={(event) => {
+            setAnswer(event.target.value);
+            if (!savePracticeDraft(answerKey, event.target.value))
+              toast.error("草稿暂时无法保存在浏览器中。");
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              (event.ctrlKey || event.metaKey) &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              setRevealed(true);
+            }
+          }}
+        />
+      ) : (
+        <div className="oral-recall">
+          <Mic size={26} strokeWidth={1.3} />
+          <p>试着脱稿大声说一遍：先抛结论，再讲机制与取舍。</p>
+          <div
+            className={`oral-timer ${oralSeconds > 120 ? "is-overtime" : ""}`}
+          >
+            <Clock size={14} aria-hidden="true" />
+            <span>{formatTimer(oralSeconds)} / 02:00</span>
+            <button
+              type="button"
+              className={`icon-button oral-timer-btn ${oralRunning ? "is-running" : ""}`}
+              disabled={revealed}
+              title={
+                oralRunning
+                  ? "暂停计时"
+                  : oralSeconds > 0
+                    ? "继续计时"
+                    : "开始计时"
+              }
+              aria-label={
+                oralRunning
+                  ? "暂停计时"
+                  : oralSeconds > 0
+                    ? "继续计时"
+                    : "开始计时"
+              }
+              onClick={() => setOralRunning((r) => !r)}
+            >
+              {oralRunning ? <Pause size={14} /> : <Play size={14} />}
+            </button>
+            {oralSeconds > 0 && !revealed && (
+              <button
+                type="button"
+                className="icon-button oral-timer-btn"
+                title="重置计时"
+                aria-label="重置计时"
+                onClick={() => {
+                  setOralRunning(false);
+                  setOralSeconds(0);
+                }}
+              >
+                <RotateCcw size={14} />
+              </button>
+            )}
+          </div>
+          {!revealed && (
+            <button
+              type="button"
+              className="text-button oral-scratchpad-toggle"
+              aria-expanded={oralScratchpadOpen}
+              onClick={() => setOralScratchpadOpen((v) => !v)}
+            >
+              <PenLine size={13} />
+              {oralScratchpadOpen ? "收起口述要点" : "记录口述要点"}
+            </button>
+          )}
+          {(oralScratchpadOpen || (revealed && Boolean(answer.trim()))) && (
+            <div className="oral-scratchpad">
+              <textarea
+                aria-label="口述要点草稿"
+                placeholder="随手记下关键词或要点，对照参考答案时方便自查…"
+                value={answer}
+                maxLength={20000}
+                rows={3}
+                readOnly={revealed}
+                style={{ flex: "0 0 auto", minHeight: 84 }}
+                onChange={(event) => {
+                  setAnswer(event.target.value);
+                  if (!savePracticeDraft(answerKey, event.target.value))
+                    toast.error("草稿暂时无法保存在浏览器中。");
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    (event.ctrlKey || event.metaKey) &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    setOralRunning(false);
+                    setRevealed(true);
+                  }
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      <div
+        className={`answer-submit-row ${!revealed ? "is-pre-reveal" : ""}`}
+      >
+        {inputMode === "written" && (
+          <span className="answer-draft-meta">
+            {answer.trim().length} 字
+            {!revealed && !device.isMobileShell && " · Ctrl/⌘ + Enter 对照答案"}
+          </span>
+        )}
+        {!revealed ? (
+          <Button
+            onClick={() => {
+              setOralRunning(false);
+              setRevealed(true);
+            }}
+          >
+            <Eye size={15} /> 对照答案
+          </Button>
+        ) : (
+          <>
+            {answer.trim() && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ai-critique-btn"
+                onClick={() =>
+                  ask(
+                    "请从面试官视角点评我的本次作答。",
+                    "",
+                    answer.trim(),
+                  )
+                }
+              >
+                <Sparkles size={14} /> AI 点评作答
+              </Button>
+            )}
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                setOralRunning(false);
+                setRevealed(false);
+                onToggleAi?.(false);
+                setTab("answer");
+              }}
+            >
+              <RotateCcw size={14} /> 再想一遍
+            </button>
+          </>
+        )}
+      </div>
+    </section>
+  ) : null;
+  const revealedReferenceSection = revealed ? (
+    <>
+      <div className="reader-tabs" role="tablist" aria-label="题目栏目">
+        {tabs.map((item) => (
+          <button
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls={`reader-panel-${item.id}`}
+            id={`reader-tab-${item.id}`}
+            key={item.id}
+            onClick={() => {
+              setTab(item.id);
+              setSelection(null);
+            }}
+          >
+            {item.label}
+            {item.id === "answer" &&
+              canInlineEdit &&
+              editingAnswer &&
+              editDirty && (
+                <i className="tab-dirty-dot" aria-label="未保存" />
+              )}
+            {item.id === "followups" &&
+              documentView.followups.length > 0 && (
+                <span>{documentView.followups.length}</span>
+              )}
+          </button>
+        ))}
+      </div>
+      <div
+        className="reader-tab-panel"
+        id={`reader-panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`reader-tab-${tab}`}
+        ref={answerRef}
+      >
+        {tab === "answer" &&
+          (canInlineEdit && editingAnswer ? (
+            <InlineAnswerEditor
+              question={question}
+              draft={editDraft}
+              patch={patchEditDraft}
+              tags={editTags}
+              dirty={editDirty}
+              busy={editBusy}
+              error={editError}
+              setError={setEditError}
+              storageError={storageError}
+              restored={restoredDraft}
+              onDiscardDraft={discardAllDraft}
+              onCancel={cancelAnswerEdit}
+              onSave={(merged) =>
+                saveInlineQuestion({
+                  merged,
+                  closeAnswer: true,
+                  closeTitle: true,
+                })
+              }
+              onBatchImport={onBatchImport}
+              onCommittedImport={() => {
+                draftSavedRef.current = true;
+                savePracticeDraft(editorDraftKey, "");
+                setRestoredDraft(false);
+                setEditingAnswer(false);
+                setEditingTitle(false);
+              }}
+            />
+          ) : (
+            <>
+              {noteMeta.properties.length > 0 && (
+                <ObsidianProperties
+                  source={question.answer}
+                  extraTags={question.tags}
+                  defaultExpanded
+                />
+              )}
+              {(canInlineEdit || review || !device.isMobileShell) && (
+                <div className="answer-actions">
+                  {canInlineEdit && (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="编辑答案"
+                      aria-label="编辑答案"
+                      onClick={() => {
+                        setHideAll(false);
+                        setEditingAnswer(true);
+                      }}
+                    >
+                      <PencilLine size={16} />
+                    </button>
+                  )}
+                  {(review || !device.isMobileShell) && (
+                    <>
+                      <button
+                        type="button"
+                        className={`icon-button ${hideAll ? "active" : ""}`}
+                        title={hideAll ? "显示正文" : "逐段默写"}
+                        aria-label={hideAll ? "显示正文" : "逐段默写"}
+                        aria-pressed={hideAll}
+                        onClick={() => setHideAll(!hideAll)}
+                      >
+                        {hideAll ? <Eye size={16} /> : <EyeOff size={16} />}
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        title="问 AI"
+                        aria-label="围绕本题问 AI"
+                        onClick={() =>
+                          ask("请解释这道题，并举一个具体的例子。", "")
+                        }
+                      >
+                        <MessageSquare size={16} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              <div
+                className="answer-content"
+                ref={answerProseRef}
+                onClick={(event) => {
+                  const mark = (
+                    event.target as HTMLElement | null
+                  )?.closest<HTMLElement>("mark.prose-annotation-mark");
+                  const annId = mark?.dataset.annotationId;
+                  if (annId) {
+                    event.stopPropagation();
+                    setActiveAnnotationId(annId);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  const mark = (
+                    event.target as HTMLElement | null
+                  )?.closest<HTMLElement>("mark.prose-annotation-mark");
+                  const annId = mark?.dataset.annotationId;
+                  if (annId) {
+                    event.preventDefault();
+                    setActiveAnnotationId(annId);
+                  }
+                }}
+              >
+                {documentView.blocks.length ? (
+                  documentView.blocks.map((block) => (
+                    <ParagraphPractice
+                      key={block.id}
+                      block={block}
+                      hideAll={hideAll}
+                      references={documentView.references}
+                      draftKey={`${paragraphPrefix}:${block.id}`}
+                    />
+                  ))
+                ) : (
+                  <div className="missing-answer-card">
+                    <span className="missing-answer-mark">
+                      <PenLine size={27} strokeWidth={1.4} />
+                    </span>
+                    <h3>先把答案补上</h3>
+                    {question.isOwner && !question.archived ? (
+                      <>
+                        <p>
+                          补全参考答案后即可加入每日复习计划并逐段默写。
+                        </p>
+                        <div>
+                          <Button onClick={() => onGenerateAnswer(question)}>
+                            <Sparkles size={16} />
+                            AI 写答案
+                          </Button>
+                          {canInlineEdit && (
+                            <Button
+                              variant="ghost"
+                              onClick={() => setEditingAnswer(true)}
+                            >
+                              自己补充
+                            </Button>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="quiet-empty">
+                        暂无参考答案，可在上方「笔记」中记录你的理解。
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          ))}
+        {tab === "followups" && (
+          <FollowupCards
+            followups={documentView.followups}
+            draftPrefix={answerKey}
+            onEditFollowups={
+              canInlineEdit
+                ? () => {
+                    setTab("answer");
+                    setHideAll(false);
+                    setEditingAnswer(true);
+                  }
+                : undefined
+            }
+          />
+        )}
+        {tab === "notes" && (
+          <QuestionNotePanel
+            question={question}
+            userId={data.user.id}
+            mutate={mutate}
+            onSwitchToNotes={switchToNotesTab}
+            onEditingChange={setEditingNote}
+          />
+        )}
+        {tab === "memory" && (
+          <section className="memory-section">
+            <div className="section-heading">
+              <h2>记忆曲线</h2>
+            </div>
+            <Curve curve={insight?.curve ?? []} />
+            <div className="memory-summary">
+              <span>
+                复习 <strong>{question.fsrs?.reps ?? 0}</strong> 次
+              </span>
+              <span>
+                下次 <strong>{relativeDue(question.fsrs?.due)}</strong>
+              </span>
+            </div>
+            <p>
+              根据每次自评自动计算复习间隔，只在快忘掉前提醒巩固。
+            </p>
+          </section>
+        )}
+      </div>
+    </>
+  ) : null;
   return (
-    <div className="reader-layout notebook-reader">
+    <div
+      className={[
+        "reader-layout",
+        "notebook-reader",
+        isReviewDrafting && "is-review-drafting",
+        isCompareSplit && "is-compare-split",
+        hasDesktopAnnotationsOpen && "has-annotations-open",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className="reader-body">
         <div className="reader-toolbar">
           <button className="back-link" onClick={onBack}>
@@ -957,6 +1649,33 @@ export function QuestionReader({
             </div>
           )}
           <div className="reader-tools">
+            {!review && (
+              <button
+                type="button"
+                className={`reader-desktop-tool reader-annotations-toggle ${annotationsOpen ? "is-active" : ""}`}
+                title={annotationsOpen ? "收起侧边批注 (N)" : "展开侧边批注 (N)"}
+                aria-label={annotationsOpen ? "收起侧边批注" : "展开侧边批注"}
+                aria-pressed={annotationsOpen}
+                onClick={() => setAnnotationsVisible(!annotationsOpen)}
+              >
+                <MessageSquareText size={16} />
+                <span>批注</span>
+                {annotationBadgeCount > 0 ? (
+                  <span className="reader-annotations-count">
+                    {annotationBadgeCount}
+                  </span>
+                ) : (
+                  question.note.trim() && (
+                    <span
+                      className="reader-annotations-count"
+                      aria-label="已有笔记"
+                    >
+                      ·
+                    </span>
+                  )
+                )}
+              </button>
+            )}
             <button
               type="button"
               className={`icon-button reader-desktop-tool ${question.favorite ? "is-favorite" : ""}`}
@@ -1066,7 +1785,8 @@ export function QuestionReader({
             )}
           </div>
         </div>
-        <article className="question-article">
+        <div className="reader-workspace">
+          <article className="question-article">
           <header className="question-card-heading">
             <div className="question-breadcrumb reader-breadcrumb">
               {!review && groupContext?.currentGroup && question.deckId ? (
@@ -1318,365 +2038,17 @@ export function QuestionReader({
                 <RotateCcw size={15} /> 答案有更新
               </div>
             )}
-          {review && (
-            <section className="answer-draft">
-              <div className="answer-draft-heading">
-                <strong>你的作答</strong>
-                <div className="segmented-control" aria-label="作答方式">
-                  <button
-                    aria-pressed={inputMode === "written"}
-                    disabled={revealed}
-                    onClick={() => {
-                      setOralRunning(false);
-                      setInputMode("written");
-                    }}
-                  >
-                    <PenLine size={14} /> 默写
-                  </button>
-                  <button
-                    aria-pressed={inputMode === "oral"}
-                    disabled={revealed}
-                    onClick={() => setInputMode("oral")}
-                  >
-                    <Mic size={14} /> 口述
-                  </button>
-                </div>
+          {review && revealed ? (
+            <div className="review-compare-grid">
+              {answerDraftSection}
+              <div className="review-reference-pane">
+                {revealedReferenceSection}
               </div>
-              {inputMode === "written" ? (
-                <textarea
-                  aria-label="本题作答"
-                  placeholder="先合上参考答案，按自己的理解默写出核心结论、关键机制与举例说明（Ctrl/⌘ + Enter 对照答案）…"
-                  value={answer}
-                  maxLength={20000}
-                  rows={7}
-                  readOnly={revealed}
-                  onChange={(event) => {
-                    setAnswer(event.target.value);
-                    if (!savePracticeDraft(answerKey, event.target.value))
-                      toast.error("草稿暂时无法保存在浏览器中。");
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === "Enter" &&
-                      (event.ctrlKey || event.metaKey) &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      setRevealed(true);
-                    }
-                  }}
-                />
-              ) : (
-                <div className="oral-recall">
-                  <Mic size={26} strokeWidth={1.3} />
-                  <p>试着脱稿大声说一遍：先抛结论，再讲机制与取舍。</p>
-                  <div
-                    className={`oral-timer ${oralSeconds > 120 ? "is-overtime" : ""}`}
-                  >
-                    <Clock size={14} aria-hidden="true" />
-                    <span>{formatTimer(oralSeconds)} / 02:00</span>
-                    <button
-                      type="button"
-                      className={`icon-button oral-timer-btn ${oralRunning ? "is-running" : ""}`}
-                      disabled={revealed}
-                      title={
-                        oralRunning
-                          ? "暂停计时"
-                          : oralSeconds > 0
-                            ? "继续计时"
-                            : "开始计时"
-                      }
-                      aria-label={
-                        oralRunning
-                          ? "暂停计时"
-                          : oralSeconds > 0
-                            ? "继续计时"
-                            : "开始计时"
-                      }
-                      onClick={() => setOralRunning((r) => !r)}
-                    >
-                      {oralRunning ? <Pause size={14} /> : <Play size={14} />}
-                    </button>
-                    {oralSeconds > 0 && !revealed && (
-                      <button
-                        type="button"
-                        className="icon-button oral-timer-btn"
-                        title="重置计时"
-                        aria-label="重置计时"
-                        onClick={() => {
-                          setOralRunning(false);
-                          setOralSeconds(0);
-                        }}
-                      >
-                        <RotateCcw size={14} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-              <div
-                className={`answer-submit-row ${!revealed ? "is-pre-reveal" : ""}`}
-              >
-                {!revealed ? (
-                  <Button
-                    onClick={() => {
-                      setOralRunning(false);
-                      setRevealed(true);
-                    }}
-                  >
-                    <Eye size={15} /> 对照答案
-                  </Button>
-                ) : (
-                  <>
-                    {inputMode === "written" && answer.trim() && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="ai-critique-btn"
-                        onClick={() =>
-                          ask(
-                            "请从面试官视角点评我的本次作答。",
-                            "",
-                            answer.trim(),
-                          )
-                        }
-                      >
-                        <Sparkles size={14} /> AI 点评作答
-                      </Button>
-                    )}
-                    <button
-                      className="text-button"
-                      onClick={() => {
-                        setOralRunning(false);
-                        setRevealed(false);
-                        onToggleAi?.(false);
-                        setTab("answer");
-                      }}
-                    >
-                      <RotateCcw size={14} /> 再想一遍
-                    </button>
-                  </>
-                )}
-              </div>
-            </section>
-          )}
-          {revealed && (
+            </div>
+          ) : (
             <>
-              <div className="reader-tabs" role="tablist" aria-label="题目栏目">
-                {tabs.map((item) => (
-                  <button
-                    role="tab"
-                    aria-selected={tab === item.id}
-                    aria-controls={`reader-panel-${item.id}`}
-                    id={`reader-tab-${item.id}`}
-                    key={item.id}
-                    onClick={() => {
-                      setTab(item.id);
-                      setSelection(null);
-                    }}
-                  >
-                    {item.label}
-                    {item.id === "answer" &&
-                      canInlineEdit &&
-                      editingAnswer &&
-                      editDirty && (
-                        <i className="tab-dirty-dot" aria-label="未保存" />
-                      )}
-                    {item.id === "followups" &&
-                      documentView.followups.length > 0 && (
-                        <span>{documentView.followups.length}</span>
-                      )}
-                  </button>
-                ))}
-              </div>
-              <div
-                className="reader-tab-panel"
-                id={`reader-panel-${tab}`}
-                role="tabpanel"
-                aria-labelledby={`reader-tab-${tab}`}
-                ref={answerRef}
-              >
-                {tab === "answer" &&
-                  (canInlineEdit && editingAnswer ? (
-                    <InlineAnswerEditor
-                      question={question}
-                      draft={editDraft}
-                      patch={patchEditDraft}
-                      tags={editTags}
-                      dirty={editDirty}
-                      busy={editBusy}
-                      error={editError}
-                      setError={setEditError}
-                      storageError={storageError}
-                      restored={restoredDraft}
-                      onDiscardDraft={discardAllDraft}
-                      onCancel={cancelAnswerEdit}
-                      onSave={(merged) =>
-                        saveInlineQuestion({
-                          merged,
-                          closeAnswer: true,
-                          closeTitle: true,
-                        })
-                      }
-                      onBatchImport={onBatchImport}
-                      onCommittedImport={() => {
-                        draftSavedRef.current = true;
-                        savePracticeDraft(editorDraftKey, "");
-                        setRestoredDraft(false);
-                        setEditingAnswer(false);
-                        setEditingTitle(false);
-                      }}
-                    />
-                  ) : (
-                    <>
-                      {noteMeta.properties.length > 0 && (
-                        <ObsidianProperties
-                          source={question.answer}
-                          extraTags={question.tags}
-                          defaultExpanded
-                        />
-                      )}
-                      {(canInlineEdit || review || !device.isMobileShell) && (
-                        <div className="answer-actions">
-                          {canInlineEdit && (
-                            <button
-                              type="button"
-                              className="icon-button"
-                              title="编辑答案"
-                              aria-label="编辑答案"
-                              onClick={() => {
-                                setHideAll(false);
-                                setEditingAnswer(true);
-                              }}
-                            >
-                              <PencilLine size={16} />
-                            </button>
-                          )}
-                          {(review || !device.isMobileShell) && (
-                            <>
-                              <button
-                                type="button"
-                                className={`icon-button ${hideAll ? "active" : ""}`}
-                                title={hideAll ? "显示正文" : "逐段默写"}
-                                aria-label={hideAll ? "显示正文" : "逐段默写"}
-                                aria-pressed={hideAll}
-                                onClick={() => setHideAll(!hideAll)}
-                              >
-                                {hideAll ? (
-                                  <Eye size={16} />
-                                ) : (
-                                  <EyeOff size={16} />
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                className="icon-button"
-                                title="问 AI"
-                                aria-label="围绕本题问 AI"
-                                onClick={() =>
-                                  ask("请解释这道题，并举一个具体的例子。", "")
-                                }
-                              >
-                                <MessageSquare size={16} />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      <div className="answer-content">
-                        {documentView.blocks.length ? (
-                          documentView.blocks.map((block) => (
-                            <ParagraphPractice
-                              key={block.id}
-                              block={block}
-                              hideAll={hideAll}
-                              references={documentView.references}
-                              draftKey={`${paragraphPrefix}:${block.id}`}
-                            />
-                          ))
-                        ) : (
-                          <div className="missing-answer-card">
-                            <span className="missing-answer-mark">
-                              <PenLine size={27} strokeWidth={1.4} />
-                            </span>
-                            <h3>先把答案补上</h3>
-                            {question.isOwner && !question.archived ? (
-                              <>
-                                <p>
-                                  补全参考答案后即可加入每日复习计划并逐段默写。
-                                </p>
-                                <div>
-                                  <Button
-                                    onClick={() => onGenerateAnswer(question)}
-                                  >
-                                    <Sparkles size={16} />
-                                    AI 写答案
-                                  </Button>
-                                  {canInlineEdit && (
-                                    <Button
-                                      variant="ghost"
-                                      onClick={() => setEditingAnswer(true)}
-                                    >
-                                      自己补充
-                                    </Button>
-                                  )}
-                                </div>
-                              </>
-                            ) : (
-                              <p className="quiet-empty">
-                                暂无参考答案，可在上方「笔记」中记录你的理解。
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </>
-                  ))}
-                {tab === "followups" && (
-                  <FollowupCards
-                    followups={documentView.followups}
-                    draftPrefix={answerKey}
-                    onEditFollowups={
-                      canInlineEdit
-                        ? () => {
-                            setTab("answer");
-                            setHideAll(false);
-                            setEditingAnswer(true);
-                          }
-                        : undefined
-                    }
-                  />
-                )}
-                {tab === "notes" && (
-                  <QuestionNotePanel
-                    question={question}
-                    userId={data.user.id}
-                    mutate={mutate}
-                    onSwitchToNotes={switchToNotesTab}
-                    onEditingChange={setEditingNote}
-                  />
-                )}
-                {tab === "memory" && (
-                  <section className="memory-section">
-                    <div className="section-heading">
-                      <h2>记忆曲线</h2>
-                    </div>
-                    <Curve curve={insight?.curve ?? []} />
-                    <div className="memory-summary">
-                      <span>
-                        复习 <strong>{question.fsrs?.reps ?? 0}</strong> 次
-                      </span>
-                      <span>
-                        下次 <strong>{relativeDue(question.fsrs?.due)}</strong>
-                      </span>
-                    </div>
-                    <p>
-                      根据每次自评自动计算复习间隔，只在快忘掉前提醒巩固。
-                    </p>
-                  </section>
-                )}
-              </div>
+              {answerDraftSection}
+              {revealedReferenceSection}
             </>
           )}
           {review && revealed && (
@@ -1687,12 +2059,7 @@ export function QuestionReader({
                     key={item.rating}
                     className={`rating-button rating-${item.className}`}
                     disabled={busy}
-                    onClick={() =>
-                      onGrade?.(
-                        item.rating,
-                        inputMode === "written" ? answer : "",
-                      )
-                    }
+                    onClick={() => onGrade?.(item.rating, answer)}
                   >
                     <span className="rating-key">{item.rating}</span>
                     <strong>{item.label}</strong>
@@ -1758,6 +2125,22 @@ export function QuestionReader({
             </nav>
           )}
         </article>
+          {hasDesktopAnnotationsOpen && (
+            <QuestionAnnotationsPanel
+              question={question}
+              userId={data.user.id}
+              mutate={mutate}
+              pendingQuote={pendingQuote}
+              activeAnnotationId={activeAnnotationId}
+              unmatchedIds={unmatchedIds}
+              onClearPendingQuote={() => setPendingQuote(null)}
+              onSelectAnnotation={handleSelectAnnotation}
+              onClose={() => setAnnotationsVisible(false)}
+              onEditingChange={setAnnotationEditing}
+              onSwitchToNotes={switchToNotesTab}
+            />
+          )}
+        </div>
       </div>
       {!review && !(editingTitle || editingAnswer || editingNote) && (
         <div className="mobile-reader-dock" role="toolbar" aria-label="题目快捷操作">
@@ -1769,6 +2152,20 @@ export function QuestionReader({
           >
             <Star size={17} fill={question.favorite ? "currentColor" : "none"} />
             <span>{question.favorite ? "已藏" : "收藏"}</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-dock-btn ${annotationsOpen ? "is-active" : ""}`}
+            aria-label={annotationsOpen ? "收起批注" : "打开批注"}
+            onClick={() => setAnnotationsVisible(!annotationsOpen)}
+          >
+            <span className="mobile-dock-icon-wrap">
+              <MessageSquareText size={17} />
+              {(annotationBadgeCount > 0 || Boolean(question.note.trim())) && (
+                <span className="mobile-dock-dot" aria-hidden="true" />
+              )}
+            </span>
+            <span>批注</span>
           </button>
           {tab === "answer" && documentView.blocks.length > 0 && (
             <button
@@ -1861,6 +2258,22 @@ export function QuestionReader({
             <MessageSquare size={14} />
             追问
           </button>
+          {!review && (
+            <button
+              type="button"
+              onClick={() => {
+                const quoteText = selection.text.trim().slice(0, 600);
+                if (!quoteText) return;
+                setPendingQuote(quoteText);
+                setAnnotationsVisible(true);
+                setSelection(null);
+                window.getSelection()?.removeAllRanges();
+              }}
+            >
+              <Highlighter size={14} />
+              加批注
+            </button>
+          )}
           <button aria-label="关闭选区菜单" onClick={() => setSelection(null)}>
             <X size={12} />
           </button>
@@ -1928,6 +2341,40 @@ export function QuestionReader({
             </div>
           </div>
         )}
+      {annotationsOpen && !review && device.isMobileShell && (
+        <div
+          className="annotations-mobile-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="批注与笔记"
+        >
+          <button
+            type="button"
+            className="annotations-mobile-backdrop"
+            aria-label="关闭批注"
+            onClick={() => setAnnotationsVisible(false)}
+          />
+          <div className="annotations-mobile-sheet">
+            <div className="sheet-grabber" aria-hidden="true" />
+            <QuestionAnnotationsPanel
+              question={question}
+              userId={data.user.id}
+              mutate={mutate}
+              pendingQuote={pendingQuote}
+              activeAnnotationId={activeAnnotationId}
+              unmatchedIds={unmatchedIds}
+              onClearPendingQuote={() => setPendingQuote(null)}
+              onSelectAnnotation={handleSelectAnnotation}
+              onClose={() => setAnnotationsVisible(false)}
+              onEditingChange={setAnnotationEditing}
+              onSwitchToNotes={() => {
+                setAnnotationsVisible(false);
+                switchToNotesTab();
+              }}
+            />
+          </div>
+        </div>
+      )}
       <Dialog
         open={validationOpen}
         onOpenChange={setValidationOpen}

@@ -89,7 +89,7 @@ export function UserMenu({
     const vTop = vv?.offsetTop ?? 0;
     const vWidth = vv?.width ?? document.documentElement.clientWidth;
     const vHeight = vv?.height ?? window.innerHeight;
-    const width = popover.offsetWidth || 212;
+    const width = popover.offsetWidth || 222;
     const height = popover.offsetHeight || 260;
 
     const left = Math.max(

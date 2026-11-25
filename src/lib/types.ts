@@ -24,6 +24,15 @@ export type DeckGroupView = {
   createdAt: string;
   updatedAt: string;
 };
+export type QuestionAnnotationColor = "accent" | "amber" | "sky" | "rose";
+export type QuestionAnnotation = {
+  id: string;
+  quote: string;
+  comment: string;
+  color: QuestionAnnotationColor;
+  createdAt: string;
+  updatedAt: string;
+};
 export type QuestionView = {
   id: string;
   sourceQuestionId?: string;
@@ -44,6 +53,8 @@ export type QuestionView = {
   deckTitle: string;
   note: string;
   noteVersion: number;
+  annotations: QuestionAnnotation[];
+  annotationsVersion: number;
   favorite: boolean;
   fsrs: StoredCard | null;
   studyVersion: number;

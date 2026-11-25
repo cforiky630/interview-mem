@@ -414,6 +414,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [aiTrigger, setAiTrigger] = useState<AiTrigger | null>(null);
   const triggerSeq = useRef(0);
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiUnread, setAiUnread] = useState(false);
   const [reviewRevealed, setReviewRevealed] = useState(false);
   const [confirmState, setConfirmState] = useState<{
     open: boolean;
@@ -734,6 +735,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setAiMode("collapsed");
     }
   }, [aiHiddenInReview, aiMode]);
+  useEffect(() => {
+    if (aiMode !== "collapsed" && !aiHiddenInReview) {
+      setAiUnread(false);
+    }
+  }, [aiMode, aiHiddenInReview]);
   const answerDraft = useAiAnswerDraft(data, mutate, () =>
     openSettings("ai"),
   );
@@ -1619,18 +1625,33 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   "icon-button topbar-ai-trigger",
                   aiMode !== "collapsed" && "is-active",
                   aiBusy && "is-busy",
+                  aiUnread && aiMode === "collapsed" && "has-unread",
                 )}
                 title={
                   aiMode !== "collapsed"
                     ? "收起 AI 助手 (Ctrl/⌘ + J)"
-                    : "AI 助手 (Ctrl/⌘ + J)"
+                    : aiBusy
+                      ? "AI 正在后台回复中（点击查看）"
+                      : aiUnread
+                        ? "AI 已回复完成（点击查看）"
+                        : "AI 助手 (Ctrl/⌘ + J)"
                 }
-                aria-label={aiMode !== "collapsed" ? "收起 AI 助手" : "打开 AI 助手"}
+                aria-label={
+                  aiMode !== "collapsed"
+                    ? "收起 AI 助手"
+                    : aiBusy
+                      ? "打开 AI 助手（正在后台回复中）"
+                      : aiUnread
+                        ? "打开 AI 助手（有已完成的新回复）"
+                        : "打开 AI 助手"
+                }
                 aria-pressed={aiMode !== "collapsed"}
                 onClick={() => toggleAi()}
               >
                 <Sparkles size={16} />
-                {aiBusy && <span className="ai-trigger-dot" aria-hidden="true" />}
+                {(aiBusy || (aiUnread && aiMode === "collapsed")) && (
+                  <span className="ai-trigger-dot" aria-hidden="true" />
+                )}
               </button>
             )}
           </div>
@@ -1648,6 +1669,16 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               data={data}
               onReview={() => startReview()}
               onPractice={(question) => startReview(undefined, question)}
+              onCram={startCram}
+              onQuestion={(q, ids) => openQuestion(q, ids)}
+              onApplyAllUpdates={async (deckIds) => {
+                const res = await applyAllDeckUpdates(mutate, deckIds);
+                if (res) {
+                  toast.success(
+                    `已更新 ${Number(res.updated ?? 0)} 个订阅题库。`,
+                  );
+                }
+              }}
               onDeck={openDeck}
               onImport={openImport}
               onCatalog={() => navigate("catalog")}
@@ -1835,8 +1866,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               mutate={mutate}
               onSingleReview={() => startReview(undefined, currentQuestion)}
               aiOpen={aiMode !== "collapsed"}
+              aiDocked={aiMode === "docked" && !aiHiddenInReview}
               onToggleAi={toggleAi}
               onAskAi={askAi}
+              onBeforeOpenAnnotations={() => {
+                if (aiMode === "docked") setAiMode("collapsed");
+              }}
               groupContext={readerGroupContext}
               readingList={readingList}
               onJumpQuestion={(target) =>
@@ -1920,8 +1955,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 onGrade={(rating, answer) => void grade(rating, answer)}
                 busy={reviewBusy}
                 aiOpen={aiMode !== "collapsed"}
+                aiDocked={aiMode === "docked" && !aiHiddenInReview}
                 onToggleAi={toggleAi}
                 onAskAi={askAi}
+                onBeforeOpenAnnotations={() => {
+                  if (aiMode === "docked") setAiMode("collapsed");
+                }}
                 onRevealedChange={setReviewRevealed}
               />
             ) : (
@@ -2252,6 +2291,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         onOpenQuestion={(target) => openQuestion(target, [])}
         onSettings={() => openSettings("ai")}
         onBusyChange={setAiBusy}
+        onUnreadChange={setAiUnread}
         mutate={mutate}
       />
     </div>

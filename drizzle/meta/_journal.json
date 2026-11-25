@@ -92,6 +92,13 @@
       "when": 1795504069903,
       "tag": "0012_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795522133522,
+      "tag": "0013_annotations",
+      "breakpoints": true
     }
   ]
 }

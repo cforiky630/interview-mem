@@ -15,6 +15,7 @@ import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
 import { noteFields, questionFields } from "@/server/content-fields";
 import { mergeQuestionTags } from "@/lib/markdown-source";
+import type { QuestionAnnotation } from "@/lib/types";
 import {
   deleteQuestion,
   restoreQuestion,
@@ -25,6 +26,8 @@ import {
 } from "@/server/question-lifecycle";
 
 const groupIdSchema = z.string().uuid().nullable();
+const annotationColorSchema = z.enum(["accent", "amber", "sky", "rose"]);
+const MAX_ANNOTATIONS_PER_QUESTION = 50;
 
 const schema = z.discriminatedUnion("action", [
   z.object({
@@ -79,6 +82,25 @@ const schema = z.discriminatedUnion("action", [
     groupId: groupIdSchema.default(null),
     title: z.string().trim().min(1).max(200).optional(),
     answer: z.string().max(100_000).optional(),
+  }),
+  z.object({
+    action: z.literal("addAnnotation"),
+    id: z.string().uuid(),
+    quote: z.string().trim().max(600).default(""),
+    comment: z.string().trim().min(1, "请输入批注内容。").max(2000),
+    color: annotationColorSchema.default("accent"),
+  }),
+  z.object({
+    action: z.literal("editAnnotation"),
+    id: z.string().uuid(),
+    annotationId: z.string().trim().min(1).max(100),
+    comment: z.string().trim().min(1, "请输入批注内容。").max(2000),
+    color: annotationColorSchema.optional(),
+  }),
+  z.object({
+    action: z.literal("deleteAnnotation"),
+    id: z.string().uuid(),
+    annotationId: z.string().trim().min(1).max(100),
   }),
 ]);
 async function insertOwnedQuestion(
@@ -297,6 +319,120 @@ export const POST = route(async (request, user) => {
         duplicateMessage: "当前位置已有相同内容。",
       }),
     );
+  }
+  if (
+    data.action === "addAnnotation" ||
+    data.action === "editAnnotation" ||
+    data.action === "deleteAnnotation"
+  ) {
+    const result = await db.transaction(async (tx) => {
+      await tx
+        .insert(studyCards)
+        .values({ userId: user.id, questionId: data.id })
+        .onConflictDoNothing();
+      const [card] = await tx
+        .select({
+          annotations: studyCards.annotations,
+          annotationsVersion: studyCards.annotationsVersion,
+        })
+        .from(studyCards)
+        .where(
+          and(
+            eq(studyCards.userId, user.id),
+            eq(studyCards.questionId, data.id),
+          ),
+        )
+        .for("update");
+      const current: QuestionAnnotation[] = Array.isArray(card?.annotations)
+        ? card.annotations
+        : [];
+      if (data.action === "addAnnotation") {
+        if (current.length >= MAX_ANNOTATIONS_PER_QUESTION)
+          throw new AppError(400, "单道题最多添加 50 条批注。");
+        const now = new Date().toISOString();
+        const annotation: QuestionAnnotation = {
+          id: crypto.randomUUID(),
+          quote: data.quote,
+          comment: data.comment,
+          color: data.color,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const next = [...current, annotation];
+        const [updated] = await tx
+          .update(studyCards)
+          .set({
+            annotations: next,
+            annotationsVersion: sql`${studyCards.annotationsVersion} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(studyCards.userId, user.id),
+              eq(studyCards.questionId, data.id),
+            ),
+          )
+          .returning({ annotationsVersion: studyCards.annotationsVersion });
+        return {
+          annotation,
+          annotations: next,
+          version: updated.annotationsVersion,
+        };
+      }
+      if (data.action === "editAnnotation") {
+        const idx = current.findIndex((item) => item.id === data.annotationId);
+        if (idx === -1) throw new AppError(404, "批注不存在或已删除。");
+        const annotation: QuestionAnnotation = {
+          ...current[idx],
+          comment: data.comment,
+          ...(data.color ? { color: data.color } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        const next = current.map((item, i) => (i === idx ? annotation : item));
+        const [updated] = await tx
+          .update(studyCards)
+          .set({
+            annotations: next,
+            annotationsVersion: sql`${studyCards.annotationsVersion} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(studyCards.userId, user.id),
+              eq(studyCards.questionId, data.id),
+            ),
+          )
+          .returning({ annotationsVersion: studyCards.annotationsVersion });
+        return {
+          annotation,
+          annotations: next,
+          version: updated.annotationsVersion,
+        };
+      }
+      const idx = current.findIndex((item) => item.id === data.annotationId);
+      if (idx === -1) throw new AppError(404, "批注不存在或已删除。");
+      const next = current.filter((item) => item.id !== data.annotationId);
+      const [updated] = await tx
+        .update(studyCards)
+        .set({
+          annotations: next,
+          annotationsVersion: sql`${studyCards.annotationsVersion} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(studyCards.userId, user.id),
+            eq(studyCards.questionId, data.id),
+          ),
+        )
+        .returning({ annotationsVersion: studyCards.annotationsVersion });
+      return {
+        ok: true,
+        annotations: next,
+        version: updated.annotationsVersion,
+      };
+    });
+    return NextResponse.json(result);
   }
   await db
     .insert(studyCards)

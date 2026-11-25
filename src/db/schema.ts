@@ -15,7 +15,11 @@ import type {
   ContentValidationView,
 } from "@/lib/content-validation";
 import type { ImportPreviewItem } from "@/lib/import-preview";
-import type { ChatEdit, ChatMessageMeta } from "@/lib/types";
+import type {
+  ChatEdit,
+  ChatMessageMeta,
+  QuestionAnnotation,
+} from "@/lib/types";
 import { sql } from "drizzle-orm";
 
 const dates = () => ({
@@ -292,6 +296,11 @@ export const studyCards = pgTable(
     favorite: boolean("favorite").notNull().default(false),
     note: text("note").notNull().default(""),
     noteVersion: integer("note_version").notNull().default(0),
+    annotations: jsonb("annotations")
+      .$type<QuestionAnnotation[]>()
+      .notNull()
+      .default([]),
+    annotationsVersion: integer("annotations_version").notNull().default(0),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

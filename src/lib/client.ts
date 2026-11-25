@@ -1,4 +1,8 @@
-import type { CatalogDeckPreview, RichCatalogResponse } from "./types";
+import type {
+  CatalogDeckPreview,
+  QuestionAnnotationColor,
+  RichCatalogResponse,
+} from "./types";
 
 export class RequestError extends Error {
   constructor(
@@ -347,5 +351,55 @@ export async function setAuthorAutoSubscribe(
     action: "setAutoSubscribe",
     authorId,
     autoSubscribeNew,
+  });
+}
+
+export async function addQuestionAnnotation(
+  mutate: WorkspaceMutate,
+  input: {
+    id: string;
+    quote?: string;
+    comment: string;
+    color?: QuestionAnnotationColor;
+  },
+) {
+  return mutate("/api/questions", {
+    action: "addAnnotation",
+    id: input.id,
+    quote: input.quote ?? "",
+    comment: input.comment,
+    color: input.color ?? "accent",
+  });
+}
+
+export async function editQuestionAnnotation(
+  mutate: WorkspaceMutate,
+  input: {
+    id: string;
+    annotationId: string;
+    comment: string;
+    color?: QuestionAnnotationColor;
+  },
+) {
+  return mutate("/api/questions", {
+    action: "editAnnotation",
+    id: input.id,
+    annotationId: input.annotationId,
+    comment: input.comment,
+    ...(input.color ? { color: input.color } : {}),
+  });
+}
+
+export async function deleteQuestionAnnotation(
+  mutate: WorkspaceMutate,
+  input: {
+    id: string;
+    annotationId: string;
+  },
+) {
+  return mutate("/api/questions", {
+    action: "deleteAnnotation",
+    id: input.id,
+    annotationId: input.annotationId,
   });
 }
