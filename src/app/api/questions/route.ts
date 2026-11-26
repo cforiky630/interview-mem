@@ -9,23 +9,40 @@ import {
   nextQuestionBaseMs,
   nextQuestionPosition,
   ownedDeck,
+  publishedQuestion,
 } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
 import { noteFields, questionFields } from "@/server/content-fields";
 import { mergeQuestionTags } from "@/lib/markdown-source";
-import type { QuestionAnnotation } from "@/lib/types";
+import {
+  MAX_CONCEPT_ALIASES,
+  MAX_CONCEPT_ALIAS_LENGTH,
+  MAX_CONCEPT_GROUP_LENGTH,
+} from "@/lib/concepts";
+import type {
+  ConceptFolderView,
+  ConceptView,
+  QuestionAnnotation,
+} from "@/lib/types";
 import {
   deleteQuestion,
   restoreQuestion,
   moveQuestion,
   mutateOwnedQuestion,
   batchMutateQuestions,
-  verifyOwnedDeckGroup,
+  mergeDuplicateQuestions,
 } from "@/server/question-lifecycle";
+import { findDuplicateHitsInTx, lockUserTree } from "@/server/folders";
+import {
+  syncConceptFromAnnotationEditInTx,
+  upsertConceptFromAnnotationInTx,
+} from "@/server/concepts";
 
-const groupIdSchema = z.string().uuid().nullable();
+const duplicateStrategySchema = z
+  .enum(["check", "keepBoth", "skip"])
+  .default("check");
 const annotationColorSchema = z.enum(["accent", "amber", "sky", "rose"]);
 const MAX_ANNOTATIONS_PER_QUESTION = 50;
 
@@ -33,7 +50,6 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
     deckId: deckIdSchema.nullable().default(null),
-    groupId: groupIdSchema.default(null),
     ...questionFields,
     tags: questionFields.tags.default([]),
   }),
@@ -42,7 +58,7 @@ const schema = z.discriminatedUnion("action", [
     ids: z.array(z.string().uuid()).min(1).max(100),
     operation: z.enum(["move", "archive", "unarchive", "delete"]),
     deckId: deckIdSchema.nullable().optional(),
-    groupId: groupIdSchema.optional(),
+    duplicateStrategy: duplicateStrategySchema.optional(),
   }),
   z.object({ action: z.literal("delete"), id: z.string().uuid() }),
   z.object({ action: z.literal("restore"), id: z.string().uuid() }),
@@ -50,7 +66,15 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("move"),
     id: z.string().uuid(),
     deckId: deckIdSchema.nullable(),
-    groupId: groupIdSchema.default(null),
+    duplicateStrategy: duplicateStrategySchema,
+  }),
+  z.object({
+    action: z.literal("mergeDuplicates"),
+    primaryId: z.string().uuid(),
+    duplicateIds: z.array(z.string().uuid()).min(1).max(50),
+    appendNotes: z.boolean().default(true),
+    keepStrongerFsrs: z.boolean().default(true),
+    mergeTags: z.boolean().default(true),
   }),
   z.object({
     action: z.literal("edit"),
@@ -79,7 +103,6 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("copy"),
     id: z.string().uuid(),
     deckId: deckIdSchema.nullable().default(null),
-    groupId: groupIdSchema.default(null),
     title: z.string().trim().min(1).max(200).optional(),
     answer: z.string().max(100_000).optional(),
   }),
@@ -89,6 +112,14 @@ const schema = z.discriminatedUnion("action", [
     quote: z.string().trim().max(600).default(""),
     comment: z.string().trim().min(1, "请输入批注内容。").max(2000),
     color: annotationColorSchema.default("accent"),
+    saveAsConcept: z.boolean().optional().default(false),
+    conceptFolderId: z.string().trim().min(1).max(120).nullable().optional(),
+    conceptGroup: z.string().trim().max(MAX_CONCEPT_GROUP_LENGTH).optional(),
+    aliases: z
+      .array(z.string().trim().min(1).max(MAX_CONCEPT_ALIAS_LENGTH))
+      .max(MAX_CONCEPT_ALIASES)
+      .optional(),
+    updateExistingConcept: z.boolean().optional().default(false),
   }),
   z.object({
     action: z.literal("editAnnotation"),
@@ -96,6 +127,7 @@ const schema = z.discriminatedUnion("action", [
     annotationId: z.string().trim().min(1).max(100),
     comment: z.string().trim().min(1, "请输入批注内容。").max(2000),
     color: annotationColorSchema.optional(),
+    syncConcept: z.boolean().optional().default(true),
   }),
   z.object({
     action: z.literal("deleteAnnotation"),
@@ -103,23 +135,22 @@ const schema = z.discriminatedUnion("action", [
     annotationId: z.string().trim().min(1).max(100),
   }),
 ]);
+
 async function insertOwnedQuestion(
   db: Database,
   params: {
     userId: string;
     deckId: string | null;
-    groupId: string | null;
     parentId: string | null;
     title: string;
     answer: string;
     tags: string[];
     sourceText: string;
-    duplicateMessage: string;
   },
 ) {
   if (params.deckId) await ownedDeck(params.userId, params.deckId);
   const hash = contentHash(params.title, params.answer);
-  const inserted = await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     if (params.deckId) {
       const [target] = await tx
         .select()
@@ -131,50 +162,32 @@ async function insertOwnedQuestion(
             isNull(decks.deletedAt),
           ),
         )
-        .for("update");
-      if (!target) throw new AppError(404, "目标题库已删除。");
+        .for("no key update");
+      if (!target) throw new AppError(404, "目标文件夹已删除。");
     } else {
       await tx
         .select({ id: users.id })
         .from(users)
         .where(eq(users.id, params.userId))
-        .for("update");
+        .for("no key update");
     }
-    const groupId = await verifyOwnedDeckGroup(
-      tx,
-      params.userId,
-      params.deckId,
-      params.groupId,
-    );
-    const duplicate = await tx
-      .select({ id: questions.id })
-      .from(questions)
-      .where(
-        and(
-          eq(questions.ownerId, params.userId),
-          params.deckId
-            ? eq(questions.deckId, params.deckId)
-            : isNull(questions.deckId),
-          groupId ? eq(questions.groupId, groupId) : isNull(questions.groupId),
-          eq(questions.contentHash, hash),
-          isNull(questions.deletedAt),
-        ),
-      )
-      .limit(1);
-    if (duplicate.length) throw new AppError(409, params.duplicateMessage);
+    const duplicates = await findDuplicateHitsInTx(tx, {
+      userId: params.userId,
+      deckId: params.deckId,
+      title: params.title,
+      answer: params.answer,
+    });
     const ts = new Date(await nextQuestionBaseMs(tx, params.userId));
     const position = await nextQuestionPosition(
       tx,
       params.userId,
       params.deckId,
-      groupId,
     );
-    return tx
+    const [inserted] = await tx
       .insert(questions)
       .values({
         id: crypto.randomUUID(),
         deckId: params.deckId,
-        groupId,
         position,
         ownerId: params.userId,
         parentId: params.parentId,
@@ -187,11 +200,19 @@ async function insertOwnedQuestion(
         createdAt: ts,
         updatedAt: ts,
       })
-      .onConflictDoNothing()
       .returning();
+    if (params.deckId) {
+      await tx
+        .update(decks)
+        .set({ updatedAt: ts })
+        .where(eq(decks.id, params.deckId));
+    }
+    return {
+      id: inserted.id,
+      duplicates,
+      question: publishedQuestion(inserted),
+    };
   });
-  if (!inserted.length) throw new AppError(409, "目标位置已有相同内容。");
-  return { id: inserted[0].id };
 }
 
 export const POST = route(async (request, user) => {
@@ -205,10 +226,20 @@ export const POST = route(async (request, user) => {
               ids: data.ids,
               operation: "move",
               deckId: data.deckId ?? null,
-              groupId: data.groupId ?? null,
+              duplicateStrategy: data.duplicateStrategy ?? "check",
             }
           : { ids: data.ids, operation: data.operation },
       ),
+    );
+  if (data.action === "mergeDuplicates")
+    return Response.json(
+      await mergeDuplicateQuestions(user.id, {
+        primaryId: data.primaryId,
+        duplicateIds: data.duplicateIds,
+        appendNotes: data.appendNotes,
+        keepStrongerFsrs: data.keepStrongerFsrs,
+        mergeTags: data.mergeTags,
+      }),
     );
   const db = await getDb();
   if (data.action === "create") {
@@ -220,13 +251,11 @@ export const POST = route(async (request, user) => {
       await insertOwnedQuestion(db, {
         userId: user.id,
         deckId: data.deckId,
-        groupId: data.groupId,
         parentId: null,
         title: data.title,
         answer: data.answer,
         tags: normalizedTags,
         sourceText,
-        duplicateMessage: "目标位置已有相同题目和答案。",
       }),
     );
   }
@@ -236,7 +265,7 @@ export const POST = route(async (request, user) => {
     return Response.json(await restoreQuestion(user.id, data.id));
   if (data.action === "move")
     return Response.json(
-      await moveQuestion(user.id, data.id, data.deckId, data.groupId),
+      await moveQuestion(user.id, data.id, data.deckId, data.duplicateStrategy),
     );
   const question = await accessibleQuestion(user.id, data.id);
   if (data.action === "edit" || data.action === "archive") {
@@ -256,24 +285,6 @@ export const POST = route(async (request, user) => {
         }
         const normalizedTags = mergeQuestionTags([], data.tags);
         const hash = contentHash(data.title, data.answer);
-        const duplicates = await tx
-          .select({ id: questions.id })
-          .from(questions)
-          .where(
-            and(
-              eq(questions.ownerId, user.id),
-              current.deckId
-                ? eq(questions.deckId, current.deckId)
-                : isNull(questions.deckId),
-              current.groupId
-                ? eq(questions.groupId, current.groupId)
-                : isNull(questions.groupId),
-              isNull(questions.deletedAt),
-              eq(questions.contentHash, hash),
-            ),
-          );
-        if (duplicates.some((q) => q.id !== data.id))
-          throw new AppError(409, "当前位置已经存在相同题目和答案。");
         const changed = await tx
           .update(questions)
           .set({
@@ -299,11 +310,19 @@ export const POST = route(async (request, user) => {
             "题目已在其他页面修改，请刷新后再保存。",
             "CONFLICT",
           );
+        const duplicates = await findDuplicateHitsInTx(tx, {
+          userId: user.id,
+          deckId: current.deckId,
+          title: data.title,
+          answer: data.answer,
+          excludeQuestionId: data.id,
+        });
         return {
           revision: changed[0].revision,
           majorRevision: changed[0].majorRevision,
           tags: changed[0].tags,
           updatedAt: changed[0].updatedAt.toISOString(),
+          duplicates,
         };
       }),
     );
@@ -315,13 +334,11 @@ export const POST = route(async (request, user) => {
       await insertOwnedQuestion(db, {
         userId: user.id,
         deckId: data.deckId,
-        groupId: data.groupId,
         parentId: data.id,
         title,
         answer,
         tags: question.tags,
         sourceText: `引用：${question.title}\n\n${answer}`,
-        duplicateMessage: "当前位置已有相同内容。",
       }),
     );
   }
@@ -330,7 +347,13 @@ export const POST = route(async (request, user) => {
     data.action === "editAnnotation" ||
     data.action === "deleteAnnotation"
   ) {
+    const needsConceptLock =
+      (data.action === "addAnnotation" && data.saveAsConcept) ||
+      (data.action === "editAnnotation" && data.syncConcept);
     const result = await db.transaction(async (tx) => {
+      if (needsConceptLock) {
+        await lockUserTree(tx, user.id);
+      }
       await tx
         .insert(studyCards)
         .values({ userId: user.id, questionId: data.id })
@@ -354,12 +377,29 @@ export const POST = route(async (request, user) => {
       if (data.action === "addAnnotation") {
         if (current.length >= MAX_ANNOTATIONS_PER_QUESTION)
           throw new AppError(400, "单道题最多添加 50 条批注。");
+        let savedConcept: ConceptView | null = null;
+        let savedConceptFolder: ConceptFolderView | null = null;
+        if (data.saveAsConcept) {
+          const upserted = await upsertConceptFromAnnotationInTx(tx, user.id, {
+            questionId: data.id,
+            quote: data.quote,
+            comment: data.comment,
+            color: data.color,
+            conceptFolderId: data.conceptFolderId,
+            conceptGroup: data.conceptGroup,
+            aliases: data.aliases,
+            updateExistingConcept: data.updateExistingConcept,
+          });
+          savedConcept = upserted.concept;
+          savedConceptFolder = upserted.folder;
+        }
         const now = new Date().toISOString();
         const annotation: QuestionAnnotation = {
           id: crypto.randomUUID(),
           quote: data.quote,
           comment: data.comment,
           color: data.color,
+          ...(savedConcept ? { conceptId: savedConcept.id } : {}),
           createdAt: now,
           updatedAt: now,
         };
@@ -379,7 +419,10 @@ export const POST = route(async (request, user) => {
           )
           .returning({ annotationsVersion: studyCards.annotationsVersion });
         return {
+          ok: true,
           annotation,
+          concept: savedConcept,
+          ...(savedConceptFolder ? { conceptFolder: savedConceptFolder } : {}),
           annotations: next,
           version: updated.annotationsVersion,
         };
@@ -387,8 +430,18 @@ export const POST = route(async (request, user) => {
       if (data.action === "editAnnotation") {
         const idx = current.findIndex((item) => item.id === data.annotationId);
         if (idx === -1) throw new AppError(404, "批注不存在或已删除。");
+        const existingItem = current[idx];
+        let syncedConcept: ConceptView | null = null;
+        if (data.syncConcept && existingItem.conceptId) {
+          syncedConcept = await syncConceptFromAnnotationEditInTx(tx, user.id, {
+            questionId: data.id,
+            conceptId: existingItem.conceptId,
+            comment: data.comment,
+            color: data.color,
+          });
+        }
         const annotation: QuestionAnnotation = {
-          ...current[idx],
+          ...existingItem,
           comment: data.comment,
           ...(data.color ? { color: data.color } : {}),
           updatedAt: new Date().toISOString(),
@@ -409,7 +462,9 @@ export const POST = route(async (request, user) => {
           )
           .returning({ annotationsVersion: studyCards.annotationsVersion });
         return {
+          ok: true,
           annotation,
+          concept: syncedConcept,
           annotations: next,
           version: updated.annotationsVersion,
         };
@@ -446,7 +501,7 @@ export const POST = route(async (request, user) => {
   if (data.action === "favorite")
     await db
       .update(studyCards)
-      .set({ favorite: data.favorite })
+      .set({ favorite: data.favorite, updatedAt: new Date() })
       .where(
         and(eq(studyCards.userId, user.id), eq(studyCards.questionId, data.id)),
       );

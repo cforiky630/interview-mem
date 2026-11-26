@@ -336,7 +336,7 @@ export function AiIsland({
 
   useEffect(() => {
     setHistoryOpen(false);
-  }, [scopeKey, mode]);
+  }, [scopeKey, mode, hidden]);
 
   useEffect(() => {
     if (!historyOpen) return;
@@ -1054,8 +1054,18 @@ export function AiIsland({
     }
   }, [mode, allowDock]);
 
+  const showThreadActions =
+    displayScope !== "question"
+      ? scopedView === "chat"
+      : Boolean(displayQuestion);
+  const canShowHistoryPopover = Boolean(showThreadActions && threads.length > 0);
+  const historyPopoverOpen = Boolean(
+    !hidden && historyOpen && canShowHistoryPopover,
+  );
   const backdropPresence = useDiscretePresence<HTMLButtonElement>(isOpen);
   const panelPresence = useDiscretePresence<HTMLElement>(isOpen);
+  const historyPopoverPresence =
+    useDiscretePresence<HTMLDivElement>(historyPopoverOpen);
 
   if (hidden) return null;
 
@@ -1073,13 +1083,6 @@ export function AiIsland({
   ];
 
   const isDocked = isOpen ? isDockedNow : lastOpenSurface === "docked";
-  const showThreadActions =
-    displayScope !== "question"
-      ? scopedView === "chat"
-      : Boolean(displayQuestion);
-  const canShowHistoryPopover = Boolean(showThreadActions && threads.length > 0);
-  const historyPopoverOpen = Boolean(historyOpen && canShowHistoryPopover);
-  const historyPopoverPresence = useDiscretePresence<HTMLDivElement>(historyPopoverOpen);
 
   return (
     <>
@@ -1088,10 +1091,10 @@ export function AiIsland({
         type="button"
         hidden={backdropPresence.isHidden}
         data-closing={backdropPresence.isClosing ? "" : undefined}
-        aria-hidden={!isOpen}
+        aria-hidden="true"
+        tabIndex={-1}
         inert={!isOpen || backdropPresence.isClosing}
         className="ai-sheet-backdrop"
-        aria-label="收起 AI 助手"
         onClick={() => onModeChange("collapsed")}
       />
       <aside

@@ -453,6 +453,11 @@ html[data-input="touch"] :where(
   .oral-scratchpad textarea,
   .annotation-composer textarea,
   .annotation-card textarea,
+  .annotation-concept-input,
+  .annotation-concept-select,
+  .concept-popover-input,
+  .concept-popover-select,
+  .concept-popover-textarea,
   .ai-island-panel textarea,
   .ai-island-panel input,
   .settings-modal input,
@@ -630,7 +635,14 @@ html[data-input="touch"] :where(
   .focus-list-main,
   .oral-scratchpad-toggle,
   .compare-layout-toggle,
-  .reader-annotations-toggle
+  .reader-annotations-toggle,
+  .reader-concepts-toggle,
+  .reader-mobile-concepts-btn,
+  .concept-popover-action,
+  .concept-popover-more-btn,
+  .annotation-concept-more-btn,
+  .annotation-concept-badge,
+  .annotation-promote-btn
 ):active:not(:disabled) {
   background: transparent;
   border-color: transparent;
@@ -644,7 +656,6 @@ html[data-input="touch"] :where(
 
 html[data-input="touch"] :where(
   .deck-group-pill,
-  .deck-group-bar-manage,
   .deck-current-group-pill,
   .group-category-pill,
   .group-view-toggle > button,
@@ -858,6 +869,22 @@ html[data-shell="desktop-compact"] .topbar {
   padding: 0 20px;
 }
 
+@media (max-width: 560px) {
+  html[data-shell="desktop-compact"] .topbar {
+    padding: 0 12px;
+    gap: 6px;
+  }
+  html[data-shell="desktop-compact"] .topbar > div:first-child {
+    gap: 6px;
+  }
+  html[data-shell="desktop-compact"] .topbar-actions {
+    gap: 4px;
+  }
+  html[data-shell="desktop-compact"] .sync-state.sync-idle {
+    display: none;
+  }
+}
+
 html[data-shell="desktop-compact"] .page {
   padding: 20px 20px 36px;
 }
@@ -884,6 +911,7 @@ html[data-shell="desktop-compact"] .sidebar-mobile-logout {
  * ========================================================================== */
 
 html[data-shell="mobile"] {
+  scroll-padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   /* —— 全局壳体与页面节奏（与桌面紧致密度对齐） —— */
   & .main-layout {
     padding-bottom: calc(68px + env(safe-area-inset-bottom));
@@ -935,6 +963,9 @@ html[data-shell="mobile"] {
   & .mobile-search-trigger {
     display: inline-flex;
   }
+  & .mobile-inline-back {
+    display: none;
+  }
   & .topbar-actions > .icon-button.topbar-ai-trigger {
     border: 0;
     background: transparent;
@@ -943,14 +974,16 @@ html[data-shell="mobile"] {
   /* 去掉顶栏/阅读器 AI 图标的桌面式底色块，改用清晰主色图标 + 微小状态点 */
   & .topbar-ai-trigger.is-active,
   & .topbar-actions > .icon-button.topbar-ai-trigger.is-active,
-  & .reader-mobile-ai-btn.is-active {
+  & .reader-mobile-ai-btn.is-active,
+  & .reader-mobile-concepts-btn.is-active {
     background: transparent;
     border-color: transparent;
     box-shadow: none;
     color: var(--accent);
   }
   & .topbar-ai-trigger.is-active::after,
-  & .reader-mobile-ai-btn.is-active::after {
+  & .reader-mobile-ai-btn.is-active::after,
+  & .reader-mobile-concepts-btn.is-active::after {
     content: "";
     position: absolute;
     bottom: 6px;
@@ -971,10 +1004,20 @@ html[data-shell="mobile"] {
   & .topbar-actions {
     gap: 2px;
   }
+  & .topbar.has-mobile-back .topbar-crumb-link,
+  & .topbar.has-mobile-back .topbar-crumb-sep {
+    display: none;
+  }
+  & .topbar-breadcrumb:has(> .topbar-crumb-link:first-child) {
+    margin-left: -4px;
+  }
+  & .topbar.has-mobile-back .topbar-breadcrumb {
+    margin-left: 0;
+  }
   & .topbar-crumb-link {
     font-size: 0.78125rem;
     padding: 4px 6px;
-    margin-left: -4px;
+    margin-left: 0;
     max-width: 84px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1014,9 +1057,18 @@ html[data-shell="mobile"] {
     min-height: 40px;
     padding: 7px 12px;
   }
+  & .sidebar .sidebar-search,
+  & .sidebar .primary-nav {
+    display: none;
+  }
+  & .sidebar .secondary-nav {
+    border-top: 0;
+    margin-top: 0;
+    padding-top: 0;
+  }
   & .sidebar-mobile-appearance {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 8px;
     padding: 0 0 8px;
     border-top: none;
@@ -1197,6 +1249,9 @@ html[data-shell="mobile"] {
   }
 
   /* —— 复习中心移动端紧致排布 —— */
+  & .review-hub-page .page-heading .heading-actions {
+    display: none;
+  }
   & .review-hub-overview {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
@@ -1359,6 +1414,9 @@ html[data-shell="mobile"] {
   }
   & .section-heading h2 {
     font-size: 0.96rem;
+  }
+  & .focus-section .carousel-controls > .carousel-step-btn {
+    display: none;
   }
   & .focus-stack {
     margin-bottom: 8px;
@@ -1755,11 +1813,22 @@ html[data-shell="mobile"] {
     display: none;
   }
   & .reader-mobile-theme-btn,
-  & .reader-mobile-ai-btn {
+  & .reader-mobile-ai-btn,
+  & .reader-mobile-concepts-btn {
     position: relative;
     display: inline-flex;
     width: 40px;
     height: 40px;
+  }
+  & .reader-mobile-concepts-dot {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--surface);
   }
   & .reader-tools {
     gap: 2px;
@@ -1881,6 +1950,24 @@ html[data-shell="mobile"] {
   }
   & .answer-draft-heading {
     margin-bottom: 10px;
+  }
+  & .answer-draft-heading .answer-mode-switch-inline {
+    display: none;
+  }
+  & .answer-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 9px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-recessed);
+    border: 1px solid var(--border-subtle);
+    color: var(--subtle);
+    font-size: 0.72rem;
+    font-weight: 500;
+  }
+  & .mobile-review-reveal-bar .segmented-control > button {
+    min-height: 36px;
+    padding: 6px 12px;
   }
   & .answer-draft textarea {
     min-height: 148px;
@@ -2619,7 +2706,6 @@ html[data-shell="mobile"] {
     display: none;
   }
   & .deck-group-pill,
-  & .deck-group-bar-manage,
   & .group-category-pill {
     flex-shrink: 0;
     white-space: nowrap;
@@ -2773,7 +2859,8 @@ html[data-shell="mobile"] {
     font-size: 0.75rem;
   }
   & .reader-outline-backdrop,
-  & .annotations-mobile-backdrop {
+  & .annotations-mobile-backdrop,
+  & .concept-sheet-backdrop {
     position: fixed;
     inset: 0;
     z-index: var(--z-sheet-backdrop);
@@ -2789,12 +2876,14 @@ html[data-shell="mobile"] {
     transition-behavior: allow-discrete;
   }
   & .reader-outline-backdrop:where([hidden], [data-closing]),
-  & .annotations-mobile-backdrop:where([hidden], [data-closing]) {
+  & .annotations-mobile-backdrop:where([hidden], [data-closing]),
+  & .concept-sheet-backdrop:where([hidden], [data-closing]) {
     opacity: 0;
     pointer-events: none;
   }
   & .reader-outline-backdrop[hidden],
-  & .annotations-mobile-backdrop[hidden] {
+  & .annotations-mobile-backdrop[hidden],
+  & .concept-sheet-backdrop[hidden] {
     display: none;
   }
   & .reader-outline-sheet {
@@ -2982,6 +3071,81 @@ html[data-shell="mobile"] {
     width: 24px;
     height: 24px;
   }
+  & .annotations-mobile-sheet .annotation-concept-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* —— 移动端概念释义底部抽屉 —— */
+  & .concept-mobile-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(-48px + var(--kb-offset, 0px));
+    z-index: var(--z-sheet);
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-height: calc(
+      min(84dvh, calc(var(--vvh, 100dvh) - 36px - env(safe-area-inset-top))) + 48px
+    );
+    padding-bottom: calc(max(12px, env(safe-area-inset-bottom)) + 48px);
+    border-radius: 22px 22px 0 0;
+    border-top: 1px solid var(--border);
+    background: var(--surface-floating-card);
+    color: var(--text);
+    box-shadow: var(--shadow-popover);
+    overflow: hidden;
+    transform-origin: bottom center;
+    opacity: 1;
+    scale: 1;
+    translate: 0 0;
+    transition:
+      display 440ms,
+      opacity 180ms ease-out,
+      translate 360ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition:
+      display 440ms,
+      opacity 180ms ease-out,
+      translate 440ms linear(0, 0.179 7.1%, 0.494 14.3%, 0.761 21.4%, 0.93 28.6%, 1.011 35.7%, 1.037 42.9%, 1.035 50%, 1.024 57.1%, 1.012 64.3%, 1.004 71.4%, 1 78.6%, 0.999 85.7%, 0.999 92.9%, 1);
+    transition-behavior: allow-discrete;
+  }
+  & .concept-mobile-sheet:where([hidden], [data-closing]) {
+    opacity: 0.85;
+    scale: 1;
+    translate: 0 100%;
+    pointer-events: none;
+    transition:
+      display 220ms,
+      opacity 180ms ease-out,
+      translate 220ms cubic-bezier(0.32, 0, 0.2, 1);
+    transition-behavior: allow-discrete;
+  }
+  & .concept-mobile-sheet[hidden] {
+    display: none;
+  }
+  & .concept-mobile-sheet .concept-popover-head {
+    padding: 8px 14px 10px 18px;
+  }
+  & .concept-mobile-sheet .concept-popover-aliases {
+    padding: 8px 18px 0;
+  }
+  & .concept-mobile-sheet .concept-popover-body {
+    padding: 12px 18px 14px;
+  }
+  & .concept-mobile-sheet .concept-popover-foot {
+    padding: 10px 16px 10px 18px;
+  }
+  & .concept-mobile-sheet .concept-popover-edit-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  & .concept-mobile-sheet .annotation-color-dot {
+    width: 24px;
+    height: 24px;
+  }
+  & .concept-mobile-sheet .concept-popover-action {
+    min-height: 40px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+  }
 }
 
 /* 软键盘唤起时隐藏主底栏并收敛底部留白（不影响答题对照条与浮层） */
@@ -3004,6 +3168,10 @@ html[data-shell="mobile"][data-keyboard-open="true"] .ai-island-panel.is-docked,
 html[data-shell="mobile"][data-keyboard-open="true"] .settings-modal,
 html[data-shell="mobile"][data-keyboard-open="true"] .annotations-mobile-sheet {
   height: calc(var(--vvh, 100dvh) - 16px - env(safe-area-inset-top) + 48px);
+}
+
+html[data-shell="mobile"][data-keyboard-open="true"] .concept-mobile-sheet {
+  max-height: calc(var(--vvh, 100dvh) - 16px - env(safe-area-inset-top) + 48px);
 }
 
 html[data-shell="mobile"][data-keyboard-open="true"] .catalog-batch-bar,
@@ -3118,6 +3286,20 @@ html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
   html[data-shell="mobile"] .notebook-dashboard .deck-card {
     min-height: 0;
   }
+  html[data-shell="mobile"] .mobile-reader-dock {
+    gap: 2px;
+    padding-inline: max(8px, env(safe-area-inset-left))
+      max(8px, env(safe-area-inset-right));
+  }
+  html[data-shell="mobile"] .mobile-dock-btn {
+    min-width: 44px;
+    padding: 4px 4px;
+  }
+  html[data-shell="mobile"] .mobile-dock-primary {
+    padding-inline: 10px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
 }
 
 /* ============================================================================
@@ -3128,14 +3310,16 @@ html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
   html[data-shell="mobile"] .ai-sheet-backdrop,
   html[data-shell="mobile"] .action-sheet-backdrop,
   html[data-shell="mobile"] .reader-outline-backdrop,
-  html[data-shell="mobile"] .annotations-mobile-backdrop {
+  html[data-shell="mobile"] .annotations-mobile-backdrop,
+  html[data-shell="mobile"] .concept-sheet-backdrop {
     opacity: 0;
   }
   html[data-shell="mobile"] .ai-island-panel,
   html[data-shell="mobile"] .ai-island-panel.is-floating,
   html[data-shell="mobile"] .ai-island-panel.is-docked,
   html[data-shell="mobile"] .reader-outline-sheet,
-  html[data-shell="mobile"] .annotations-mobile-sheet {
+  html[data-shell="mobile"] .annotations-mobile-sheet,
+  html[data-shell="mobile"] .concept-mobile-sheet {
     opacity: 0.65;
     scale: 1;
     translate: 0 100%;
@@ -3172,6 +3356,8 @@ html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
   html[data-shell="mobile"] .reader-outline-backdrop,
   html[data-shell="mobile"] .annotations-mobile-sheet,
   html[data-shell="mobile"] .annotations-mobile-backdrop,
+  html[data-shell="mobile"] .concept-mobile-sheet,
+  html[data-shell="mobile"] .concept-sheet-backdrop,
   html[data-shell="mobile"] .library-tag-bar,
   html[data-shell="mobile"] .action-sheet-card,
   html[data-shell="mobile"] .action-sheet-backdrop,
@@ -3189,6 +3375,7 @@ html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
   html[data-shell="mobile"] .ai-island-panel.is-docked:where([hidden], [data-closing]),
   html[data-shell="mobile"] .reader-outline-sheet:where([hidden], [data-closing]),
   html[data-shell="mobile"] .annotations-mobile-sheet:where([hidden], [data-closing]),
+  html[data-shell="mobile"] .concept-mobile-sheet:where([hidden], [data-closing]),
   html[data-shell="mobile"] .library-tag-bar:where([data-mobile-hidden], [data-mobile-closing]),
   html[data-shell="mobile"] .action-menu > div[data-sheet="true"][data-closing] .action-sheet-card {
     translate: none;
@@ -3203,6 +3390,7 @@ html[data-shell="mobile"][data-keyboard-open="true"] .batch-action-bar {
     html[data-shell="mobile"] .ai-island-panel.is-docked,
     html[data-shell="mobile"] .reader-outline-sheet,
     html[data-shell="mobile"] .annotations-mobile-sheet,
+    html[data-shell="mobile"] .concept-mobile-sheet,
     html[data-shell="mobile"] .library-tag-bar,
     html[data-shell="mobile"] .action-sheet-card {
       translate: none;

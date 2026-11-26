@@ -9,6 +9,7 @@ import {
   index,
   uniqueIndex,
   check,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import type {
   ContentValidation,
@@ -19,6 +20,7 @@ import type {
   ChatEdit,
   ChatMessageMeta,
   QuestionAnnotation,
+  QuestionAnnotationColor,
 } from "@/lib/types";
 import { sql } from "drizzle-orm";
 
@@ -113,36 +115,33 @@ export const decks = pgTable(
     ownerId: text("owner_id")
       .notNull()
       .references(() => user.id),
+    parentId: text("parent_id").references((): AnyPgColumn => decks.id, {
+      onDelete: "set null",
+    }),
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
-    groupName: text("group_name").notNull().default(""),
     color: text("color").notNull().default("sage"),
     visibility: text("visibility").notNull().default("private"),
     publishedVersion: integer("published_version").notNull().default(0),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     ...dates(),
   },
-  (t) => [index("deck_owner_idx").on(t.ownerId)],
-);
-export const deckGroups = pgTable(
-  "deck_groups",
-  {
-    id: text("id").primaryKey(),
-    deckId: text("deck_id")
-      .notNull()
-      .references(() => decks.id, { onDelete: "cascade" }),
-    ownerId: text("owner_id")
-      .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    title: text("title").notNull(),
-    category: text("category").notNull().default(""),
-    description: text("description").notNull().default(""),
-    position: integer("position").notNull().default(0),
-    ...dates(),
-  },
   (t) => [
-    index("deck_group_deck_pos_idx").on(t.deckId, t.position, t.createdAt),
-    index("deck_group_owner_idx").on(t.ownerId),
+    index("deck_owner_idx").on(t.ownerId),
+    index("deck_owner_parent_idx")
+      .on(t.ownerId, t.parentId)
+      .where(sql`${t.deletedAt} is null`),
+    uniqueIndex("deck_sibling_title_uniq")
+      .on(
+        t.ownerId,
+        sql`(coalesce(${t.parentId}, ''))`,
+        sql`(lower(btrim(${t.title})))`,
+      )
+      .where(sql`${t.deletedAt} is null`),
+    check(
+      "decks_no_self_parent",
+      sql`${t.parentId} is null or ${t.parentId} <> ${t.id}`,
+    ),
   ],
 );
 export const questions = pgTable(
@@ -153,9 +152,6 @@ export const questions = pgTable(
       .notNull()
       .references(() => user.id),
     deckId: text("deck_id").references(() => decks.id),
-    groupId: text("group_id").references(() => deckGroups.id, {
-      onDelete: "set null",
-    }),
     position: integer("position").notNull().default(0),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     purgedAt: timestamp("purged_at", { withTimezone: true }),
@@ -175,25 +171,25 @@ export const questions = pgTable(
   },
   (t) => [
     index("question_deck_idx").on(t.deckId),
-    index("question_group_idx").on(t.deckId, t.groupId, t.position, t.createdAt),
     index("question_owner_idx").on(t.ownerId, t.deletedAt),
+    index("question_owner_hash_idx")
+      .on(t.ownerId, t.contentHash)
+      .where(sql`${t.deletedAt} is null`),
     index("question_import_idx")
       .on(t.importId)
       .where(sql`${t.importId} is not null`),
     index("question_trash_expiry_idx")
       .on(t.deletedAt)
       .where(sql`${t.deletedAt} is not null and ${t.purgedAt} is null`),
-    uniqueIndex("question_hash_idx")
-      .on(t.deckId, sql`(coalesce(${t.groupId}, ''))`, t.contentHash)
-      .where(sql`${t.deletedAt} is null and ${t.deckId} is not null`),
   ],
 );
 export type PublishedDeckGroup = {
   id: string;
+  parentId?: string | null;
   title: string;
-  category: string;
+  category?: string;
   description: string;
-  position: number;
+  position?: number;
 };
 export type PublishedQuestion = {
   id: string;
@@ -246,7 +242,9 @@ export const subscriptions = pgTable(
     deckId: text("deck_id")
       .notNull()
       .references(() => decks.id),
-    groupName: text("group_name").notNull().default(""),
+    folderId: text("folder_id").references(() => decks.id, {
+      onDelete: "set null",
+    }),
     seenVersion: integer("seen_version").notNull().default(0),
     dismissedVersion: integer("dismissed_version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -256,6 +254,7 @@ export const subscriptions = pgTable(
   (t) => [
     primaryKey({ columns: [t.userId, t.deckId] }),
     index("subscription_deck_idx").on(t.deckId),
+    index("subscription_user_folder_idx").on(t.userId, t.folderId),
   ],
 );
 export const authorSubscriptions = pgTable(
@@ -353,6 +352,8 @@ export const imports = pgTable(
       added: number;
       duplicates: number;
       updated?: number;
+      createdFolders?: number;
+      reusedFolders?: number;
     }>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -406,4 +407,62 @@ export const messages = pgTable(
       .defaultNow(),
   },
   (t) => [index("chat_message_conv_time_idx").on(t.conversationId, t.createdAt)],
+);
+export const conceptFolders = pgTable(
+  "concept_folders",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    parentId: text("parent_id").references((): AnyPgColumn => conceptFolders.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    color: text("color").notNull().default("sage"),
+    ...dates(),
+  },
+  (t) => [
+    index("concept_folder_user_parent_idx").on(t.userId, t.parentId),
+    uniqueIndex("concept_folder_sibling_title_uniq").on(
+      t.userId,
+      sql`(coalesce(${t.parentId}, ''))`,
+      sql`(lower(btrim(${t.title})))`,
+    ),
+    check(
+      "concept_folders_no_self_parent",
+      sql`${t.parentId} is null or ${t.parentId} <> ${t.id}`,
+    ),
+  ],
+);
+export const concepts = pgTable(
+  "concepts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    folderId: text("folder_id").references(() => conceptFolders.id, {
+      onDelete: "set null",
+    }),
+    term: text("term").notNull(),
+    aliases: jsonb("aliases").$type<string[]>().notNull().default([]),
+    normalizedKey: text("normalized_key").notNull(),
+    definition: text("definition").notNull(),
+    groupName: text("group_name").notNull().default(""),
+    color: text("color")
+      .$type<QuestionAnnotationColor>()
+      .notNull()
+      .default("accent"),
+    sourceQuestionId: text("source_question_id").references(
+      () => questions.id,
+      { onDelete: "set null" },
+    ),
+    ...dates(),
+  },
+  (t) => [
+    index("concept_user_group_idx").on(t.userId, t.groupName),
+    index("concept_user_folder_idx").on(t.userId, t.folderId),
+    uniqueIndex("concept_user_norm_key_uniq").on(t.userId, t.normalizedKey),
+  ],
 );

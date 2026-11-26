@@ -48,7 +48,7 @@ export function LibraryTrash({
   return (
     <div className="trash-list">
       <p className="trash-hint">
-        已删除的题目会在回收站保留 30 天（到期后自动彻底清除），恢复后将保留原题库归属、个人笔记与间隔复习记录。
+        已删除的资料会在回收站保留 30 天（到期后自动彻底清除），恢复后将保留原文件夹位置（若原文件夹已删则回到根目录）、个人笔记与间隔复习记录。
       </p>
       {items.length ? (
         items.map((question) => (
@@ -57,7 +57,7 @@ export function LibraryTrash({
             <div>
               <h3>{question.title}</h3>
               <p>
-                {question.deckTitle} · 剩余{" "}
+                {question.folderPath || question.deckTitle} · 剩余{" "}
                 {Math.max(
                   0,
                   Math.ceil(
@@ -84,7 +84,7 @@ export function LibraryTrash({
                     setItems((previous) =>
                       previous.filter((d) => d.id !== question.id),
                     );
-                    toast.success("题目已恢复。");
+                    toast.success("资料已恢复。");
                   }
                 } finally {
                   setBusy(null);
@@ -100,7 +100,7 @@ export function LibraryTrash({
         <div className="empty-state">
           <Trash2 size={32} />
           <h3>回收站是空的</h3>
-          <p>删除题库或题目后，题目会暂存这里 30 天以防误删，随时可一键还原。</p>
+          <p>删除文件夹或资料后，内容会暂存这里 30 天以防误删，随时可一键还原。</p>
         </div>
       )}
     </div>

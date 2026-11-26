@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, ChevronRight, Search, Sparkles } from "lucide-react";
+import { Folder, ChevronRight, Search, Sparkles } from "lucide-react";
 import type { DeckView, QuestionView, Workspace } from "@/lib/types";
-import { formatGroupLabel, resolveQuestionGroup } from "@/lib/grouping";
+import { buildFolderIndex, ROOT_FOLDER_LABEL } from "@/lib/folders";
+import { isQuestionDue } from "@/lib/review-queue";
 
 type DeckFilter = "all" | "needsEditing" | "due";
 
@@ -67,13 +68,25 @@ export function ScopeLauncher({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<DeckFilter>("all");
 
-  const activePool = useMemo(
-    () =>
-      data.questions.filter(
-        (q) => !q.archived && (scope === "workspace" || q.deckId === deck?.id),
-      ),
-    [data.questions, scope, deck?.id],
-  );
+  const folderIndex = useMemo(() => buildFolderIndex(data.decks), [data.decks]);
+
+  const activePool = useMemo(() => {
+    if (scope === "workspace" || !deck) {
+      return data.questions.filter((q) => !q.archived);
+    }
+    if (!deck.isOwner) {
+      return data.questions.filter((q) => !q.archived && q.deckId === deck.id);
+    }
+    const scopeIds = new Set<string>(folderIndex.subtreeOwnedIds(deck.id));
+    for (const fid of [...scopeIds]) {
+      for (const sub of folderIndex.subscriptionsByFolder.get(fid) ?? []) {
+        scopeIds.add(sub.id);
+      }
+    }
+    return data.questions.filter(
+      (q) => !q.archived && q.deckId !== null && scopeIds.has(q.deckId),
+    );
+  }, [data.questions, scope, deck, folderIndex]);
 
   const stats = useMemo(() => {
     const now = Date.now();
@@ -81,7 +94,7 @@ export function ScopeLauncher({
     let needsEditing = 0;
     for (const q of activePool) {
       if (q.needsEditing) needsEditing += 1;
-      if (q.fsrs && new Date(q.fsrs.due).getTime() <= now) due += 1;
+      if (q.answer.trim() && isQuestionDue(q, now)) due += 1;
     }
     return { total: activePool.length, due, needsEditing };
   }, [activePool]);
@@ -92,18 +105,11 @@ export function ScopeLauncher({
     return activePool
       .filter((q) => {
         if (filter === "needsEditing" && !q.needsEditing) return false;
-        if (
-          filter === "due" &&
-          (!q.fsrs || new Date(q.fsrs.due).getTime() > now)
-        )
+        if (filter === "due" && (!q.answer.trim() || !isQuestionDue(q, now)))
           return false;
         if (!terms.length) return true;
-        const groupLabel = formatGroupLabel(
-          resolveQuestionGroup(data.decks, q),
-          " ",
-        );
         const haystack =
-          `${q.title}\n${q.tags.join(" ")}\n${q.deckTitle}\n${groupLabel}\n${q.answer.slice(0, 600)}`.toLowerCase();
+          `${q.title}\n${q.tags.join(" ")}\n${q.folderPath}\n${q.answer.slice(0, 600)}`.toLowerCase();
         return terms.every((term) => haystack.includes(term));
       })
       .sort((a, b) => {
@@ -111,15 +117,19 @@ export function ScopeLauncher({
         return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
       })
       .slice(0, 24);
-  }, [activePool, data.decks, query, filter]);
+  }, [activePool, query, filter]);
 
   return (
     <div className="ai-launcher">
       <div className="ai-scope-summary">
         <div className="ai-scope-summary-head">
-          <BookOpen size={15} />
+          <Folder size={15} />
           <strong>
-            {scope === "deck" && deck ? deck.title : "全部题库工作区"}
+            {scope === "deck" && deck
+              ? deck.isOwner
+                ? folderIndex.pathOf(deck.id)
+                : deck.title
+              : `${ROOT_FOLDER_LABEL}（全部范围）`}
           </strong>
         </div>
         <div className="ai-scope-metrics">
@@ -145,12 +155,12 @@ export function ScopeLauncher({
         <input
           type="search"
           aria-label={
-            scope === "deck" ? "检索当前题库题目" : "检索全局题库题目"
+            scope === "deck" ? "检索当前文件夹题目" : "检索全部资料题目"
           }
           placeholder={
             scope === "deck"
-              ? "筛选当前题库标题、标签或正文…"
-              : "搜索全库题目、标签或关键词…"
+              ? "筛选当前文件夹及子目录标题、标签或正文…"
+              : "搜索全部资料标题、路径、标签或关键词…"
           }
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -179,31 +189,23 @@ export function ScopeLauncher({
 
       <div className="ai-launcher-list">
         {matches.length ? (
-          matches.map((item) => {
-            const groupLabel = formatGroupLabel(
-              resolveQuestionGroup(data.decks, item),
-            );
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className="ai-launcher-item"
-                onClick={() => onOpenQuestion(item)}
-              >
-                <span className="ai-launcher-item-title">{item.title}</span>
-                <span className="ai-launcher-item-meta">
-                  {scope === "workspace" && <span>{item.deckTitle}</span>}
-                  {groupLabel && (
-                    <span className="ai-launcher-tag">{groupLabel}</span>
-                  )}
-                  {item.needsEditing && (
-                    <span className="ai-launcher-tag is-warn">需完善</span>
-                  )}
-                  {!item.fsrs && <span className="ai-launcher-tag">未学</span>}
-                </span>
-              </button>
-            );
-          })
+          matches.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="ai-launcher-item"
+              onClick={() => onOpenQuestion(item)}
+            >
+              <span className="ai-launcher-item-title">{item.title}</span>
+              <span className="ai-launcher-item-meta">
+                <span title={item.folderPath}>{item.folderPath}</span>
+                {item.needsEditing && (
+                  <span className="ai-launcher-tag is-warn">需完善</span>
+                )}
+                {!item.fsrs && <span className="ai-launcher-tag">未学</span>}
+              </span>
+            </button>
+          ))
         ) : (
           <p className="ai-launcher-empty">
             没有匹配的题目，换个关键词或筛选条件试试。

@@ -1,14 +1,18 @@
-import { and, asc, eq, inArray, isNull, ne, notExists, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { getDb } from "@/db";
-import {
-  deckGroups,
-  decks,
-  imports,
-  questions,
-  user as users,
-} from "@/db/schema";
+import { decks, imports, questions } from "@/db/schema";
 import { parseQuestions } from "@/lib/importer";
 import { IMPORT_LIMITS, validImportPath } from "@/lib/import-material";
 import { markdownDocument } from "@/lib/markdown-source";
@@ -21,18 +25,29 @@ import {
   splitBySourceBoundaries,
   type ImportPreviewItem,
 } from "@/lib/import-preview";
+import { MAX_FOLDER_DEPTH } from "@/lib/folders";
+import type { DuplicateHit } from "@/lib/types";
 import { contentHash } from "./crypto";
 import {
-  nextDeckGroupPosition,
   nextQuestionBaseMs,
   nextQuestionPosition,
   ownedDeck,
 } from "./workspace";
-import { deckGroupFields } from "./content-fields";
+import { folderTitleSchema } from "./content-fields";
 import { acquireAi, aiCredential, providerRequest } from "./ai";
 import { deckIdSchema } from "./resource-ids";
 import { AppError } from "./errors";
 import { wrapUntrustedTag } from "./prompt-safety";
+import {
+  assertValidFolderName,
+  buildServerFolderTree,
+  ensureRelativeFolderPathInTx,
+  folderDepth,
+  formatOwnedFolderPath,
+  loadActiveOwnedFolders,
+  lockOwnedFoldersById,
+  lockUserTree,
+} from "./folders";
 
 const previewSource = z.object({
   batchId: z.string().uuid(),
@@ -90,24 +105,16 @@ export const reviewedSchema = z.object({
   answer: z.string().max(IMPORT_LIMITS.sourceChars),
   tags: z.array(z.string().trim().min(1).max(30)).max(12).default([]),
 });
-export const importGroupTargetSchema = z
-  .discriminatedUnion("mode", [
-    z.object({
-      mode: z.literal("existing"),
-      groupId: z.string().uuid(),
-    }),
-    z.object({
-      mode: z.literal("create"),
-      ...deckGroupFields,
-    }),
-  ])
-  .nullable()
+
+const relativeFolderPathSchema = z
+  .array(folderTitleSchema)
+  .max(MAX_FOLDER_DEPTH)
   .optional();
 
 const reviewedSource = z.object({
   batchId: z.string().uuid(),
   questions: z.array(reviewedSchema).min(1).max(IMPORT_LIMITS.questions),
-  group: importGroupTargetSchema,
+  relativeFolderPath: relativeFolderPathSchema,
 });
 const replaceSchema = z
   .object({
@@ -117,10 +124,18 @@ const replaceSchema = z
     major: z.boolean().default(false),
   })
   .optional();
-const singleCommit = reviewedSource.extend({ replace: replaceSchema });
+const commitOptions = {
+  replace: replaceSchema,
+  targetFolderId: deckIdSchema.nullable().optional(),
+  forceIncludeKeys: z
+    .array(z.string().max(100))
+    .max(IMPORT_LIMITS.questions)
+    .optional(),
+};
+const singleCommit = reviewedSource.extend(commitOptions);
 const batchCommit = z.object({
   batches: z.array(reviewedSource).min(2).max(IMPORT_LIMITS.files),
-  replace: replaceSchema,
+  ...commitOptions,
 });
 type CommitRequest = z.infer<typeof singleCommit> | z.infer<typeof batchCommit>;
 
@@ -201,6 +216,73 @@ function importRecord(userId: string, data: PreviewSource) {
   };
 }
 
+async function attachPreviewDuplicates(
+  userId: string,
+  targetFolderId: string | null,
+  questionLists: ImportPreviewItem[][],
+): Promise<ImportPreviewItem[][]> {
+  const hashes = new Set<string>();
+  for (const list of questionLists) {
+    for (const item of list) {
+      hashes.add(contentHash(item.title, item.answer));
+    }
+  }
+  if (!hashes.size) return questionLists;
+
+  const db = await getDb();
+  const [matches, folders] = await Promise.all([
+    db
+      .select({
+        id: questions.id,
+        title: questions.title,
+        deckId: questions.deckId,
+        contentHash: questions.contentHash,
+      })
+      .from(questions)
+      .where(
+        and(
+          eq(questions.ownerId, userId),
+          inArray(questions.contentHash, [...hashes]),
+          isNull(questions.deletedAt),
+          isNull(questions.purgedAt),
+        ),
+      ),
+    loadActiveOwnedFolders(db, userId),
+  ]);
+  if (!matches.length) return questionLists;
+
+  const folderById = new Map(folders.map((f) => [f.id, f]));
+  const byHash = new Map<string, DuplicateHit[]>();
+  for (const row of matches) {
+    const hit: DuplicateHit = {
+      id: row.id,
+      title: row.title,
+      deckId: row.deckId,
+      path: formatOwnedFolderPath(folderById, row.deckId),
+      scope: row.deckId === targetFolderId ? "sameFolder" : "global",
+    };
+    const arr = byHash.get(row.contentHash);
+    if (arr) {
+      if (arr.length < 5) arr.push(hit);
+    } else {
+      byHash.set(row.contentHash, [hit]);
+    }
+  }
+
+  return questionLists.map((list) =>
+    list.map((item) => {
+      const hash = contentHash(item.title, item.answer);
+      const allHits = byHash.get(hash);
+      if (!allHits?.length) return item;
+      const isBlank = !item.answer.trim();
+      const filtered = isBlank
+        ? allHits.filter((h) => h.deckId === targetFolderId)
+        : allHits;
+      return filtered.length ? { ...item, duplicateMatches: filtered } : item;
+    }),
+  );
+}
+
 export async function previewImport(
   userId: string,
   data: PreviewSource,
@@ -224,8 +306,12 @@ export async function previewImport(
       (old.sourceName ?? "") !== (data.sourceName ?? "")
     )
       throw new AppError(409, "导入标识冲突。");
-    if (old.status === "draft" && old.preview)
-      return { batchId: old.id, questions: old.preview, warning: "" };
+    if (old.status === "draft" && old.preview) {
+      const [enriched] = await attachPreviewDuplicates(userId, data.deckId, [
+        old.preview,
+      ]);
+      return { batchId: old.id, questions: enriched, warning: "" };
+    }
     throw new AppError(
       409,
       old.status === "complete"
@@ -239,7 +325,10 @@ export async function previewImport(
       .update(imports)
       .set({ preview: result.questions, status: "draft" })
       .where(and(eq(imports.id, data.batchId), eq(imports.userId, userId)));
-    return result;
+    const [enriched] = await attachPreviewDuplicates(userId, data.deckId, [
+      result.questions,
+    ]);
+    return { ...result, questions: enriched };
   } catch (error) {
     await db
       .update(imports)
@@ -352,7 +441,10 @@ async function parsePreview(
 }
 
 export const discardPreviewSchema = z.object({
-  batchIds: z.array(z.string().uuid()).min(1).max(20),
+  batchIds: z
+    .array(z.string().uuid())
+    .min(1)
+    .max(IMPORT_LIMITS.files * 4),
 });
 
 export async function discardImportPreviews(
@@ -426,7 +518,14 @@ export async function previewBatch(
     if (inserted.length !== records.length)
       throw new AppError(409, "资料标识冲突，请重新解析。");
   });
-  return { previews };
+  const enrichedLists = await attachPreviewDuplicates(
+    userId,
+    options.deckId,
+    previews.map((p) => p.questions),
+  );
+  return {
+    previews: previews.map((p, i) => ({ ...p, questions: enrichedLists[i] })),
+  };
 }
 
 export async function commitImport(userId: string, data: CommitRequest) {
@@ -446,16 +545,33 @@ export async function commitImport(userId: string, data: CommitRequest) {
       (source) => source.deckId !== deckId || source.inputType !== inputType,
     )
   )
-    throw new AppError(409, "本批资料的题库或资料类型不一致，请重新解析。");
-  // 单文件无分组时沿用原提交签名，让既有草稿和提交重试继续有效。
+    throw new AppError(
+      409,
+      "本批资料的目标文件夹或资料类型不一致，请重新解析。",
+    );
+
+  const hasFolderExtras =
+    data.targetFolderId !== undefined ||
+    Boolean(data.forceIncludeKeys?.length) ||
+    batches.some((b) => Boolean(b.relativeFolderPath?.length));
+
+  // 单文件无附加文件夹参数时沿用原提交签名，让既有草稿和提交重试继续有效。
   const reviewed =
     "batches" in data
       ? data
-      : data.replace || data.group !== undefined
+      : data.replace || hasFolderExtras
         ? {
             questions: data.questions,
             ...(data.replace ? { replace: data.replace } : {}),
-            ...(data.group !== undefined ? { group: data.group } : {}),
+            ...(data.targetFolderId !== undefined
+              ? { targetFolderId: data.targetFolderId }
+              : {}),
+            ...(data.forceIncludeKeys?.length
+              ? { forceIncludeKeys: data.forceIncludeKeys }
+              : {}),
+            ...(data.relativeFolderPath?.length
+              ? { relativeFolderPath: data.relativeFolderPath }
+              : {}),
           }
         : data.questions;
   const hash = createHash("sha256")
@@ -476,31 +592,42 @@ export async function commitImport(userId: string, data: CommitRequest) {
     : undefined;
   if (data.replace && !replacement)
     throw new AppError(404, "当前题目不存在或没有编辑权限。");
+
   return db.transaction(async (tx) => {
-    const deckIds = [
-      ...new Set(
-        [deckId, replacement?.deckId].filter((id): id is string => !!id),
-      ),
-    ].sort();
-    const lockedDecks = deckIds.length
-      ? await tx
-          .select()
-          .from(decks)
-          .where(and(inArray(decks.id, deckIds), eq(decks.ownerId, userId)))
-          .orderBy(asc(decks.id))
-          .for("update")
-      : [];
-    if (
-      deckId &&
-      !lockedDecks.some((deck) => deck.id === deckId && !deck.deletedAt)
-    )
-      throw new AppError(404, "题库已删除，请在预览中选择新位置后重新解析。");
-    if (!deckId)
-      await tx
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.id, userId))
-        .for("update");
+    await lockUserTree(tx, userId);
+    const tree = buildServerFolderTree(
+      await loadActiveOwnedFolders(tx, userId),
+    );
+    const initialFolderIds = new Set(tree.byId.keys());
+    const baseFolderId =
+      data.targetFolderId !== undefined ? data.targetFolderId : deckId;
+
+    // Pre-lock all existing target/ancestor folders BEFORE locking `imports` and `sourceQuestion`
+    // to satisfy global lock order: users -> decks (ORDER BY id) -> imports (ORDER BY id) -> questions (ORDER BY id).
+    const existingDecksToLock = new Set<string>();
+    if (baseFolderId && tree.byId.has(baseFolderId)) {
+      existingDecksToLock.add(baseFolderId);
+    }
+    if (replacement?.deckId && tree.byId.has(replacement.deckId)) {
+      existingDecksToLock.add(replacement.deckId);
+    }
+    for (const batch of batches) {
+      let probe: string | null =
+        baseFolderId && tree.byId.has(baseFolderId) ? baseFolderId : null;
+      if (baseFolderId && !probe) continue;
+      for (const rawSeg of batch.relativeFolderPath ?? []) {
+        const key = rawSeg.trim().toLowerCase();
+        if (!key) break;
+        const found = (tree.children.get(probe) ?? []).find(
+          (c) => c.title.trim().toLowerCase() === key,
+        );
+        if (!found) break;
+        existingDecksToLock.add(found.id);
+        probe = found.id;
+      }
+    }
+    await lockOwnedFoldersById(tx, userId, [...existingDecksToLock]);
+
     const current = await tx
       .select({
         id: imports.id,
@@ -517,7 +644,7 @@ export async function commitImport(userId: string, data: CommitRequest) {
     if (current.length !== batches.length)
       throw new AppError(404, "解析结果不存在。");
     if (current.some((source) => source.deckId !== deckId))
-      throw new AppError(409, "目标题库已改变，请重新解析。");
+      throw new AppError(409, "目标文件夹已改变，请重新解析。");
     if (current.some((source) => source.status === "complete")) {
       const saved = current.flatMap((source) =>
         source.status === "complete" &&
@@ -527,11 +654,66 @@ export async function commitImport(userId: string, data: CommitRequest) {
           : [],
       );
       if (saved.length !== current.length)
-        throw new AppError(409, "这批内容已按另一份预览保存，请刷新题库。");
+        throw new AppError(409, "这批内容已按另一份预览保存，请刷新资料库。");
       return sumResults(saved);
     }
     if (current.some((source) => source.status !== "draft" || !source.preview))
       throw new AppError(409, "请先解析并检查预览。");
+    if (baseFolderId && !tree.byId.has(baseFolderId)) {
+      throw new AppError(
+        404,
+        "目标文件夹已删除，请在预览中选择新位置后重新保存。",
+      );
+    }
+
+    // Validate every batch's relative folder path (depth <= 8 & valid Finder names)
+    // and compute slot keys for duplicate detection.
+    const baseDepth = folderDepth(tree, baseFolderId);
+    const batchSegments = new Map<string, string[]>();
+    const batchSlotKey = new Map<string, string>();
+    const existingTargetFolders = new Set<string | null>();
+
+    for (const batch of batches) {
+      const segments = (batch.relativeFolderPath ?? []).map((seg) =>
+        assertValidFolderName(seg),
+      );
+      if (baseDepth + segments.length > MAX_FOLDER_DEPTH) {
+        throw new AppError(
+          400,
+          `目录「${segments.join("/")}」导入后超过 ${MAX_FOLDER_DEPTH} 层嵌套上限。`,
+        );
+      }
+      batchSegments.set(batch.batchId, segments);
+      if (!segments.length) {
+        batchSlotKey.set(batch.batchId, baseFolderId ?? "");
+        existingTargetFolders.add(baseFolderId);
+        continue;
+      }
+      let probe: string | null = baseFolderId;
+      let allExist = true;
+      for (const seg of segments) {
+        const key = seg.trim().toLowerCase();
+        const found = (tree.children.get(probe) ?? []).find(
+          (c) => c.title.trim().toLowerCase() === key,
+        );
+        if (found) {
+          probe = found.id;
+        } else {
+          allExist = false;
+          break;
+        }
+      }
+      if (allExist) {
+        batchSlotKey.set(batch.batchId, probe ?? "");
+        existingTargetFolders.add(probe);
+      } else {
+        batchSlotKey.set(
+          batch.batchId,
+          `virtual:${baseFolderId ?? ""}:${segments.map((s) => s.trim().toLowerCase()).join("\0")}`,
+        );
+      }
+    }
+
     const sourceQuestion = data.replace
       ? (
           await tx
@@ -543,7 +725,7 @@ export async function commitImport(userId: string, data: CommitRequest) {
                 eq(questions.ownerId, userId),
               ),
             )
-            .for("update")
+            .for("no key update")
         )[0]
       : undefined;
     if (data.replace) {
@@ -563,68 +745,50 @@ export async function commitImport(userId: string, data: CommitRequest) {
         sourceQuestion.deckId &&
         sourceQuestion.deckId !== replacement?.deckId
       )
-        throw new AppError(409, "当前题目分类已改变，请重新预览后保存。");
+        throw new AppError(409, "当前题目位置已改变，请重新预览后保存。");
     }
-    // Resolve optional target groups per batch inside the deck lock.
-    const batchGroupId = new Map<string, string | null>();
-    const hasExplicitGroup = batches.some((batch) => batch.group != null);
-    if (hasExplicitGroup && !deckId) {
-      throw new AppError(400, "导入到未分类时不能指定分组，请先选择目标题库。");
-    }
-    if (deckId && hasExplicitGroup) {
-      const existingDeckGroups = await tx
-        .select()
-        .from(deckGroups)
-        .where(
-          and(eq(deckGroups.deckId, deckId), eq(deckGroups.ownerId, userId)),
-        )
-        .orderBy(asc(deckGroups.id))
-        .for("update");
-      const byId = new Map(existingDeckGroups.map((g) => [g.id, g]));
-      const byKey = new Map(
-        existingDeckGroups.map((g) => [`${g.category}\0${g.title}`, g]),
-      );
-      let nextGroupPos = await nextDeckGroupPosition(tx, deckId);
-      for (const batch of batches) {
-        if (!batch.group) {
-          batchGroupId.set(batch.batchId, null);
-          continue;
-        }
-        if (batch.group.mode === "existing") {
-          const found = byId.get(batch.group.groupId);
-          if (!found) {
-            throw new AppError(404, "目标分组不存在或不属于所选题库。");
-          }
-          batchGroupId.set(batch.batchId, found.id);
+
+    const batchFolderId = new Map<string, string | null>();
+    const reusedFolderIds = new Set<string>();
+    const touchedFolderIds = new Set<string>();
+
+    async function resolveOrCreateBatchFolder(
+      batchId: string,
+    ): Promise<string | null> {
+      if (batchFolderId.has(batchId)) {
+        return batchFolderId.get(batchId) ?? null;
+      }
+      const segments = batchSegments.get(batchId) ?? [];
+      if (!segments.length) {
+        batchFolderId.set(batchId, baseFolderId);
+        if (baseFolderId) touchedFolderIds.add(baseFolderId);
+        return baseFolderId;
+      }
+      let probe = baseFolderId;
+      for (const seg of segments) {
+        const key = seg.trim().toLowerCase();
+        const found = (tree.children.get(probe) ?? []).find(
+          (c) => c.title.trim().toLowerCase() === key,
+        );
+        if (found) {
+          if (initialFolderIds.has(found.id)) reusedFolderIds.add(found.id);
+          probe = found.id;
         } else {
-          const key = `${batch.group.category}\0${batch.group.title}`;
-          const reused = byKey.get(key);
-          if (reused) {
-            batchGroupId.set(batch.batchId, reused.id);
-          } else {
-            const now = new Date();
-            const [created] = await tx
-              .insert(deckGroups)
-              .values({
-                id: crypto.randomUUID(),
-                deckId,
-                ownerId: userId,
-                title: batch.group.title,
-                category: batch.group.category,
-                description: batch.group.description,
-                position: nextGroupPos++,
-                createdAt: now,
-                updatedAt: now,
-              })
-              .returning();
-            byId.set(created.id, created);
-            byKey.set(key, created);
-            batchGroupId.set(batch.batchId, created.id);
-          }
+          break;
         }
       }
+      const ensured = await ensureRelativeFolderPathInTx(
+        tx,
+        userId,
+        tree,
+        baseFolderId,
+        segments,
+      );
+      batchFolderId.set(batchId, ensured.folderId);
+      if (ensured.folderId) touchedFolderIds.add(ensured.folderId);
+      return ensured.folderId;
     }
-    // 在同一个事务中按分组去重并提交全部文件，保留每一道新增题的来源与顺序。
+
     const originals = new Map(
       current.flatMap((source) =>
         source.preview!.map(
@@ -642,27 +806,48 @@ export async function commitImport(userId: string, data: CommitRequest) {
       })
     )
       throw new AppError(409, "题目来源与解析结果不一致，请重新解析。");
+
     const results = new Map(
       batchIds.map((id) => [id, { added: 0, duplicates: 0 } as ImportResult]),
     );
     const normalize = (title: string) => title.trim().replace(/\s+/g, " ");
-    const existing = await tx
-      .select({
-        title: questions.title,
-        hash: questions.contentHash,
-        groupId: questions.groupId,
-      })
-      .from(questions)
-      .where(
-        and(
-          eq(questions.ownerId, userId),
-          deckId ? eq(questions.deckId, deckId) : isNull(questions.deckId),
-          isNull(questions.deletedAt),
-          sourceQuestion ? ne(questions.id, sourceQuestion.id) : undefined,
-        ),
-      );
-    const namesBySlot = new Map<string, Set<string>>();
-    const hashesBySlot = new Map<string, Set<string>>();
+    const targetFolderList = [...existingTargetFolders];
+    const nonNullTargetFolders = targetFolderList.filter(
+      (id): id is string => id !== null,
+    );
+    const includesRoot = targetFolderList.includes(null);
+
+    const existing =
+      nonNullTargetFolders.length || includesRoot
+        ? await tx
+            .select({
+              title: questions.title,
+              hash: questions.contentHash,
+              deckId: questions.deckId,
+            })
+            .from(questions)
+            .where(
+              and(
+                eq(questions.ownerId, userId),
+                nonNullTargetFolders.length && includesRoot
+                  ? or(
+                      inArray(questions.deckId, nonNullTargetFolders),
+                      isNull(questions.deckId),
+                    )
+                  : nonNullTargetFolders.length
+                    ? inArray(questions.deckId, nonNullTargetFolders)
+                    : isNull(questions.deckId),
+                isNull(questions.deletedAt),
+                isNull(questions.purgedAt),
+                sourceQuestion
+                  ? ne(questions.id, sourceQuestion.id)
+                  : undefined,
+              ),
+            )
+        : [];
+
+    const namesByFolder = new Map<string, Set<string>>();
+    const hashesByFolder = new Map<string, Set<string>>();
     const getSlotSet = (map: Map<string, Set<string>>, slotKey: string) => {
       let set = map.get(slotKey);
       if (!set) {
@@ -672,45 +857,75 @@ export async function commitImport(userId: string, data: CommitRequest) {
       return set;
     };
     for (const row of existing) {
-      const slotKey = row.groupId ?? "";
-      getSlotSet(hashesBySlot, slotKey).add(row.hash);
+      const slotKey = row.deckId ?? "";
+      getSlotSet(hashesByFolder, slotKey).add(row.hash);
       if (inputType === "questions") {
-        getSlotSet(namesBySlot, slotKey).add(normalize(row.title));
+        getSlotSet(namesByFolder, slotKey).add(normalize(row.title));
       }
     }
-    const nextPosBySlot = new Map<string, number>();
-    async function allocatePosition(groupId: string | null) {
-      const slotKey = groupId ?? "";
-      let nextPos = nextPosBySlot.get(slotKey);
-      if (nextPos === undefined) {
-        nextPos = await nextQuestionPosition(tx, userId, deckId, groupId);
+
+    const candidateAnsweredHashes = [
+      ...new Set(
+        candidates
+          .filter((q) => Boolean(q.answer.trim()))
+          .map((q) => contentHash(q.title, q.answer)),
+      ),
+    ];
+    const globalAnsweredHashes = new Set<string>();
+    if (candidateAnsweredHashes.length) {
+      const globalMatches = await tx
+        .select({ hash: questions.contentHash })
+        .from(questions)
+        .where(
+          and(
+            eq(questions.ownerId, userId),
+            inArray(questions.contentHash, candidateAnsweredHashes),
+            isNull(questions.deletedAt),
+            isNull(questions.purgedAt),
+            sourceQuestion ? ne(questions.id, sourceQuestion.id) : undefined,
+          ),
+        );
+      for (const row of globalMatches) {
+        globalAnsweredHashes.add(row.hash);
       }
-      nextPosBySlot.set(slotKey, nextPos + 1);
+    }
+
+    const nextPosByFolder = new Map<string, number>();
+    async function allocatePosition(folderId: string | null) {
+      const slotKey = folderId ?? "";
+      let nextPos = nextPosByFolder.get(slotKey);
+      if (nextPos === undefined) {
+        nextPos = await nextQuestionPosition(tx, userId, folderId);
+      }
+      nextPosByFolder.set(slotKey, nextPos + 1);
       return nextPos;
     }
-    const defaultReplaceGroupId =
-      sourceQuestion && sourceQuestion.deckId === deckId
-        ? sourceQuestion.groupId
-        : null;
+
+    const forceSet = new Set(data.forceIncludeKeys ?? []);
     const replacingItem = candidates.find((q) => q.key === data.replace?.key);
     const ordered = replacingItem
       ? [replacingItem, ...candidates.filter((q) => q !== replacingItem)]
       : candidates;
     const baseMs = await nextQuestionBaseMs(tx, userId);
     let insertSeq = 0;
+
     for (const q of ordered) {
       const result = results.get(q.batchId)!;
       const itemHash = contentHash(q.title, q.answer);
       const title = normalize(q.title);
       const replacing = q === replacingItem;
-      const explicitGroupId = batchGroupId.has(q.batchId)
-        ? (batchGroupId.get(q.batchId) ?? null)
-        : defaultReplaceGroupId;
-      const targetGroupId = deckId ? explicitGroupId : null;
-      const slotKey = targetGroupId ?? "";
-      const names = getSlotSet(namesBySlot, slotKey);
-      const hashes = getSlotSet(hashesBySlot, slotKey);
-      if (names.has(title) || hashes.has(itemHash)) {
+      const slotKey = batchSlotKey.get(q.batchId) ?? baseFolderId ?? "";
+      const names = getSlotSet(namesByFolder, slotKey);
+      const hashes = getSlotSet(hashesByFolder, slotKey);
+      const forced = forceSet.has(q.key);
+      const hasAnswer = Boolean(q.answer.trim());
+      const isDuplicate = replacing
+        ? names.has(title) || hashes.has(itemHash)
+        : names.has(title) ||
+          hashes.has(itemHash) ||
+          (hasAnswer && globalAnsweredHashes.has(itemHash));
+
+      if (!forced && isDuplicate) {
         if (replacing)
           throw new AppError(
             409,
@@ -719,6 +934,7 @@ export async function commitImport(userId: string, data: CommitRequest) {
         result.duplicates++;
         continue;
       }
+      const targetFolderId = await resolveOrCreateBatchFolder(q.batchId);
       if (replacing && sourceQuestion) {
         await tx
           .update(questions)
@@ -726,11 +942,10 @@ export async function commitImport(userId: string, data: CommitRequest) {
             title: q.title,
             answer: q.answer,
             tags: q.tags,
-            deckId,
-            groupId: targetGroupId,
+            deckId: targetFolderId,
             contentHash: itemHash,
             revision: sql`${questions.revision}+1`,
-            needsEditing: !q.answer.trim(),
+            needsEditing: !hasAnswer,
             updatedAt: new Date(),
             ...(data.replace!.major || title !== normalize(sourceQuestion.title)
               ? { majorRevision: sourceQuestion.revision + 1 }
@@ -744,47 +959,59 @@ export async function commitImport(userId: string, data: CommitRequest) {
           );
         result.updated = 1;
         hashes.add(itemHash);
+        if (hasAnswer) globalAnsweredHashes.add(itemHash);
         if (inputType === "questions") names.add(title);
         continue;
       }
       const ts = new Date(baseMs + insertSeq++);
-      const position = await allocatePosition(targetGroupId);
-      const inserted = await tx
-        .insert(questions)
-        .values({
-          id: crypto.randomUUID(),
-          deckId,
-          groupId: targetGroupId,
-          position,
-          ownerId: userId,
-          importId: q.batchId,
-          title: q.title,
-          answer: q.answer,
-          tags: q.tags,
-          needsEditing: !q.answer.trim(),
-          sourceText: originals.get(q.key)?.text ?? `${q.title}\n${q.answer}`,
-          contentHash: itemHash,
-          createdAt: ts,
-          updatedAt: ts,
-        })
-        .onConflictDoNothing()
-        .returning({ id: questions.id });
-      if (inserted.length) {
-        result.added++;
-        hashes.add(itemHash);
-        if (inputType === "questions") names.add(title);
-      } else result.duplicates++;
+      const position = await allocatePosition(targetFolderId);
+      await tx.insert(questions).values({
+        id: crypto.randomUUID(),
+        deckId: targetFolderId,
+        position,
+        ownerId: userId,
+        importId: q.batchId,
+        title: q.title,
+        answer: q.answer,
+        tags: q.tags,
+        needsEditing: !hasAnswer,
+        sourceText: originals.get(q.key)?.text ?? `${q.title}\n${q.answer}`,
+        contentHash: itemHash,
+        createdAt: ts,
+        updatedAt: ts,
+      });
+      result.added++;
+      hashes.add(itemHash);
+      if (hasAnswer) globalAnsweredHashes.add(itemHash);
+      if (inputType === "questions") names.add(title);
     }
+
+    const createdFoldersCount = [...tree.byId.keys()].filter(
+      (id) => !initialFolderIds.has(id),
+    ).length;
+    const reusedFoldersCount = reusedFolderIds.size;
+
+    const firstBatchId = batchIds[0];
+    if (firstBatchId && (createdFoldersCount > 0 || reusedFoldersCount > 0)) {
+      const firstResult = results.get(firstBatchId)!;
+      if (createdFoldersCount > 0)
+        firstResult.createdFolders = createdFoldersCount;
+      if (reusedFoldersCount > 0)
+        firstResult.reusedFolders = reusedFoldersCount;
+    }
+
     for (const [id, result] of results)
       await tx
         .update(imports)
         .set({ status: "complete", result, commitHash: hash })
         .where(and(eq(imports.id, id), eq(imports.userId, userId)));
-    if (deckId)
+
+    if (touchedFolderIds.size) {
       await tx
         .update(decks)
         .set({ updatedAt: new Date() })
-        .where(eq(decks.id, deckId));
+        .where(inArray(decks.id, [...touchedFolderIds]));
+    }
     return sumResults(results.values());
   });
 }
@@ -796,6 +1023,11 @@ function sumResults(results: Iterable<ImportResult>): ImportResult {
     total.added += result.added;
     total.duplicates += result.duplicates;
     if (result.updated) total.updated = (total.updated ?? 0) + result.updated;
+    if (result.createdFolders)
+      total.createdFolders =
+        (total.createdFolders ?? 0) + result.createdFolders;
+    if (result.reusedFolders)
+      total.reusedFolders = (total.reusedFolders ?? 0) + result.reusedFolders;
   }
   return total;
 }

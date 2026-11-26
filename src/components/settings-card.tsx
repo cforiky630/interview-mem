@@ -327,6 +327,10 @@ export function SettingsCard({
       setNewLimit(data.settings.dailyNewLimit);
       setTimeZone(data.settings.timeZone);
       setDragY(0);
+    } else if (open && tab !== "study") {
+      setGoal(data.settings.dailyGoal);
+      setNewLimit(data.settings.dailyNewLimit);
+      setTimeZone(data.settings.timeZone);
     }
 
     if (enteredAi) {
@@ -502,7 +506,7 @@ export function SettingsCard({
         !parsed ||
         typeof parsed !== "object" ||
         parsed.format !== "shiyi-backup" ||
-        (parsed.version !== 1 && parsed.version !== 2)
+        (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3)
       ) {
         toast.error("请选择有效的拾忆 JSON 备份文件。");
         return;
@@ -532,6 +536,7 @@ export function SettingsCard({
           questions: number;
           studyCards: number;
           reviews: number;
+          preferencesRestored?: boolean;
         };
         skipped: {
           decks: number;
@@ -583,10 +588,10 @@ export function SettingsCard({
         type="button"
         hidden={backdropPresence.isHidden}
         data-closing={backdropPresence.isClosing ? "" : undefined}
-        aria-hidden={!open}
+        aria-hidden="true"
+        tabIndex={-1}
         inert={!open || backdropPresence.isClosing}
         className="settings-modal-backdrop"
-        aria-label="关闭设置"
         onClick={onClose}
       />
       <aside

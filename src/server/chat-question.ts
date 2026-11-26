@@ -3,14 +3,17 @@ import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   conversations,
-  deckGroups,
-  decks,
   messages,
   releases,
   studyCards,
   subscriptions,
 } from "@/db/schema";
 import { accessibleQuestion } from "@/server/workspace";
+import {
+  formatOwnedFolderPath,
+  loadActiveOwnedFolders,
+} from "@/server/folders";
+import { normalizeReleaseGroups } from "@/lib/subscriptions";
 import {
   aiCredential,
   providerRequest,
@@ -156,25 +159,16 @@ export async function handleQuestionChat(
       .trim()
       .slice(0, 10_000);
 
-    const [[deckRow], [subscribedRelease], [study], previous, ownGroupInfo] =
+    const [ownedFolders, [subscribedRelease], [study], previous] =
       await Promise.all([
-        question.isOwner && question.deckId
-          ? db
-              .select({
-                id: decks.id,
-                ownerId: decks.ownerId,
-                title: decks.title,
-                description: decks.description,
-                deletedAt: decks.deletedAt,
-              })
-              .from(decks)
-              .where(eq(decks.id, question.deckId))
-          : Promise.resolve([]),
+        // Always load caller's own folders (needed for owner's path AND subscriber's personal placement prefix).
+        loadActiveOwnedFolders(db, user.id),
         !question.isOwner && question.deckId
           ? db
               .select({
                 title: releases.title,
                 groups: releases.groups,
+                folderId: subscriptions.folderId,
               })
               .from(subscriptions)
               .innerJoin(
@@ -212,39 +206,48 @@ export async function handleQuestionChat(
               .orderBy(desc(messages.createdAt))
               .limit(12)
           : Promise.resolve([]),
-        question.isOwner && question.groupId && question.deckId
-          ? db
-              .select({
-                title: deckGroups.title,
-                category: deckGroups.category,
-              })
-              .from(deckGroups)
-              .where(
-                and(
-                  eq(deckGroups.id, question.groupId),
-                  eq(deckGroups.ownerId, user.id),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : Promise.resolve(null),
       ]);
 
-    const deckDisplayTitle = question.isOwner
-      ? (deckRow?.title ?? "")
-      : (subscribedRelease?.title ?? "");
-    const groupInfo =
-      question.groupId && question.deckId
-        ? question.isOwner
-          ? ownGroupInfo
-          : (subscribedRelease?.groups?.find((g) => g.id === question.groupId) ??
-            null)
-        : null;
+    const ownedFolderById = new Map(ownedFolders.map((f) => [f.id, f]));
+    const deckRow =
+      question.isOwner && question.deckId
+        ? ownedFolderById.get(question.deckId)
+        : undefined;
+
+    let folderPathDisplay = "";
+    if (question.isOwner) {
+      folderPathDisplay = formatOwnedFolderPath(
+        ownedFolderById,
+        deckRow ? deckRow.id : null,
+      );
+    } else if (subscribedRelease) {
+      // Strictly derived from subscriber's pinned release snapshot — never touches author's live folder tree.
+      const normalizedGroups = normalizeReleaseGroups(
+        subscribedRelease.groups ?? [],
+      );
+      const groupById = new Map(normalizedGroups.map((g) => [g.id, g]));
+      const parts: string[] = [];
+      const visited = new Set<string>();
+      let cursor = question.groupId ?? null;
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor);
+        const node = groupById.get(cursor);
+        if (!node) break;
+        parts.push(node.title);
+        cursor = node.parentId;
+      }
+      const placementPrefix =
+        subscribedRelease.folderId && ownedFolderById.has(subscribedRelease.folderId)
+          ? `${formatOwnedFolderPath(ownedFolderById, subscribedRelease.folderId)} / `
+          : "";
+      const releasePath = parts.length
+        ? `${subscribedRelease.title} / ${parts.reverse().join(" / ")}`
+        : subscribedRelease.title;
+      folderPathDisplay = `${placementPrefix}${releasePath}`;
+    }
 
     const editableDeck =
-      question.isOwner &&
-      deckRow &&
-      deckRow.ownerId === user.id &&
-      !deckRow.deletedAt
+      question.isOwner && deckRow && deckRow.ownerId === user.id && !deckRow.deletedAt
         ? {
             id: deckRow.id,
             title: deckRow.title,
@@ -311,17 +314,10 @@ export async function handleQuestionChat(
         : `\n${wrapUntrustedTag("用户默写作答", savedAttempt, 10_000)}\n上方为用户本次对话对应的默写作答记录，请在后续追问中结合该作答内容回答。`
       : "";
 
-    const groupDisplay = groupInfo
-      ? groupInfo.category
-        ? `${sanitizeUntrustedText(groupInfo.category, 40)} · ${sanitizeUntrustedText(groupInfo.title, 80)}`
-        : sanitizeUntrustedText(groupInfo.title, 80)
-      : "";
-
     const metaParts = [
-      deckDisplayTitle
-        ? `所属题单：${sanitizeUntrustedText(deckDisplayTitle, 80)}`
+      folderPathDisplay
+        ? `所在路径：${sanitizeUntrustedText(folderPathDisplay, 160)}`
         : "",
-      groupDisplay ? `所属分组：${groupDisplay}` : "",
       question.tags.length
         ? `标签：${question.tags.map((t) => sanitizeUntrustedText(t, 30)).join("、")}`
         : "",

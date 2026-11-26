@@ -1,0 +1,841 @@
+/* ============================================================================
+ * 「概念」页面：递归文件夹双栏 + 无头双列键值对表格（Headless 2-Column Glossary）
+ * 复用 .library-shell / .library-tree-pane / .library-folder-row 及 globals.css 令牌。
+ * ========================================================================== */
+
+.concepts-shell .library-pane-header h1 {
+  margin: 0;
+}
+
+.concepts-heading-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 3px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.concepts-heading-dot {
+  opacity: 0.5;
+}
+
+/* —— 旧批注一键同步横条 —— */
+.concepts-import-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-accent);
+  background: var(--accent-wash);
+  color: var(--text);
+  animation: panel-reveal var(--dur-base) var(--ease-smooth);
+}
+
+.concepts-import-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.concepts-import-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.concepts-import-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.concepts-import-text strong {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.concepts-import-text span {
+  font-size: 0.76rem;
+  color: var(--subtle);
+  line-height: 1.45;
+}
+
+.concepts-import-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* —— 无头双列表格本体 —— */
+.concepts-table-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.concepts-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.concepts-col-term {
+  width: 28%;
+  min-width: 150px;
+  max-width: 250px;
+}
+
+.concepts-col-def {
+  width: auto;
+}
+
+.concept-row {
+  position: relative;
+  transition: background-color var(--dur-fast) ease;
+}
+
+.concept-row + .concept-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.concept-row.is-selected {
+  background: color-mix(in oklab, var(--accent-wash) 78%, var(--surface));
+}
+
+.concept-row.is-focused {
+  animation: concept-focus-pulse 2.4s var(--ease-smooth) forwards;
+}
+
+@keyframes concept-focus-pulse {
+  0% {
+    background-color: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  28% {
+    background-color: color-mix(in oklab, var(--accent-soft) 92%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  75% {
+    background-color: var(--accent-wash);
+    box-shadow: inset 3px 0 0 color-mix(in oklab, var(--accent) 45%, transparent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
+
+.concept-cell-term,
+.concept-cell-def {
+  vertical-align: top;
+  text-align: left;
+  min-width: 0;
+}
+
+.concept-cell-term {
+  width: clamp(150px, 28%, 250px);
+  min-width: 150px;
+  max-width: 250px;
+  padding: 14px 16px 14px 18px;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.concept-cell-def {
+  padding: 14px 18px;
+  position: relative;
+}
+
+.concept-term-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+
+.concept-select-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border-radius: 5px;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: color var(--dur-fast) ease;
+}
+
+.concept-select-box.is-checked {
+  color: var(--accent);
+}
+
+.concept-color-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+
+.concept-color-dot.color-accent {
+  background: var(--hl-accent-dot);
+}
+
+.concept-color-dot.color-amber {
+  background: var(--hl-amber-dot);
+}
+
+.concept-color-dot.color-sky {
+  background: var(--hl-sky-dot);
+}
+
+.concept-color-dot.color-rose {
+  background: var(--hl-rose-dot);
+}
+
+.concept-term-content {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.concept-term-text {
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.concept-aliases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.concept-alias-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.concept-path-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: var(--radius-xs);
+  background: var(--accent-wash);
+  color: var(--accent-dark);
+  font-size: 0.71rem;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-def-body {
+  font-size: 0.915rem;
+  line-height: 1.72;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* —— 静息如辞典、悬停浮现的精致行操作条 —— */
+.concept-row-actions {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 3px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-glass-strong);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-control);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-smooth);
+}
+
+.concept-row:focus-within .concept-row-actions,
+.concept-row.is-actions-pinned .concept-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.concept-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  color: var(--subtle);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-action-btn.is-danger {
+  color: var(--danger-text);
+}
+
+.concept-action-btn.is-confirm-danger {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border: 1px solid var(--danger-border);
+  padding: 0 9px;
+}
+
+/* —— 轻量行内键值对（Key → Value）行 —— */
+.concept-kv-row {
+  background: color-mix(in oklab, var(--accent-wash) 46%, var(--surface));
+}
+
+.concept-kv-term-cell {
+  padding: 12px 14px 12px 14px;
+}
+
+.concept-kv-def-cell {
+  padding: 12px 16px;
+}
+
+.concept-kv-term-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.concept-color-dot-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition:
+    background-color var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
+}
+
+.concept-color-dot-btn .concept-color-dot {
+  margin-top: 0;
+  width: 9px;
+  height: 9px;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--surface) 80%, transparent);
+}
+
+.concept-kv-term-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  border-bottom: 1.5px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  box-shadow: none !important;
+  transition: border-color var(--dur-fast) ease;
+}
+
+.concept-kv-term-input::placeholder {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.concept-kv-term-input:focus {
+  border-bottom-color: var(--accent);
+  background: transparent;
+  box-shadow: none !important;
+}
+
+.concept-kv-term-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+  padding-left: 30px;
+}
+
+.concept-kv-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+  color: var(--muted);
+  font-size: 0.71rem;
+  line-height: 1.4;
+  transition:
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-kv-def-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.concept-kv-def-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 2px;
+  border: 0;
+  border-bottom: 1.5px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.915rem;
+  line-height: 1.65;
+  resize: none;
+  overflow: hidden;
+  box-shadow: none !important;
+  transition: border-color var(--dur-fast) ease;
+}
+
+.concept-kv-def-input::placeholder {
+  color: var(--muted);
+}
+
+.concept-kv-def-input:focus {
+  border-bottom-color: var(--accent);
+  background: transparent;
+  box-shadow: none !important;
+}
+
+.concept-kv-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.concept-kv-more-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-kv-more-btn.is-open {
+  background: var(--accent-soft);
+  border-color: var(--border-accent);
+  color: var(--accent-dark);
+}
+
+.concept-kv-more-chevron {
+  transition: transform var(--dur-fast) var(--ease-smooth);
+}
+
+.concept-kv-more-btn.is-open .concept-kv-more-chevron {
+  transform: rotate(180deg);
+}
+
+.concept-kv-more-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.concept-kv-save-btn {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 11px;
+  font-size: 0.78rem;
+  border-radius: var(--radius-xs);
+}
+
+.concept-kv-cancel-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+}
+
+/* —— 渐进披露单行选项抽屉（别名 / 颜色 / 可选文件夹） —— */
+.concept-kv-extra-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 220ms var(--ease-smooth),
+    opacity 160ms ease-out;
+}
+
+.concept-kv-extra-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.concept-kv-extra-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.concept-kv-extra-tray {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 4px 5px;
+  border-top: 1px dashed var(--border);
+}
+
+.concept-kv-extra-input,
+.concept-kv-extra-select {
+  flex: 1 1 140px;
+  min-width: 110px;
+  max-width: 240px;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.79rem;
+  line-height: 1.35;
+  box-shadow: var(--shadow-inset);
+}
+
+.concept-kv-extra-select {
+  padding-right: 26px;
+}
+
+.concept-kv-extra-input::placeholder {
+  color: var(--muted);
+}
+
+.concept-kv-extra-colors {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding: 4px 5px;
+}
+
+.concept-kv-extra-colors .annotation-color-dot {
+  width: 16px;
+  height: 16px;
+}
+
+/* —— 409 重名提示条 —— */
+.concepts-conflict-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  animation: panel-reveal var(--dur-fast) var(--ease-smooth);
+}
+
+.concepts-conflict-alert-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+/* —— 仅在精细指针桌面端启用悬停态 —— */
+@media (hover: hover) and (pointer: fine) {
+  .concept-row:not(.concept-kv-row):hover {
+    background: color-mix(in oklab, var(--hover) 70%, transparent);
+  }
+  .concept-row:not(.concept-kv-row):hover .concept-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+  .concept-action-btn:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .concept-action-btn.is-danger:hover {
+    background: var(--danger-bg);
+    color: var(--danger-text);
+  }
+  .concept-color-dot-btn:hover {
+    background: var(--hover);
+    transform: scale(1.08);
+  }
+  .concept-kv-more-btn:hover:not(.is-open) {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .concept-kv-summary-chip:hover {
+    border-color: var(--border-accent);
+    color: var(--accent-dark);
+  }
+  .concept-path-badge:hover {
+    background: var(--accent-soft);
+  }
+}
+
+/* —— 触屏设备防缩放与始终可达操作 —— */
+@media (hover: none), (pointer: coarse) {
+  .concept-row-actions {
+    position: static;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+    margin-top: 10px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+}
+
+html[data-input="touch"] .concept-kv-term-input,
+html[data-input="touch"] .concept-kv-def-input,
+html[data-input="touch"] .concept-kv-extra-input,
+html[data-input="touch"] .concept-kv-extra-select {
+  font-size: 16px;
+}
+
+html[data-input="touch"] .concept-action-btn {
+  min-height: 36px;
+  padding: 0 9px;
+}
+
+html[data-input="touch"] .concept-kv-more-btn,
+html[data-input="touch"] .concept-kv-save-btn,
+html[data-input="touch"] .concept-kv-cancel-btn {
+  min-height: 36px;
+  height: 36px;
+}
+
+html[data-input="touch"] .concept-kv-cancel-btn {
+  width: 36px;
+}
+
+/* —— 移动端响应式（<= 767px）：1 级下钻 + 堆叠双列、0px 横向溢出 —— */
+@media (max-width: 767px) {
+  .concepts-heading-meta {
+    gap: 3px 8px;
+  }
+
+  .concepts-heading-hint-dot {
+    display: none;
+  }
+
+  .concepts-heading-hint {
+    flex-basis: 100%;
+    font-size: 0.76rem;
+  }
+
+  .concepts-import-banner {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 11px 12px;
+    gap: 9px;
+  }
+
+  .concepts-import-actions {
+    justify-content: flex-end;
+  }
+
+  .concepts-table-card {
+    border-radius: var(--radius-md);
+  }
+
+  .concepts-table,
+  .concepts-table tbody,
+  .concepts-table tr,
+  .concepts-table td {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .concepts-table colgroup {
+    display: none;
+  }
+
+  .concept-cell-term {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    border-right: 0;
+    padding: 13px 14px 6px;
+  }
+
+  .concept-cell-def {
+    width: 100%;
+    padding: 4px 14px 12px;
+  }
+
+  .concept-kv-term-cell {
+    padding: 11px 12px 4px;
+  }
+
+  .concept-kv-def-cell {
+    padding: 4px 12px 11px;
+  }
+
+  .concept-kv-def-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .concept-kv-controls {
+    width: 100%;
+    justify-content: flex-end;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 0;
+  }
+
+  .concept-kv-more-btn {
+    margin-right: auto;
+  }
+
+  .concept-kv-extra-tray {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .concept-kv-extra-input,
+  .concept-kv-extra-select {
+    flex: none;
+    max-width: none;
+    width: 100%;
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .concept-kv-extra-colors {
+    margin-left: 0;
+    padding: 4px 5px 5px;
+  }
+
+  .concept-row-actions {
+    position: static;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+    margin-top: 10px;
+    padding: 6px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .concepts-import-banner,
+  .concepts-conflict-alert,
+  .concept-row.is-focused {
+    animation: none;
+  }
+  .concept-kv-extra-collapse {
+    transition: none;
+  }
+  .concept-row.is-focused {
+    background-color: var(--accent-wash);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+}

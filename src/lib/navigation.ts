@@ -1,6 +1,7 @@
 export type AppView =
   | "today"
   | "library"
+  | "concepts"
   | "favorites"
   | "inbox"
   | "archived"
@@ -9,20 +10,34 @@ export type AppView =
   | "history"
   | "question";
 
+export type LibraryQuickView =
+  | "recent"
+  | "favorites"
+  | "inbox"
+  | "duplicates"
+  | "archived"
+  | "trash";
+
 export type RouteState = {
   view: AppView;
   deckId?: string | null;
   groupId?: string;
   category?: string;
+  quickView?: LibraryQuickView;
   authorId?: string;
+  conceptFolderId?: string | null;
+  conceptId?: string;
   questionId?: string | null;
   originView?: AppView;
   originDeckId?: string | null;
+  originQuickView?: LibraryQuickView;
+  originConceptFolderId?: string | null;
 };
 
 const VALID_VIEWS = new Set<AppView>([
   "today",
   "library",
+  "concepts",
   "favorites",
   "inbox",
   "archived",
@@ -32,9 +47,19 @@ const VALID_VIEWS = new Set<AppView>([
   "question",
 ]);
 
+const VALID_QUICK_VIEWS = new Set<LibraryQuickView>([
+  "recent",
+  "favorites",
+  "inbox",
+  "duplicates",
+  "archived",
+  "trash",
+]);
+
 const ORIGIN_VIEWS = new Set<AppView>([
   "today",
   "library",
+  "concepts",
   "favorites",
   "inbox",
   "archived",
@@ -77,12 +102,29 @@ export function parseRouteFromSearch(search: string, coldLoad = false): RouteSta
     const authorId = normalizeIdParam(params.get("author"));
     return { view: "catalog", ...(authorId ? { authorId } : {}) };
   }
+  if (rawView === "concepts") {
+    const conceptFolderId = normalizeIdParam(params.get("folder"));
+    const conceptId = normalizeIdParam(params.get("concept"));
+    return {
+      view: "concepts",
+      ...(conceptFolderId ? { conceptFolderId } : {}),
+      ...(conceptId ? { conceptId } : {}),
+    };
+  }
   if (rawView === "library") {
-    const rawDeck = params.get("deck");
+    const rawQuick = params.get("quick") as LibraryQuickView | null;
+    if (rawQuick && VALID_QUICK_VIEWS.has(rawQuick)) {
+      return { view: "library", quickView: rawQuick };
+    }
+    const rawDeck = params.get("deck") ?? params.get("folder");
     const deckId =
-      rawDeck === "unfiled" ? null : normalizeIdParam(rawDeck);
-    const groupId = typeof deckId === "string" ? normalizeIdParam(params.get("group")) : undefined;
-    const category = typeof deckId === "string" ? normalizeIdParam(params.get("cat")) : undefined;
+      rawDeck === "unfiled" || rawDeck === "root"
+        ? null
+        : normalizeIdParam(rawDeck);
+    const groupId =
+      typeof deckId === "string" ? normalizeIdParam(params.get("group")) : undefined;
+    const category =
+      typeof deckId === "string" ? normalizeIdParam(params.get("cat")) : undefined;
     return {
       view: "library",
       ...(deckId !== undefined ? { deckId } : {}),
@@ -96,18 +138,29 @@ export function parseRouteFromSearch(search: string, coldLoad = false): RouteSta
     const rawFrom = params.get("from") as AppView | null;
     const originView: AppView =
       rawFrom && ORIGIN_VIEWS.has(rawFrom) ? rawFrom : "library";
-    const rawDeck = params.get("deck");
+    const rawDeck = params.get("deck") ?? params.get("folder");
     const originDeckId =
       originView === "library"
-        ? rawDeck === "unfiled"
+        ? rawDeck === "unfiled" || rawDeck === "root"
           ? null
           : normalizeIdParam(rawDeck)
+        : undefined;
+    const rawQuick = params.get("quick") as LibraryQuickView | null;
+    const originQuickView =
+      originView === "library" && rawQuick && VALID_QUICK_VIEWS.has(rawQuick)
+        ? rawQuick
+        : undefined;
+    const originConceptFolderId =
+      originView === "concepts"
+        ? normalizeIdParam(params.get("folder"))
         : undefined;
     return {
       view: "question",
       questionId,
       originView,
       ...(originDeckId !== undefined ? { originDeckId } : {}),
+      ...(originQuickView ? { originQuickView } : {}),
+      ...(originConceptFolderId ? { originConceptFolderId } : {}),
     };
   }
   return { view: rawView };
@@ -130,6 +183,11 @@ export function buildSearchFromRoute(state: RouteState): string {
         : "library";
     if (originView !== "library") {
       params.set("from", originView);
+      if (originView === "concepts" && state.originConceptFolderId?.trim()) {
+        params.set("folder", state.originConceptFolderId.trim());
+      }
+    } else if (state.originQuickView) {
+      params.set("quick", state.originQuickView);
     } else if (state.originDeckId !== undefined) {
       params.set("deck", state.originDeckId === null ? "unfiled" : state.originDeckId);
     }
@@ -139,11 +197,23 @@ export function buildSearchFromRoute(state: RouteState): string {
   if (state.view === "catalog" && state.authorId?.trim()) {
     params.set("author", state.authorId.trim());
   }
-  if (state.view === "library" && state.deckId !== undefined) {
-    params.set("deck", state.deckId === null ? "unfiled" : state.deckId);
-    if (typeof state.deckId === "string") {
-      if (state.groupId?.trim()) params.set("group", state.groupId.trim());
-      if (state.category?.trim()) params.set("cat", state.category.trim());
+  if (state.view === "concepts") {
+    if (state.conceptFolderId?.trim()) {
+      params.set("folder", state.conceptFolderId.trim());
+    }
+    if (state.conceptId?.trim()) {
+      params.set("concept", state.conceptId.trim());
+    }
+  }
+  if (state.view === "library") {
+    if (state.quickView && VALID_QUICK_VIEWS.has(state.quickView)) {
+      params.set("quick", state.quickView);
+    } else if (state.deckId !== undefined) {
+      params.set("deck", state.deckId === null ? "unfiled" : state.deckId);
+      if (typeof state.deckId === "string") {
+        if (state.groupId?.trim()) params.set("group", state.groupId.trim());
+        if (state.category?.trim()) params.set("cat", state.category.trim());
+      }
     }
   }
   return `?${params.toString()}`;

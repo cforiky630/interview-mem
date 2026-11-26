@@ -3,8 +3,9 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import {
+  conceptFolders,
+  concepts,
   conversations,
-  deckGroups,
   decks,
   imports,
   messages,
@@ -18,14 +19,35 @@ import {
   type PublishedQuestion,
 } from "@/db/schema";
 import { mergeQuestionTags } from "@/lib/markdown-source";
+import {
+  MAX_CONCEPTS,
+  MAX_CONCEPT_DEFINITION_LENGTH,
+  MAX_CONCEPT_GROUP_LENGTH,
+  MAX_CONCEPT_TERM_LENGTH,
+  normalizeConceptAliases,
+  normalizeConceptKey,
+} from "@/lib/concepts";
+import {
+  MAX_FOLDER_DEPTH,
+  normalizeFolderTitleKey,
+  resolveUniqueSiblingTitle,
+} from "@/lib/folders";
 import type {
   ChatEdit,
   ChatMessageMeta,
   QuestionAnnotation,
+  QuestionAnnotationColor,
 } from "@/lib/types";
 import type { ContentValidation } from "@/lib/content-validation";
 import { contentHash } from "./crypto";
 import { AppError } from "./errors";
+import {
+  buildServerFolderTree,
+  folderDepth,
+  loadActiveOwnedFolders,
+  lockUserTree,
+  sanitizeLegacyFolderTitle,
+} from "./folders";
 
 const uuidOrString = z.string().min(1).max(120);
 
@@ -33,6 +55,7 @@ const deckGroupBackupSchema = z
   .object({
     id: uuidOrString,
     deckId: uuidOrString,
+    parentId: uuidOrString.nullable().optional().default(null),
     title: z.string().max(120),
     category: z.string().max(80).optional().default(""),
     description: z.string().max(2000).optional().default(""),
@@ -45,6 +68,7 @@ const deckGroupBackupSchema = z
 const deckBackupSchema = z
   .object({
     id: uuidOrString,
+    parentId: uuidOrString.nullable().optional().default(null),
     title: z.string().max(120),
     description: z.string().max(2000).optional().default(""),
     groupName: z.string().max(80).optional().default(""),
@@ -130,7 +154,7 @@ const importBackupSchema = z
     raw: z.string().max(500_000),
     inputType: z.enum(["qa", "questions"]).optional().default("qa"),
     method: z.string().max(32).optional().default("rules"),
-    sourceName: z.string().max(300).nullable().optional().default(null),
+    sourceName: z.string().max(512).nullable().optional().default(null),
     sourceHash: z.string().max(128).nullable().optional().default(null),
     preview: z.unknown().nullable().optional(),
     commitHash: z.string().max(128).nullable().optional().default(null),
@@ -140,6 +164,8 @@ const importBackupSchema = z
         added: z.number().int(),
         duplicates: z.number().int(),
         updated: z.number().int().optional(),
+        createdFolders: z.number().int().optional(),
+        reusedFolders: z.number().int().optional(),
       })
       .nullable()
       .optional(),
@@ -163,6 +189,7 @@ const releaseBackupSchema = z
 const subscriptionBackupSchema = z
   .object({
     deckId: uuidOrString,
+    folderId: uuidOrString.nullable().optional().default(null),
     groupName: z.string().max(80).optional().default(""),
     seenVersion: z.number().int().min(0).optional().default(0),
     dismissedVersion: z.number().int().min(0).optional().default(0),
@@ -198,10 +225,37 @@ const conversationBackupSchema = z
   })
   .passthrough();
 
+const conceptFolderBackupSchema = z
+  .object({
+    id: uuidOrString,
+    parentId: uuidOrString.nullable().optional().default(null),
+    title: z.string().max(120),
+    color: z.string().max(32).optional().default("sage"),
+    createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  })
+  .passthrough();
+
+const conceptBackupSchema = z
+  .object({
+    id: uuidOrString,
+    folderId: uuidOrString.nullable().optional().default(null),
+    term: z.string().max(MAX_CONCEPT_TERM_LENGTH),
+    aliases: z.array(z.string().max(80)).max(20).optional().default([]),
+    normalizedKey: z.string().max(240).optional(),
+    definition: z.string().max(MAX_CONCEPT_DEFINITION_LENGTH),
+    groupName: z.string().max(MAX_CONCEPT_GROUP_LENGTH).optional().default(""),
+    color: z.string().max(32).optional().default("accent"),
+    sourceQuestionId: uuidOrString.nullable().optional().default(null),
+    createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  })
+  .passthrough();
+
 export const backupRestoreSchema = z
   .object({
     format: z.literal("shiyi-backup"),
-    version: z.number().int().min(1).max(2),
+    version: z.number().int().min(1).max(4),
     preferences: z
       .object({
         dailyGoal: z.number().int().min(1).max(200).optional(),
@@ -216,6 +270,16 @@ export const backupRestoreSchema = z
     subscriptions: z
       .array(subscriptionBackupSchema)
       .max(500)
+      .optional()
+      .default([]),
+    conceptFolders: z
+      .array(conceptFolderBackupSchema)
+      .max(500)
+      .optional()
+      .default([]),
+    concepts: z
+      .array(conceptBackupSchema)
+      .max(MAX_CONCEPTS)
       .optional()
       .default([]),
     questions: z.array(questionBackupSchema).max(20_000).optional().default([]),
@@ -254,6 +318,16 @@ function sanitizeVisibility(value: string): string {
   return VALID_VISIBILITIES.has(value) ? value : "private";
 }
 
+function sanitizeTimeZone(value: string | undefined): string {
+  if (!value || /^[+-]\d/.test(value)) return "Asia/Shanghai";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value });
+    return value;
+  } catch {
+    return "Asia/Shanghai";
+  }
+}
+
 function sanitizeFsrs(
   raw: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -279,8 +353,25 @@ function deterministicRemapId(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-function sanitizeAnnotations(raw: unknown[]): QuestionAnnotation[] {
-  const validColors = new Set(["accent", "amber", "sky", "rose"]);
+const VALID_ANNOTATION_COLORS = new Set<QuestionAnnotationColor>([
+  "accent",
+  "amber",
+  "sky",
+  "rose",
+]);
+
+function sanitizeAnnotationColor(value: unknown): QuestionAnnotationColor {
+  return typeof value === "string" &&
+    VALID_ANNOTATION_COLORS.has(value as QuestionAnnotationColor)
+    ? (value as QuestionAnnotationColor)
+    : "accent";
+}
+
+function sanitizeAnnotations(
+  raw: unknown[],
+  conceptMap?: ReadonlyMap<string, string>,
+  validUserConceptIds?: ReadonlySet<string>,
+): QuestionAnnotation[] {
   const result: QuestionAnnotation[] = [];
   for (const entry of raw.slice(0, 50)) {
     if (!entry || typeof entry !== "object") continue;
@@ -290,16 +381,24 @@ function sanitizeAnnotations(raw: unknown[]): QuestionAnnotation[] {
       typeof item.id === "string" && item.id.trim()
         ? item.id.slice(0, 120)
         : crypto.randomUUID();
-    const color =
-      typeof item.color === "string" && validColors.has(item.color)
-        ? (item.color as QuestionAnnotation["color"])
-        : "accent";
+    const color = sanitizeAnnotationColor(item.color);
+    let conceptId: string | undefined;
+    if (typeof item.conceptId === "string" && item.conceptId.trim()) {
+      const rawCid = item.conceptId.trim().slice(0, 120);
+      const mapped = conceptMap?.get(rawCid);
+      if (mapped) {
+        conceptId = mapped;
+      } else if (validUserConceptIds?.has(rawCid)) {
+        conceptId = rawCid;
+      }
+    }
     const nowIso = new Date().toISOString();
     result.push({
       id,
       quote: typeof item.quote === "string" ? item.quote.slice(0, 600) : "",
       comment: item.comment.trim().slice(0, 2000),
       color,
+      ...(conceptId ? { conceptId } : {}),
       createdAt:
         typeof item.createdAt === "string" ? item.createdAt : nowIso,
       updatedAt:
@@ -309,18 +408,52 @@ function sanitizeAnnotations(raw: unknown[]): QuestionAnnotation[] {
   return result;
 }
 
+/**
+ * Topologically order folders so parents are always processed before children.
+ * Cycles or unknown parents are gracefully detached to root (`parentId = null`).
+ */
+function topoSortFolders<T extends { id: string; parentId: string | null }>(
+  items: readonly T[],
+): T[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const result: T[] = [];
+  const state = new Map<string, "visiting" | "done">();
+
+  const visit = (item: T) => {
+    const cur = state.get(item.id);
+    if (cur === "done" || cur === "visiting") return;
+    state.set(item.id, "visiting");
+    if (item.parentId && byId.has(item.parentId) && item.parentId !== item.id) {
+      const parentState = state.get(item.parentId);
+      if (parentState !== "visiting") {
+        visit(byId.get(item.parentId)!);
+      }
+    }
+    state.set(item.id, "done");
+    result.push(item);
+  };
+
+  for (const item of items) visit(item);
+  return result;
+}
+
 export async function restorePersonalBackup(
   userId: string,
   rawPayload: unknown,
 ) {
   const parsed = backupRestoreSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    throw new AppError(400, "备份文件格式无效或已损坏，请确认是否为拾忆导出的 JSON 备份。");
+    throw new AppError(
+      400,
+      "备份文件格式无效或已损坏，请确认是否为拾忆导出的 JSON 备份。",
+    );
   }
   const data = parsed.data;
   const db = await getDb();
 
   return db.transaction(async (tx) => {
+    await lockUserTree(tx, userId);
+
     const withRemapped = (ids: string[], namespace: string) => [
       ...new Set([
         ...ids,
@@ -328,27 +461,95 @@ export async function restorePersonalBackup(
       ]),
     ];
 
-    const allDeckIds = withRemapped(
-      data.decks.map((d) => d.id).filter(Boolean),
-      "deck",
-    );
     const groupCandidates = [
       ...data.deckGroups,
       ...data.decks.flatMap((d) => d.groups ?? []),
     ];
-    const allGroupIds = withRemapped(
-      groupCandidates.map((g) => g.id).filter(Boolean),
-      "group",
-    );
+
+    // Collect synthetic IDs that v1/v2 restore might generate for groupName / category folders.
+    const syntheticGroupNameIds: string[] = [];
+    const syntheticCategoryIds: string[] = [];
+    if (data.version <= 2) {
+      for (const d of data.decks) {
+        const gn = d.groupName.trim();
+        if (gn) {
+          syntheticGroupNameIds.push(
+            deterministicRemapId(
+              userId,
+              "v2-groupname",
+              normalizeFolderTitleKey(gn),
+            ),
+          );
+        }
+      }
+      for (const s of data.subscriptions) {
+        const gn = s.groupName.trim();
+        if (gn) {
+          syntheticGroupNameIds.push(
+            deterministicRemapId(
+              userId,
+              "v2-groupname",
+              normalizeFolderTitleKey(gn),
+            ),
+          );
+        }
+      }
+      for (const g of groupCandidates) {
+        const cat = g.category.trim();
+        if (cat) {
+          syntheticCategoryIds.push(
+            deterministicRemapId(
+              userId,
+              "v2-cat",
+              `${g.deckId}\0${normalizeFolderTitleKey(cat)}`,
+            ),
+          );
+        }
+      }
+    }
+
+    const allDeckIds = [
+      ...new Set([
+        ...withRemapped(
+          data.decks.map((d) => d.id).filter(Boolean),
+          "deck",
+        ),
+        ...withRemapped(
+          groupCandidates.map((g) => g.id).filter(Boolean),
+          "group",
+        ),
+        ...syntheticGroupNameIds,
+        ...syntheticCategoryIds,
+      ]),
+    ];
     const allImportIds = withRemapped(
       data.imports.map((i) => i.id).filter(Boolean),
       "import",
     );
     const allQuestionCandidates = [...data.questions, ...data.trash];
-    const allQuestionIds = withRemapped(
-      allQuestionCandidates.map((q) => q.id).filter(Boolean),
-      "question",
+    const releaseQuestionIds = data.releases.flatMap((rel) =>
+      rel.questions
+        .filter(
+          (q): q is PublishedQuestion =>
+            Boolean(q) &&
+            typeof q === "object" &&
+            typeof (q as { id?: unknown }).id === "string",
+        )
+        .map((q) => q.id)
+        .filter(Boolean),
     );
+    const allQuestionIds = [
+      ...new Set([
+        ...withRemapped(
+          [
+            ...allQuestionCandidates.map((q) => q.id).filter(Boolean),
+            ...releaseQuestionIds,
+          ],
+          "question",
+        ),
+        ...withRemapped(releaseQuestionIds, "release-alias"),
+      ]),
+    ];
     const allReviewIds = withRemapped(
       data.reviews.map((r) => r.id).filter(Boolean),
       "review",
@@ -363,23 +564,74 @@ export async function restorePersonalBackup(
         .filter(Boolean),
       "msg",
     );
+    const allConceptIds = withRemapped(
+      data.concepts.map((c) => c.id).filter(Boolean),
+      "concept",
+    );
+    const syntheticConceptGroupIds = data.concepts
+      .filter((c) => !c.folderId && c.groupName.trim())
+      .map((c) =>
+        deterministicRemapId(
+          userId,
+          "concept-group",
+          normalizeFolderTitleKey(sanitizeLegacyFolderTitle(c.groupName)),
+        ),
+      );
+    const allConceptFolderIds = [
+      ...new Set([
+        ...withRemapped(
+          data.conceptFolders.map((f) => f.id).filter(Boolean),
+          "concept-folder",
+        ),
+        ...syntheticConceptGroupIds,
+      ]),
+    ];
 
     const [
+      existingPrefRows,
+      existingUserQuestionAny,
+      existingUserReviewAny,
       existingDecks,
       existingSubs,
-      existingGroups,
       existingImports,
       existingQuestions,
       existingStudyCards,
       existingReviews,
       existingConvs,
       existingMsgs,
+      currentOwnedFolders,
+      existingConceptsByIds,
+      currentUserConcepts,
+      existingConceptFoldersByIds,
+      currentUserConceptFolders,
     ] = await Promise.all([
+      tx
+        .select({
+          userId: preferences.userId,
+          dailyGoal: preferences.dailyGoal,
+          dailyNewLimit: preferences.dailyNewLimit,
+          theme: preferences.theme,
+          timeZone: preferences.timeZone,
+        })
+        .from(preferences)
+        .where(eq(preferences.userId, userId)),
+      tx
+        .select({ id: questions.id })
+        .from(questions)
+        .where(and(eq(questions.ownerId, userId), isNull(questions.purgedAt)))
+        .limit(1),
+      tx
+        .select({ id: reviewEvents.id })
+        .from(reviewEvents)
+        .where(eq(reviewEvents.userId, userId))
+        .limit(1),
       allDeckIds.length
         ? tx
             .select({
               id: decks.id,
               ownerId: decks.ownerId,
+              parentId: decks.parentId,
+              title: decks.title,
               visibility: decks.visibility,
               publishedVersion: decks.publishedVersion,
               deletedAt: decks.deletedAt,
@@ -391,12 +643,6 @@ export async function restorePersonalBackup(
         .select({ deckId: subscriptions.deckId })
         .from(subscriptions)
         .where(eq(subscriptions.userId, userId)),
-      allGroupIds.length
-        ? tx
-            .select({ id: deckGroups.id, ownerId: deckGroups.ownerId })
-            .from(deckGroups)
-            .where(inArray(deckGroups.id, allGroupIds))
-        : Promise.resolve([]),
       allImportIds.length
         ? tx
             .select({ id: imports.id, userId: imports.userId })
@@ -437,11 +683,43 @@ export async function restorePersonalBackup(
             .from(messages)
             .where(inArray(messages.id, allMsgIds))
         : Promise.resolve([]),
+      loadActiveOwnedFolders(tx, userId),
+      allConceptIds.length
+        ? tx
+            .select({
+              id: concepts.id,
+              userId: concepts.userId,
+              normalizedKey: concepts.normalizedKey,
+            })
+            .from(concepts)
+            .where(inArray(concepts.id, allConceptIds))
+        : Promise.resolve([]),
+      tx
+        .select({
+          id: concepts.id,
+          normalizedKey: concepts.normalizedKey,
+        })
+        .from(concepts)
+        .where(eq(concepts.userId, userId)),
+      allConceptFolderIds.length
+        ? tx
+            .select({
+              id: conceptFolders.id,
+              userId: conceptFolders.userId,
+              parentId: conceptFolders.parentId,
+              title: conceptFolders.title,
+            })
+            .from(conceptFolders)
+            .where(inArray(conceptFolders.id, allConceptFolderIds))
+        : Promise.resolve([]),
+      tx
+        .select()
+        .from(conceptFolders)
+        .where(eq(conceptFolders.userId, userId)),
     ]);
 
     const existingDeckById = new Map(existingDecks.map((d) => [d.id, d]));
     const existingSubSet = new Set(existingSubs.map((s) => s.deckId));
-    const existingGroupById = new Map(existingGroups.map((g) => [g.id, g]));
     const existingImportById = new Map(existingImports.map((i) => [i.id, i]));
     const existingQuestionById = new Map(
       existingQuestions.map((q) => [q.id, q]),
@@ -452,28 +730,133 @@ export async function restorePersonalBackup(
     const existingReviewById = new Map(existingReviews.map((r) => [r.id, r]));
     const existingConvById = new Map(existingConvs.map((c) => [c.id, c]));
     const existingMsgSet = new Set(existingMsgs.map((m) => m.id));
+    const existingConceptById = new Map(
+      existingConceptsByIds.map((c) => [c.id, c]),
+    );
+    const existingUserConceptByNormKey = new Map(
+      currentUserConcepts.map((c) => [c.normalizedKey, c.id]),
+    );
+    const validUserConceptIds = new Set(currentUserConcepts.map((c) => c.id));
+    const existingConceptFolderById = new Map(
+      existingConceptFoldersByIds.map((f) => [f.id, f]),
+    );
 
     let preferencesRestored = false;
     if (data.preferences) {
-      const insertedPref = await tx
-        .insert(preferences)
+      const existingPref = existingPrefRows[0];
+      const targetPref = {
+        dailyGoal: data.preferences.dailyGoal ?? 5,
+        dailyNewLimit: data.preferences.dailyNewLimit ?? 3,
+        theme: data.preferences.theme ?? "light",
+        timeZone: sanitizeTimeZone(data.preferences.timeZone),
+      };
+      if (!existingPref) {
+        const insertedPref = await tx
+          .insert(preferences)
+          .values({
+            userId,
+            ...targetPref,
+            onboarded: true,
+          })
+          .onConflictDoNothing()
+          .returning({ userId: preferences.userId });
+        preferencesRestored = insertedPref.length > 0;
+      } else {
+        const isSystemDefaultPref =
+          existingPref.dailyGoal === 5 &&
+          existingPref.dailyNewLimit === 3 &&
+          existingPref.theme === "light" &&
+          existingPref.timeZone === "Asia/Shanghai";
+        const isFreshWorkspace =
+          existingSubs.length === 0 &&
+          existingUserQuestionAny.length === 0 &&
+          existingUserReviewAny.length === 0;
+        const differsFromExisting =
+          existingPref.dailyGoal !== targetPref.dailyGoal ||
+          existingPref.dailyNewLimit !== targetPref.dailyNewLimit ||
+          existingPref.theme !== targetPref.theme ||
+          existingPref.timeZone !== targetPref.timeZone;
+        if (isSystemDefaultPref && isFreshWorkspace && differsFromExisting) {
+          const updatedPref = await tx
+            .update(preferences)
+            .set(targetPref)
+            .where(eq(preferences.userId, userId))
+            .returning({ userId: preferences.userId });
+          preferencesRestored = updatedPref.length > 0;
+        }
+      }
+    }
+
+    // Track active owned folder tree in memory so sibling title uniqueness & max depth <= 8 are always satisfied.
+    const tree = buildServerFolderTree(currentOwnedFolders);
+    const validOwnedDeckIds = new Set<string>(tree.byId.keys());
+    const siblingLowerNames = (parentId: string | null): Set<string> =>
+      new Set(
+        (tree.children.get(parentId) ?? []).map((f) =>
+          normalizeFolderTitleKey(f.title),
+        ),
+      );
+    const registerTreeFolder = (row: typeof decks.$inferSelect) => {
+      tree.byId.set(row.id, row);
+      const list = tree.children.get(row.parentId ?? null) ?? [];
+      list.push(row);
+      tree.children.set(row.parentId ?? null, list);
+      if (!tree.children.has(row.id)) tree.children.set(row.id, []);
+      validOwnedDeckIds.add(row.id);
+    };
+
+    const clampParentForDepth = (candidateParentId: string | null): string | null => {
+      if (!candidateParentId || !tree.byId.has(candidateParentId)) return null;
+      let cursor: string | null = candidateParentId;
+      while (cursor && folderDepth(tree, cursor) >= MAX_FOLDER_DEPTH) {
+        cursor = tree.byId.get(cursor)?.parentId ?? null;
+      }
+      return cursor;
+    };
+
+    async function ensureSyntheticFolder(
+      parentId: string | null,
+      rawTitle: string,
+      deterministicId: string,
+      color = "sage",
+    ): Promise<string> {
+      const safeParent = clampParentForDepth(parentId);
+      const title = sanitizeLegacyFolderTitle(rawTitle);
+      const key = normalizeFolderTitleKey(title);
+      const existingSibling = (tree.children.get(safeParent) ?? []).find(
+        (f) => normalizeFolderTitleKey(f.title) === key,
+      );
+      if (existingSibling) return existingSibling.id;
+
+      const existingById = existingDeckById.get(deterministicId);
+      if (existingById && existingById.ownerId === userId && !existingById.deletedAt) {
+        return existingById.id;
+      }
+      const id = existingById ? crypto.randomUUID() : deterministicId;
+      const now = new Date();
+      const [inserted] = await tx
+        .insert(decks)
         .values({
-          userId,
-          dailyGoal: data.preferences.dailyGoal ?? 5,
-          dailyNewLimit: data.preferences.dailyNewLimit ?? 3,
-          theme: data.preferences.theme ?? "light",
-          timeZone: data.preferences.timeZone ?? "Asia/Shanghai",
-          onboarded: true,
+          id,
+          ownerId: userId,
+          parentId: safeParent,
+          title,
+          description: "",
+          color: sanitizeColor(color),
+          visibility: "private",
+          publishedVersion: 0,
+          createdAt: now,
+          updatedAt: now,
         })
-        .onConflictDoNothing()
-        .returning({ userId: preferences.userId });
-      preferencesRestored = insertedPref.length > 0;
+        .returning();
+      registerTreeFolder(inserted);
+      return inserted.id;
     }
 
     const deckMap = new Map<string, string>();
+    const groupMap = new Map<string, string>();
     const materializedSubDeckIds = new Set<string>();
     const newlyInsertedOwnedDeckIds = new Set<string>();
-    const validOwnedDeckIds = new Set<string>();
     const accessibleSubDeckIds = new Set<string>();
     let restoredDecks = 0;
     let skippedDecks = 0;
@@ -482,14 +865,12 @@ export async function restorePersonalBackup(
       data.subscriptions.map((s) => [s.deckId, s]),
     );
 
-    // Query existing user-owned decks (for validOwnedDeckIds).
-    const currentOwnedDecks = await tx
-      .select({ id: decks.id })
-      .from(decks)
-      .where(and(eq(decks.ownerId, userId), isNull(decks.deletedAt)));
-    for (const d of currentOwnedDecks) {
-      validOwnedDeckIds.add(d.id);
-    }
+    // Partition backup decks into accessible subscriptions vs owned/materialized folders.
+    const ownedOrMaterializedDecks: z.infer<typeof deckBackupSchema>[] = [];
+    const accessibleSubDecks: {
+      deck: z.infer<typeof deckBackupSchema>;
+      existing: (typeof existingDecks)[number];
+    }[] = [];
 
     for (const deck of data.decks) {
       const existing = existingDeckById.get(deck.id);
@@ -500,44 +881,41 @@ export async function restorePersonalBackup(
           existing!.ownerId !== userId &&
           (existing!.visibility === "public" || existingSubSet.has(deck.id));
         if (canKeepSubscription && existing) {
-          deckMap.set(deck.id, deck.id);
-          accessibleSubDeckIds.add(deck.id);
-          const subBackup = subRowByDeck.get(deck.id);
-          const requestedSeen = Math.max(
-            0,
-            Math.min(
-              existing.publishedVersion,
-              subBackup?.seenVersion ??
-                deck.syncedVersion ??
-                deck.seenVersion ??
-                existing.publishedVersion,
-            ),
-          );
-          if (requestedSeen > 0 && !existingSubSet.has(deck.id)) {
-            await tx
-              .insert(subscriptions)
-              .values({
-                userId,
-                deckId: deck.id,
-                groupName: (subBackup?.groupName ?? deck.groupName ?? "").slice(
-                  0,
-                  80,
-                ),
-                seenVersion: requestedSeen,
-                dismissedVersion: subBackup?.dismissedVersion ?? 0,
-              })
-              .onConflictDoNothing();
-            existingSubSet.add(deck.id);
-            restoredDecks += 1;
-          } else {
-            skippedDecks += 1;
-          }
+          accessibleSubDecks.push({ deck, existing });
           continue;
         }
-        // Materialize inaccessible subscribed deck into user's private workspace.
         materializedSubDeckIds.add(deck.id);
       }
+      ownedOrMaterializedDecks.push(deck);
+    }
 
+    // For v1/v2 backups, synthesize top-level folders for deck.groupName before inserting decks.
+    const groupNameFolderMap = new Map<string, string>();
+    if (data.version <= 2) {
+      const groupNamesToEnsure: { name: string; color: string }[] = [];
+      for (const d of ownedOrMaterializedDecks) {
+        if (d.groupName.trim()) {
+          groupNamesToEnsure.push({ name: d.groupName.trim(), color: d.color });
+        }
+      }
+      for (const { deck } of accessibleSubDecks) {
+        const subBackup = subRowByDeck.get(deck.id);
+        const gn = (subBackup?.groupName ?? deck.groupName ?? "").trim();
+        if (gn) groupNamesToEnsure.push({ name: gn, color: "sage" });
+      }
+      for (const { name, color } of groupNamesToEnsure) {
+        const key = normalizeFolderTitleKey(name);
+        if (groupNameFolderMap.has(key)) continue;
+        const detId = deterministicRemapId(userId, "v2-groupname", key);
+        const folderId = await ensureSyntheticFolder(null, name, detId, color);
+        groupNameFolderMap.set(key, folderId);
+      }
+    }
+
+    // Restore owned & materialized folders in topological order (parents before children).
+    const orderedOwnedDecks = topoSortFolders(ownedOrMaterializedDecks);
+    for (const deck of orderedOwnedDecks) {
+      const existing = existingDeckById.get(deck.id);
       if (existing && existing.ownerId === userId && !existing.deletedAt) {
         deckMap.set(deck.id, deck.id);
         validOwnedDeckIds.add(deck.id);
@@ -561,6 +939,31 @@ export async function restorePersonalBackup(
         }
         targetDeckId = existingRemapped ? crypto.randomUUID() : remappedId;
       }
+
+      // Determine parentId:
+      // - v3 uses deck.parentId mapped through deckMap
+      // - v1/v2 uses synthesized top-level folder from deck.groupName if non-empty
+      let resolvedParentId: string | null = null;
+      if (deck.parentId) {
+        const mappedParent = deckMap.get(deck.parentId) ?? deck.parentId;
+        if (mappedParent !== targetDeckId && validOwnedDeckIds.has(mappedParent)) {
+          resolvedParentId = clampParentForDepth(mappedParent);
+        }
+      } else if (data.version <= 2 && deck.groupName.trim()) {
+        const gnId = groupNameFolderMap.get(
+          normalizeFolderTitleKey(deck.groupName),
+        );
+        if (gnId && gnId !== targetDeckId) {
+          resolvedParentId = clampParentForDepth(gnId);
+        }
+      }
+
+      const rawTitle = sanitizeLegacyFolderTitle(deck.title || "未命名文件夹");
+      const safeTitle = resolveUniqueSiblingTitle(
+        rawTitle,
+        siblingLowerNames(resolvedParentId),
+      );
+
       deckMap.set(deck.id, targetDeckId);
       const isMaterializedSub = materializedSubDeckIds.has(deck.id);
       const insertedDeck = await tx
@@ -568,9 +971,9 @@ export async function restorePersonalBackup(
         .values({
           id: targetDeckId,
           ownerId: userId,
-          title: (deck.title || "未命名题库").slice(0, 120),
+          parentId: resolvedParentId,
+          title: safeTitle,
           description: (deck.description ?? "").slice(0, 2000),
-          groupName: (deck.groupName ?? "").slice(0, 80),
           color: sanitizeColor(deck.color),
           visibility: isMaterializedSub
             ? "private"
@@ -580,27 +983,62 @@ export async function restorePersonalBackup(
           updatedAt: safeDate(deck.updatedAt),
         })
         .onConflictDoNothing()
-        .returning({ id: decks.id });
+        .returning();
       if (insertedDeck.length) {
+        registerTreeFolder(insertedDeck[0]);
         restoredDecks += 1;
-        validOwnedDeckIds.add(targetDeckId);
         if (!isMaterializedSub) newlyInsertedOwnedDeckIds.add(targetDeckId);
       } else {
         skippedDecks += 1;
       }
     }
 
-    // Restore deck groups for owned / materialized decks.
-    const groupMap = new Map<string, string>();
-    const validGroupIds = new Set<string>();
-    const currentOwnedGroups = await tx
-      .select({ id: deckGroups.id })
-      .from(deckGroups)
-      .where(eq(deckGroups.ownerId, userId));
-    for (const g of currentOwnedGroups) {
-      validGroupIds.add(g.id);
+    // Restore accessible subscriptions now that owned folders exist so folderId placement resolves cleanly.
+    for (const { deck, existing } of accessibleSubDecks) {
+      deckMap.set(deck.id, deck.id);
+      accessibleSubDeckIds.add(deck.id);
+      const subBackup = subRowByDeck.get(deck.id);
+      const requestedSeen = Math.max(
+        0,
+        Math.min(
+          existing.publishedVersion,
+          subBackup?.seenVersion ??
+            deck.syncedVersion ??
+            deck.seenVersion ??
+            existing.publishedVersion,
+        ),
+      );
+      if (requestedSeen > 0 && !existingSubSet.has(deck.id)) {
+        let placementFolderId: string | null = null;
+        const candidateFolderRef = subBackup?.folderId ?? deck.parentId ?? null;
+        if (candidateFolderRef) {
+          const mapped = deckMap.get(candidateFolderRef) ?? candidateFolderRef;
+          if (validOwnedDeckIds.has(mapped)) placementFolderId = mapped;
+        } else if (data.version <= 2) {
+          const gn = (subBackup?.groupName ?? deck.groupName ?? "").trim();
+          if (gn) {
+            placementFolderId =
+              groupNameFolderMap.get(normalizeFolderTitleKey(gn)) ?? null;
+          }
+        }
+        await tx
+          .insert(subscriptions)
+          .values({
+            userId,
+            deckId: deck.id,
+            folderId: placementFolderId,
+            seenVersion: requestedSeen,
+            dismissedVersion: subBackup?.dismissedVersion ?? 0,
+          })
+          .onConflictDoNothing();
+        existingSubSet.add(deck.id);
+        restoredDecks += 1;
+      } else {
+        skippedDecks += 1;
+      }
     }
 
+    // Convert v1/v2 deckGroups into child folders under their deck (with category subfolders when present).
     const dedupedGroups = new Map<string, z.infer<typeof deckGroupBackupSchema>>();
     for (const g of data.deckGroups) {
       dedupedGroups.set(g.id, g);
@@ -614,49 +1052,99 @@ export async function restorePersonalBackup(
     }
 
     let restoredGroups = 0;
-    for (const grp of dedupedGroups.values()) {
+    const categorySubfolderCache = new Map<string, string>();
+    const orderedGroups = topoSortFolders(Array.from(dedupedGroups.values()));
+    for (const grp of orderedGroups) {
       if (accessibleSubDeckIds.has(grp.deckId)) {
         groupMap.set(grp.id, grp.id);
         continue;
       }
       const targetDeckId = deckMap.get(grp.deckId);
       if (!targetDeckId || !validOwnedDeckIds.has(targetDeckId)) continue;
-      const existing = existingGroupById.get(grp.id);
-      if (existing && existing.ownerId === userId) {
+
+      const existing = existingDeckById.get(grp.id);
+      if (existing && existing.ownerId === userId && !existing.deletedAt) {
         groupMap.set(grp.id, grp.id);
-        validGroupIds.add(grp.id);
+        validOwnedDeckIds.add(grp.id);
         continue;
       }
+
       let targetGroupId = grp.id;
       if (existing) {
         const remappedId = deterministicRemapId(userId, "group", grp.id);
-        const existingRemapped = existingGroupById.get(remappedId);
-        if (existingRemapped && existingRemapped.ownerId === userId) {
+        const existingRemapped = existingDeckById.get(remappedId);
+        if (
+          existingRemapped &&
+          existingRemapped.ownerId === userId &&
+          !existingRemapped.deletedAt
+        ) {
           groupMap.set(grp.id, remappedId);
-          validGroupIds.add(remappedId);
+          validOwnedDeckIds.add(remappedId);
           continue;
         }
         targetGroupId = existingRemapped ? crypto.randomUUID() : remappedId;
       }
+
+      let groupParentId: string | null = targetDeckId;
+      const mappedGroupParent = grp.parentId
+        ? (groupMap.get(grp.parentId) ?? deckMap.get(grp.parentId) ?? null)
+        : null;
+      if (
+        mappedGroupParent &&
+        mappedGroupParent !== targetGroupId &&
+        validOwnedDeckIds.has(mappedGroupParent)
+      ) {
+        groupParentId = mappedGroupParent;
+      } else {
+        const cat = grp.category.trim();
+        if (cat) {
+          const catKey = `${targetDeckId}\0${normalizeFolderTitleKey(cat)}`;
+          let catFolderId = categorySubfolderCache.get(catKey);
+          if (!catFolderId) {
+            const detCatId = deterministicRemapId(
+              userId,
+              "v2-cat",
+              `${grp.deckId}\0${normalizeFolderTitleKey(cat)}`,
+            );
+            catFolderId = await ensureSyntheticFolder(
+              targetDeckId,
+              cat,
+              detCatId,
+              tree.byId.get(targetDeckId)?.color ?? "sage",
+            );
+            categorySubfolderCache.set(catKey, catFolderId);
+          }
+          groupParentId = catFolderId;
+        }
+      }
+      groupParentId = clampParentForDepth(groupParentId);
+
+      const rawTitle = sanitizeLegacyFolderTitle(grp.title || "未命名文件夹");
+      const safeTitle = resolveUniqueSiblingTitle(
+        rawTitle,
+        siblingLowerNames(groupParentId),
+      );
       groupMap.set(grp.id, targetGroupId);
+
       const inserted = await tx
-        .insert(deckGroups)
+        .insert(decks)
         .values({
           id: targetGroupId,
-          deckId: targetDeckId,
           ownerId: userId,
-          title: (grp.title || "未命名分组").slice(0, 120),
-          category: (grp.category ?? "").slice(0, 80),
+          parentId: groupParentId,
+          title: safeTitle,
           description: (grp.description ?? "").slice(0, 2000),
-          position: grp.position ?? 0,
+          color: tree.byId.get(targetDeckId)?.color ?? "sage",
+          visibility: "private",
+          publishedVersion: 0,
           createdAt: safeDate(grp.createdAt),
           updatedAt: safeDate(grp.updatedAt),
         })
         .onConflictDoNothing()
-        .returning({ id: deckGroups.id });
+        .returning();
       if (inserted.length) {
+        registerTreeFolder(inserted[0]);
         restoredGroups += 1;
-        validGroupIds.add(targetGroupId);
       }
     }
 
@@ -671,7 +1159,9 @@ export async function restorePersonalBackup(
       validImportIds.add(imp.id);
     }
     const referencedImportIds = new Set(
-      allQuestionCandidates.map((q) => q.importId).filter((id): id is string => !!id),
+      allQuestionCandidates
+        .map((q) => q.importId)
+        .filter((id): id is string => !!id),
     );
     for (const imp of data.imports) {
       if (imp.status !== "complete" && !referencedImportIds.has(imp.id)) {
@@ -731,19 +1221,16 @@ export async function restorePersonalBackup(
       .select({
         id: questions.id,
         deckId: questions.deckId,
-        groupId: questions.groupId,
         contentHash: questions.contentHash,
+        deletedAt: questions.deletedAt,
       })
       .from(questions)
       .where(and(eq(questions.ownerId, userId), isNull(questions.purgedAt)));
     const ownedHashLookup = new Map<string, string>();
     for (const q of currentOwnedQuestions) {
       validQuestionIds.add(q.id);
-      if (q.deckId) {
-        ownedHashLookup.set(
-          `${q.deckId}\0${q.groupId ?? ""}\0${q.contentHash}`,
-          q.id,
-        );
+      if (!q.deletedAt) {
+        ownedHashLookup.set(`${q.deckId ?? ""}\0${q.contentHash}`, q.id);
       }
     }
 
@@ -796,17 +1283,19 @@ export async function restorePersonalBackup(
           : remappedId;
       }
 
-      const mappedDeckId = q.deckId ? (deckMap.get(q.deckId) ?? null) : null;
-      const targetDeckId =
-        mappedDeckId && validOwnedDeckIds.has(mappedDeckId)
-          ? mappedDeckId
-          : null;
-      const mappedGroupId =
-        targetDeckId && q.groupId ? (groupMap.get(q.groupId) ?? null) : null;
-      const targetGroupId =
-        mappedGroupId && validGroupIds.has(mappedGroupId)
-          ? mappedGroupId
-          : null;
+      // Resolve target folder: for v1/v2 backups with groupId, map directly to the migrated subfolder!
+      let targetDeckId: string | null = null;
+      if (q.groupId && groupMap.has(q.groupId)) {
+        const mappedGrp = groupMap.get(q.groupId)!;
+        if (validOwnedDeckIds.has(mappedGrp)) targetDeckId = mappedGrp;
+      }
+      if (!targetDeckId && q.deckId) {
+        const mappedDeckId = deckMap.get(q.deckId) ?? null;
+        if (mappedDeckId && validOwnedDeckIds.has(mappedDeckId)) {
+          targetDeckId = mappedDeckId;
+        }
+      }
+
       const mappedImportId = q.importId
         ? (importMap.get(q.importId) ?? null)
         : null;
@@ -820,10 +1309,8 @@ export async function restorePersonalBackup(
       const hash = contentHash(q.title, answer);
       const isTrashed = Boolean(q.deletedAt);
 
-      if (!isTrashed && targetDeckId) {
-        const dupId = ownedHashLookup.get(
-          `${targetDeckId}\0${targetGroupId ?? ""}\0${hash}`,
-        );
+      if (!isTrashed) {
+        const dupId = ownedHashLookup.get(`${targetDeckId ?? ""}\0${hash}`);
         if (dupId) {
           questionMap.set(q.id, dupId);
           validQuestionIds.add(dupId);
@@ -840,7 +1327,6 @@ export async function restorePersonalBackup(
           id: targetQuestionId,
           ownerId: userId,
           deckId: targetDeckId,
-          groupId: targetGroupId,
           position: q.position ?? 0,
           deletedAt: q.deletedAt ? safeDate(q.deletedAt) : null,
           purgedAt: null,
@@ -865,20 +1351,24 @@ export async function restorePersonalBackup(
       if (inserted.length) {
         restoredQuestions += 1;
         validQuestionIds.add(targetQuestionId);
-        if (!isTrashed && targetDeckId) {
-          ownedHashLookup.set(
-            `${targetDeckId}\0${targetGroupId ?? ""}\0${hash}`,
-            targetQuestionId,
-          );
-        }
+        // Do NOT add newly restored backup items into ownedHashLookup: Global Soft Dedup
+        // explicitly allows distinct intentional same-folder duplicates in a v3 backup.
       } else {
         skippedQuestions += 1;
       }
     }
 
-    // Restore published release snapshots for newly restored owned decks.
+    // Restore published release snapshots for newly restored owned folders.
     let restoredReleases = 0;
-    for (const rel of data.releases) {
+    const sortedReleases = [...data.releases].sort(
+      (a, b) =>
+        a.version - b.version ||
+        safeDate(a.createdAt).getTime() - safeDate(b.createdAt).getTime(),
+    );
+    const mapFolderRef = (id: string) =>
+      groupMap.get(id) ?? deckMap.get(id) ?? id;
+
+    for (const rel of sortedReleases) {
       const targetDeckId = deckMap.get(rel.deckId);
       if (!targetDeckId || !newlyInsertedOwnedDeckIds.has(targetDeckId)) {
         continue;
@@ -892,21 +1382,82 @@ export async function restorePersonalBackup(
         )
         .map((g) => ({
           ...g,
-          id: groupMap.get(g.id) ?? g.id,
+          id: mapFolderRef(g.id),
+          ...(g.parentId !== undefined
+            ? { parentId: g.parentId ? mapFolderRef(g.parentId) : null }
+            : {}),
         }));
-      const mappedQuestions = rel.questions
-        .filter(
-          (q): q is PublishedQuestion =>
-            Boolean(q) &&
-            typeof q === "object" &&
-            typeof (q as { id?: unknown }).id === "string",
-        )
-        .map((q) => ({
+      const aliasTs = safeDate(rel.createdAt);
+      const validRelQuestions = rel.questions.filter(
+        (q): q is PublishedQuestion =>
+          Boolean(q) &&
+          typeof q === "object" &&
+          typeof (q as { id?: unknown }).id === "string",
+      );
+      const mappedQuestions: PublishedQuestion[] = [];
+      for (const q of validRelQuestions) {
+        let targetId = questionMap.get(q.id);
+        if (!targetId) {
+          const existing = existingQuestionById.get(q.id);
+          if (existing && existing.ownerId === userId) {
+            targetId = q.id;
+          } else if (!existing) {
+            targetId = q.id;
+          } else {
+            const remappedId = deterministicRemapId(
+              userId,
+              "release-alias",
+              q.id,
+            );
+            const existingRemapped = existingQuestionById.get(remappedId);
+            if (existingRemapped && existingRemapped.ownerId === userId) {
+              targetId = remappedId;
+            } else {
+              targetId = existingRemapped ? crypto.randomUUID() : remappedId;
+            }
+          }
+          const known = existingQuestionById.get(targetId);
+          if (!known || known.ownerId !== userId) {
+            await tx
+              .insert(questions)
+              .values({
+                id: targetId,
+                ownerId: userId,
+                deckId: null,
+                title: "",
+                answer: "",
+                contentHash: `publication:${targetId}`,
+                deletedAt: aliasTs,
+                purgedAt: aliasTs,
+              })
+              .onConflictDoNothing();
+            existingQuestionById.set(targetId, {
+              id: targetId,
+              ownerId: userId,
+              deckId: null,
+              deletedAt: aliasTs,
+              purgedAt: aliasTs,
+            });
+          }
+          questionMap.set(q.id, targetId);
+          validQuestionIds.add(targetId);
+        }
+        mappedQuestions.push({
           ...q,
-          id: questionMap.get(q.id) ?? q.id,
+          id: targetId,
+          ...(q.sourceQuestionId
+            ? {
+                sourceQuestionId:
+                  questionMap.get(q.sourceQuestionId) ?? q.sourceQuestionId,
+              }
+            : {}),
+          parentId: q.parentId
+            ? (questionMap.get(q.parentId) ?? q.parentId)
+            : null,
           deckId: targetDeckId,
-          groupId: q.groupId ? (groupMap.get(q.groupId) ?? q.groupId) : null,
-        }));
+          groupId: q.groupId ? mapFolderRef(q.groupId) : null,
+        });
+      }
       const inserted = await tx
         .insert(releases)
         .values({
@@ -917,11 +1468,305 @@ export async function restorePersonalBackup(
           summary: (rel.summary ?? "").slice(0, 1000),
           groups: mappedGroups,
           questions: mappedQuestions,
-          createdAt: safeDate(rel.createdAt),
+          createdAt: aliasTs,
         })
         .onConflictDoNothing()
         .returning({ version: releases.version });
       if (inserted.length) restoredReleases += 1;
+    }
+
+    // Merge personal concept folders in topological order (parents before children),
+    // enforcing sibling title uniqueness and max depth <= 8.
+    const conceptFolderMap = new Map<string, string>();
+    const conceptFolderById = new Map<
+      string,
+      { id: string; parentId: string | null; title: string }
+    >();
+    const conceptFolderChildren = new Map<
+      string | null,
+      { id: string; parentId: string | null; title: string }[]
+    >();
+    const registerConceptFolderNode = (node: {
+      id: string;
+      parentId: string | null;
+      title: string;
+    }) => {
+      conceptFolderById.set(node.id, node);
+      const pid =
+        node.parentId &&
+        conceptFolderById.has(node.parentId) &&
+        node.parentId !== node.id
+          ? node.parentId
+          : null;
+      const list = conceptFolderChildren.get(pid) ?? [];
+      list.push(node);
+      conceptFolderChildren.set(pid, list);
+      if (!conceptFolderChildren.has(node.id)) {
+        conceptFolderChildren.set(node.id, []);
+      }
+    };
+    for (const f of currentUserConceptFolders) {
+      conceptFolderById.set(f.id, {
+        id: f.id,
+        parentId: f.parentId ?? null,
+        title: f.title,
+      });
+    }
+    for (const f of currentUserConceptFolders) {
+      const pid =
+        f.parentId && conceptFolderById.has(f.parentId) && f.parentId !== f.id
+          ? f.parentId
+          : null;
+      const list = conceptFolderChildren.get(pid) ?? [];
+      list.push({ id: f.id, parentId: pid, title: f.title });
+      conceptFolderChildren.set(pid, list);
+      if (!conceptFolderChildren.has(f.id)) {
+        conceptFolderChildren.set(f.id, []);
+      }
+    }
+
+    const conceptFolderDepthOf = (folderId: string | null): number => {
+      if (!folderId) return 0;
+      let d = 0;
+      const visited = new Set<string>();
+      let cur: string | null = folderId;
+      while (cur && !visited.has(cur)) {
+        visited.add(cur);
+        const n = conceptFolderById.get(cur);
+        if (!n) break;
+        d += 1;
+        cur = n.parentId && conceptFolderById.has(n.parentId) ? n.parentId : null;
+      }
+      return d;
+    };
+    const clampConceptParent = (candidate: string | null): string | null => {
+      if (!candidate || !conceptFolderById.has(candidate)) return null;
+      let cur: string | null = candidate;
+      while (cur && conceptFolderDepthOf(cur) >= MAX_FOLDER_DEPTH) {
+        cur = conceptFolderById.get(cur)?.parentId ?? null;
+      }
+      return cur;
+    };
+    const conceptSiblingLowerKeys = (parentId: string | null): Set<string> =>
+      new Set(
+        (conceptFolderChildren.get(parentId) ?? []).map((f) =>
+          normalizeFolderTitleKey(f.title),
+        ),
+      );
+
+    let restoredConceptFolders = 0;
+    let skippedConceptFolders = 0;
+
+    const orderedConceptFolders = topoSortFolders(data.conceptFolders);
+    for (const f of orderedConceptFolders) {
+      const existing = existingConceptFolderById.get(f.id);
+      if (existing && existing.userId === userId) {
+        conceptFolderMap.set(f.id, f.id);
+        skippedConceptFolders += 1;
+        continue;
+      }
+
+      let targetId = f.id;
+      if (existing) {
+        const remappedId = deterministicRemapId(userId, "concept-folder", f.id);
+        const existingRemapped = existingConceptFolderById.get(remappedId);
+        if (existingRemapped && existingRemapped.userId === userId) {
+          conceptFolderMap.set(f.id, remappedId);
+          skippedConceptFolders += 1;
+          continue;
+        }
+        targetId = existingRemapped ? crypto.randomUUID() : remappedId;
+      }
+
+      let resolvedParentId: string | null = null;
+      if (f.parentId) {
+        const mappedParent = conceptFolderMap.get(f.parentId) ?? f.parentId;
+        if (
+          mappedParent !== targetId &&
+          conceptFolderById.has(mappedParent)
+        ) {
+          resolvedParentId = clampConceptParent(mappedParent);
+        }
+      }
+
+      const rawTitle = sanitizeLegacyFolderTitle(f.title || "未命名文件夹");
+      const safeTitle = resolveUniqueSiblingTitle(
+        rawTitle,
+        conceptSiblingLowerKeys(resolvedParentId),
+      );
+      conceptFolderMap.set(f.id, targetId);
+
+      const inserted = await tx
+        .insert(conceptFolders)
+        .values({
+          id: targetId,
+          userId,
+          parentId: resolvedParentId,
+          title: safeTitle,
+          color: sanitizeColor(f.color),
+          createdAt: safeDate(f.createdAt),
+          updatedAt: safeDate(f.updatedAt),
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      if (inserted.length) {
+        registerConceptFolderNode({
+          id: inserted[0].id,
+          parentId: inserted[0].parentId ?? null,
+          title: inserted[0].title,
+        });
+        restoredConceptFolders += 1;
+      } else {
+        skippedConceptFolders += 1;
+      }
+    }
+
+    async function ensureLegacyConceptGroupFolder(
+      rawGroupName: string,
+    ): Promise<string | null> {
+      const cleaned = rawGroupName.trim();
+      if (!cleaned) return null;
+      const safeTitle = sanitizeLegacyFolderTitle(cleaned);
+      const key = normalizeFolderTitleKey(safeTitle);
+      const existingSibling = (conceptFolderChildren.get(null) ?? []).find(
+        (f) => normalizeFolderTitleKey(f.title) === key,
+      );
+      if (existingSibling) return existingSibling.id;
+
+      const detId = deterministicRemapId(userId, "concept-group", key);
+      const existingById = existingConceptFolderById.get(detId);
+      if (existingById && existingById.userId === userId) {
+        return existingById.id;
+      }
+      const targetId = existingById ? crypto.randomUUID() : detId;
+      const now = new Date();
+      const inserted = await tx
+        .insert(conceptFolders)
+        .values({
+          id: targetId,
+          userId,
+          parentId: null,
+          title: safeTitle,
+          color: "sage",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted.length) {
+        registerConceptFolderNode({
+          id: inserted[0].id,
+          parentId: null,
+          title: inserted[0].title,
+        });
+        restoredConceptFolders += 1;
+        return inserted[0].id;
+      }
+      return null;
+    }
+
+    // Merge personal concepts (never overwrite existing concepts; remap IDs, folderId & sourceQuestionId cleanly).
+    const conceptMap = new Map<string, string>();
+    let restoredConcepts = 0;
+    let skippedConcepts = 0;
+    let userConceptCount = currentUserConcepts.length;
+
+    for (const c of data.concepts) {
+      const term = c.term.trim().slice(0, MAX_CONCEPT_TERM_LENGTH);
+      const definition = c.definition
+        .trim()
+        .slice(0, MAX_CONCEPT_DEFINITION_LENGTH);
+      const normKey = normalizeConceptKey(term);
+      if (!term || !definition || !normKey) {
+        skippedConcepts += 1;
+        continue;
+      }
+
+      const existing = existingConceptById.get(c.id);
+      if (existing && existing.userId === userId) {
+        conceptMap.set(c.id, c.id);
+        validUserConceptIds.add(c.id);
+        skippedConcepts += 1;
+        continue;
+      }
+
+      const existingSameKeyId = existingUserConceptByNormKey.get(normKey);
+      if (existingSameKeyId) {
+        conceptMap.set(c.id, existingSameKeyId);
+        validUserConceptIds.add(existingSameKeyId);
+        skippedConcepts += 1;
+        continue;
+      }
+
+      let targetConceptId = c.id;
+      if (existing) {
+        const remappedId = deterministicRemapId(userId, "concept", c.id);
+        const existingRemapped = existingConceptById.get(remappedId);
+        if (existingRemapped && existingRemapped.userId === userId) {
+          conceptMap.set(c.id, remappedId);
+          validUserConceptIds.add(remappedId);
+          skippedConcepts += 1;
+          continue;
+        }
+        targetConceptId = existingRemapped ? crypto.randomUUID() : remappedId;
+      }
+
+      if (userConceptCount >= MAX_CONCEPTS) {
+        skippedConcepts += 1;
+        continue;
+      }
+
+      let targetFolderId: string | null = null;
+      if (c.folderId) {
+        const mappedFolderId = conceptFolderMap.get(c.folderId) ?? c.folderId;
+        if (conceptFolderById.has(mappedFolderId)) {
+          targetFolderId = mappedFolderId;
+        }
+      }
+      if (!targetFolderId && c.groupName.trim()) {
+        targetFolderId = await ensureLegacyConceptGroupFolder(c.groupName);
+      }
+      const targetGroupName = targetFolderId
+        ? (conceptFolderById.get(targetFolderId)?.title ?? "")
+        : "";
+
+      const mappedSourceQId = c.sourceQuestionId
+        ? (questionMap.get(c.sourceQuestionId) ?? null)
+        : null;
+      const targetSourceQuestionId =
+        mappedSourceQId && validQuestionIds.has(mappedSourceQId)
+          ? mappedSourceQId
+          : null;
+
+      const inserted = await tx
+        .insert(concepts)
+        .values({
+          id: targetConceptId,
+          userId,
+          folderId: targetFolderId,
+          term,
+          aliases: normalizeConceptAliases(c.aliases ?? [], term),
+          normalizedKey: normKey,
+          definition,
+          groupName: targetGroupName.slice(0, MAX_CONCEPT_GROUP_LENGTH),
+          color: sanitizeAnnotationColor(c.color),
+          sourceQuestionId: targetSourceQuestionId,
+          createdAt: safeDate(c.createdAt),
+          updatedAt: safeDate(c.updatedAt),
+        })
+        .onConflictDoNothing()
+        .returning({ id: concepts.id });
+
+      if (inserted.length) {
+        conceptMap.set(c.id, targetConceptId);
+        validUserConceptIds.add(targetConceptId);
+        existingUserConceptByNormKey.set(normKey, targetConceptId);
+        userConceptCount += 1;
+        restoredConcepts += 1;
+      } else {
+        skippedConcepts += 1;
+      }
     }
 
     // Merge personal study cards (never overwrite existing study cards).
@@ -977,7 +1822,11 @@ export async function restorePersonalBackup(
           favorite: Boolean(card.favorite),
           note: card.note ?? "",
           noteVersion: card.noteVersion ?? 0,
-          annotations: sanitizeAnnotations(card.annotations ?? []),
+          annotations: sanitizeAnnotations(
+            card.annotations ?? [],
+            conceptMap,
+            validUserConceptIds,
+          ),
           annotationsVersion: card.annotationsVersion ?? 0,
           updatedAt: safeDate(card.updatedAt),
         })
@@ -1125,6 +1974,8 @@ export async function restorePersonalBackup(
         groups: restoredGroups,
         questions: restoredQuestions,
         releases: restoredReleases,
+        conceptFolders: restoredConceptFolders,
+        concepts: restoredConcepts,
         studyCards: restoredStudyCards,
         reviews: restoredReviews,
         conversations: restoredConversations,
@@ -1133,6 +1984,8 @@ export async function restorePersonalBackup(
       skipped: {
         decks: skippedDecks,
         questions: skippedQuestions,
+        conceptFolders: skippedConceptFolders,
+        concepts: skippedConcepts,
         studyCards: skippedStudyCards,
         reviews: skippedReviews,
         conversations: skippedConversations,

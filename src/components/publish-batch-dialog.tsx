@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import type { Workspace } from "@/lib/types";
 import { batchPublishDecks } from "@/lib/client";
 import { formatDiffSummary } from "@/lib/subscriptions";
+import { buildFolderIndex } from "@/lib/folders";
 import type { Mutate } from "./dialogs";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -33,7 +34,11 @@ export function PublishBatchDialog({
   mutate: Mutate;
   onClose: () => void;
 }) {
-  const ownedDecks = useMemo(() => decks.filter((d) => d.isOwner), [decks]);
+  const folderIndex = useMemo(() => buildFolderIndex(decks), [decks]);
+  const ownedDecks = useMemo(
+    () => folderIndex.flatOwned.map((item) => item.folder),
+    [folderIndex],
+  );
   const changedDecks = useMemo(
     () => ownedDecks.filter((d) => d.publishStatus === "changes"),
     [ownedDecks],
@@ -312,8 +317,9 @@ export function PublishBatchDialog({
                           whiteSpace: "nowrap",
                           maxWidth: "100%",
                         }}
+                        title={folderIndex.pathOf(d.id)}
                       >
-                        {d.title}
+                        {folderIndex.pathOf(d.id)}
                       </strong>
                       <small
                         style={{

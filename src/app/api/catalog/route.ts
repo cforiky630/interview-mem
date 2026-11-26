@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { route } from "@/server/api";
 import { deckIdSchema } from "@/server/resource-ids";
@@ -11,20 +11,25 @@ import {
   releases,
   subscriptions,
   user as users,
-  type PublishedDeckGroup,
   type PublishedQuestion,
 } from "@/db/schema";
 import type {
   CatalogAuthorView,
   CatalogDeck,
   CatalogDeckPreview,
+  CatalogSubscriptionOverlap,
   RichCatalogResponse,
 } from "@/lib/types";
+import { compareNaturalNames } from "@/lib/folders";
 import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
+import { normalizeReleaseGroups } from "@/lib/subscriptions";
 
 const authorQuerySchema = z.string().trim().min(1).max(128);
 
-function topTagsFromQuestions(qs: readonly PublishedQuestion[], limit = 5): string[] {
+function topTagsFromQuestions(
+  qs: readonly PublishedQuestion[],
+  limit = 5,
+): string[] {
   const counts = new Map<string, number>();
   for (const q of qs) {
     if (q.archived) continue;
@@ -74,9 +79,7 @@ function toCatalogDeck(
     tags: topTagsFromQuestions(active),
     subscribed: Boolean(sub),
     syncedVersion,
-    hasUpdate: Boolean(
-      sub && row.deck.publishedVersion > sub.seenVersion,
-    ),
+    hasUpdate: Boolean(sub && row.deck.publishedVersion > sub.seenVersion),
     authorFollowed: followedAuthorSet.has(row.deck.ownerId),
     isOwner: row.deck.ownerId === userId,
     updatedAt: row.deck.updatedAt.toISOString(),
@@ -162,16 +165,17 @@ export const GET = route(async (request, user) => {
     );
 
     const activeQuestions = row.release.questions.filter((q) => !q.archived);
-    const releaseGroups: PublishedDeckGroup[] = [
-      ...(row.release.groups ?? []),
-    ].sort(
-      (a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id),
-    );
+    const releaseGroups = normalizeReleaseGroups(row.release.groups ?? []);
     const groupOrder = new Map(releaseGroups.map((g, idx) => [g.id, idx]));
+    const parentByGroup = new Map(releaseGroups.map((g) => [g.id, g.parentId]));
     const countByGroup = new Map<string, number>();
     for (const q of activeQuestions) {
-      if (q.groupId && groupOrder.has(q.groupId)) {
-        countByGroup.set(q.groupId, (countByGroup.get(q.groupId) ?? 0) + 1);
+      let cursor = q.groupId && groupOrder.has(q.groupId) ? q.groupId : null;
+      const seen = new Set<string>();
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        countByGroup.set(cursor, (countByGroup.get(cursor) ?? 0) + 1);
+        cursor = parentByGroup.get(cursor) ?? null;
       }
     }
     const orderedQuestions = [...activeQuestions].sort((a, b) => {
@@ -183,10 +187,97 @@ export const GET = route(async (request, user) => {
       return Date.parse(a.createdAt) - Date.parse(b.createdAt);
     });
 
+    // Detect overlapping subscriptions from the same author (ancestor, descendant, or shared sourceQuestionId).
+    const overlaps: CatalogSubscriptionOverlap[] = [];
+    if (row.deck.ownerId !== user.id) {
+      const sameAuthorSubs = await db
+        .select({
+          deckId: decks.id,
+          release: releases,
+        })
+        .from(subscriptions)
+        .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+        .innerJoin(
+          releases,
+          and(
+            eq(releases.deckId, decks.id),
+            eq(releases.version, subscriptions.seenVersion),
+          ),
+        )
+        .where(
+          and(
+            eq(subscriptions.userId, user.id),
+            eq(decks.ownerId, row.deck.ownerId),
+            ne(subscriptions.deckId, row.deck.id),
+          ),
+        );
+
+      if (sameAuthorSubs.length > 0) {
+        // Compare strictly against published/pinned release snapshots so unpublished
+        // private folder moves by the author are never leaked or falsely reported.
+        const targetSourceIds = new Set(
+          activeQuestions.map((q) => q.sourceQuestionId ?? q.id),
+        );
+        const targetGroupIdSet = new Set(releaseGroups.map((g) => g.id));
+
+        for (const sub of sameAuthorSubs) {
+          const subGroups = normalizeReleaseGroups(sub.release.groups ?? []);
+          const subSourceIds = new Set(
+            sub.release.questions
+              .filter((q) => !q.archived)
+              .map((q) => q.sourceQuestionId ?? q.id),
+          );
+          let overlapCount = 0;
+          for (const srcId of targetSourceIds) {
+            if (subSourceIds.has(srcId)) overlapCount += 1;
+          }
+
+          const isAncestor = subGroups.some((g) => g.id === row.deck.id);
+          const isDescendant = targetGroupIdSet.has(sub.deckId);
+
+          if (isAncestor) {
+            overlaps.push({
+              deckId: sub.deckId,
+              title: sub.release.title,
+              relation: "ancestor",
+              overlapCount,
+            });
+          } else if (isDescendant) {
+            overlaps.push({
+              deckId: sub.deckId,
+              title: sub.release.title,
+              relation: "descendant",
+              overlapCount,
+            });
+          } else if (overlapCount > 0) {
+            overlaps.push({
+              deckId: sub.deckId,
+              title: sub.release.title,
+              relation: "overlap",
+              overlapCount,
+            });
+          }
+        }
+
+        const rank: Record<CatalogSubscriptionOverlap["relation"], number> = {
+          ancestor: 0,
+          descendant: 1,
+          overlap: 2,
+        };
+        overlaps.sort(
+          (a, b) =>
+            rank[a.relation] - rank[b.relation] ||
+            b.overlapCount - a.overlapCount ||
+            compareNaturalNames(a.title, b.title),
+        );
+      }
+    }
+
     const payload: CatalogDeckPreview = {
       deck: catalogDeck,
       groups: releaseGroups.map((g) => ({
         id: g.id,
+        parentId: g.parentId,
         category: g.category ?? "",
         title: g.title,
         description: g.description ?? "",
@@ -201,6 +292,7 @@ export const GET = route(async (request, user) => {
         hasAnswer: Boolean(q.answer.trim()),
       })),
       totalQuestions: activeQuestions.length,
+      overlaps,
     };
     return NextResponse.json(payload);
   }
@@ -287,10 +379,7 @@ export const GET = route(async (request, user) => {
 
   const [subs, myFollows, deckSubCounts, authorFollowerCounts] =
     await Promise.all([
-      db
-        .select()
-        .from(subscriptions)
-        .where(eq(subscriptions.userId, user.id)),
+      db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)),
       db
         .select()
         .from(authorSubscriptions)

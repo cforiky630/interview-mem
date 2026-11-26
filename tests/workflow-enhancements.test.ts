@@ -243,7 +243,13 @@ test("questions create supports single question entry, tag normalization, inbox 
       tags: ["Redis"],
     }),
   );
-  assert.equal(dup.status, 409);
+  assert.equal(dup.status, 200);
+  const dupBody = (await dup.json()) as {
+    id: string;
+    duplicates?: Array<{ id: string }>;
+  };
+  assert.notEqual(dupBody.id, id);
+  assert.ok(dupBody.duplicates?.some((d) => d.id === id));
 
   const foreignDeck = await questions.POST(
     request(bob, "/api/questions", {
@@ -345,6 +351,24 @@ test("questions batch executes move with duplicate skipping, archive/unarchive, 
     false,
   );
 
+  // Default batch move checks for duplicates in target folder without silently skipping.
+  const conflictRes = await questions.POST(
+    request(alice, "/api/questions", {
+      action: "batch",
+      ids: [q1, q2],
+      operation: "move",
+      deckId: targetDeck,
+    }),
+  );
+  assert.equal(conflictRes.status, 409);
+  const conflictBody = (await conflictRes.json()) as {
+    code: string;
+    details?: { conflicts?: Array<{ sourceId: string }> };
+  };
+  assert.equal(conflictBody.code, "DUPLICATE_IN_TARGET");
+  assert.equal(conflictBody.details?.conflicts?.[0]?.sourceId, q2);
+
+  // Explicit duplicateStrategy: "skip" moves non-conflicting cards and skips duplicates.
   const moveResult = await (
     await questions.POST(
       request(alice, "/api/questions", {
@@ -352,10 +376,15 @@ test("questions batch executes move with duplicate skipping, archive/unarchive, 
         ids: [q1, q2],
         operation: "move",
         deckId: targetDeck,
+        duplicateStrategy: "skip",
       }),
     )
   ).json();
-  assert.deepEqual(moveResult, { ok: true, updated: 1, skipped: 1 });
+  assert.equal(moveResult.ok, true);
+  assert.equal(moveResult.updated, 1);
+  assert.equal(moveResult.skipped, 1);
+  assert.deepEqual(moveResult.movedIds, [q1]);
+  assert.equal(typeof moveResult.updatedAt, "string");
 
   let ws = await state(alice);
   assert.equal(ws.questions.find((q) => q.id === q1)!.deckId, targetDeck);

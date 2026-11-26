@@ -85,3 +85,15 @@ test("deployment: separate PostgreSQL fields preserve special characters in pass
   assert.equal(pool.options.port, 5433);
   await pool.end();
 });
+
+test("deployment: nginx allows 20 MiB backup restores while keeping 1m default limit", async () => {
+  const fs = await import("node:fs/promises");
+  const conf = await fs.readFile("deploy/nginx.conf", "utf8");
+  assert.match(conf, /^\s*client_max_body_size\s+1m;/m);
+  const restoreBlock = conf.match(
+    /location\s*=\s*\/api\/backup\/restore\s*\{([\s\S]*?)\}/,
+  );
+  assert.ok(restoreBlock, "nginx.conf should configure = /api/backup/restore");
+  const sizeMatch = restoreBlock[1].match(/client_max_body_size\s+(\d+)m;/i);
+  assert.ok(sizeMatch && Number(sizeMatch[1]) >= 20);
+});

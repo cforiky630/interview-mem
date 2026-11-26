@@ -1,43 +1,64 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  sql,
+} from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import {
   authorSubscriptions,
-  deckGroups,
   decks,
   questions,
   releases,
   subscriptions,
 } from "@/db/schema";
 import { body, route } from "@/server/api";
-import {
-  ownedDeck,
-  publishedDeckGroup,
-  publishedQuestion,
-} from "@/server/workspace";
+import { buildOwnedPublishSubtree, ownedDeck } from "@/server/workspace";
 import { computeUnpublishedDiff } from "@/lib/subscriptions";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
-import { deckFields, deckGroupNameSchema } from "@/server/content-fields";
+import { deckFields } from "@/server/content-fields";
+import {
+  buildServerFolderTree,
+  collectOwnedAncestorIds,
+  createFolderInTx,
+  deleteFolderToTrashInTx,
+  dissolveFolderInTx,
+  editFolderInTx,
+  folderDepth,
+  groupIntoNewFolderInTx,
+  loadActiveOwnedFolders,
+  moveFolderInTx,
+  placeSubscriptionInTx,
+} from "@/server/folders";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 const deckColorSchema = z.enum(["sage", "blue", "sand", "rose"]);
 const publishVisibilitySchema = z.enum(["public", "unlisted"]);
+const conflictStrategySchema = z.enum(["abort", "merge", "keepBoth"]);
 
 const batchPublishItemSchema = z.object({
   deckId: deckIdSchema,
   expectedVersion: z.number().int().nonnegative(),
   visibility: publishVisibilitySchema.optional(),
   summary: z.string().max(1000).optional(),
+  skipUnchanged: z.boolean().optional(),
 });
 
 const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
     ...deckFields,
+    parentId: deckIdSchema.nullable().default(null),
     description: deckFields.description.default(""),
-    groupName: deckGroupNameSchema.default(""),
     color: deckColorSchema.default("sage"),
   }),
   z.object({
@@ -47,21 +68,42 @@ const schema = z.discriminatedUnion("action", [
       title: z.string(),
       description: z.string(),
       color: deckColorSchema.optional(),
-      groupName: z.string().optional(),
     }),
     ...deckFields,
     color: deckColorSchema.optional(),
-    groupName: deckGroupNameSchema.optional(),
   }),
   z.object({
-    action: z.literal("setSubscriptionGroup"),
+    action: z.literal("moveFolder"),
+    folderId: deckIdSchema,
+    targetParentId: deckIdSchema.nullable(),
+    conflictStrategy: conflictStrategySchema.default("abort"),
+  }),
+  z.object({
+    action: z.literal("groupIntoNew"),
+    parentId: deckIdSchema.nullable().default(null),
+    ...deckFields,
+    description: deckFields.description.default(""),
+    color: deckColorSchema.default("sage"),
+    folderIds: z.array(deckIdSchema).max(100).default([]),
+    questionIds: z.array(z.string().uuid()).max(200).default([]),
+    subscriptionDeckIds: z.array(deckIdSchema).max(100).default([]),
+    conflictStrategy: conflictStrategySchema.default("abort"),
+  }),
+  z.object({
+    action: z.literal("dissolve"),
+    folderId: deckIdSchema,
+    conflictStrategy: conflictStrategySchema.default("abort"),
+  }),
+  z.object({
+    action: z.literal("delete"),
     deckId: deckIdSchema,
-    groupName: deckGroupNameSchema,
+    mode: z.enum(["dissolve", "trash"]).default("dissolve"),
+    conflictStrategy: conflictStrategySchema.default("keepBoth"),
   }),
   z.object({
-    action: z.literal("renameDeckGroup"),
-    from: z.string().trim().min(1, "请指定要重命名的题库分组。").max(40),
-    to: deckGroupNameSchema,
+    action: z.literal("placeSubscription"),
+    deckId: deckIdSchema,
+    folderId: deckIdSchema.nullable(),
   }),
   z.object({
     action: z.literal("publish"),
@@ -74,11 +116,11 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("batchPublish"),
     items: z
       .array(batchPublishItemSchema)
-      .min(1, "请至少选择一个要发布的题库。")
-      .max(50, "单次最多批量发布 50 个题库。")
+      .min(1, "请至少选择一个要发布的文件夹。")
+      .max(50, "单次最多批量发布 50 个文件夹。")
       .refine(
         (items) => new Set(items.map((i) => i.deckId)).size === items.length,
-        "包含重复的题库标识。",
+        "包含重复的文件夹标识。",
       ),
     defaultVisibility: publishVisibilitySchema.default("public"),
     defaultSummary: z.string().max(1000).default(""),
@@ -91,12 +133,12 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("subscribe"),
     deckId: deckIdSchema,
-    groupName: deckGroupNameSchema.default(""),
+    folderId: deckIdSchema.nullable().default(null),
   }),
   z.object({
     action: z.literal("batchSubscribe"),
     deckIds: z.array(deckIdSchema).min(1).max(50),
-    groupName: deckGroupNameSchema.default(""),
+    folderId: deckIdSchema.nullable().default(null),
   }),
   z.object({
     action: z.literal("unsubscribe"),
@@ -106,7 +148,6 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("batchUnsubscribe"),
     deckIds: z.array(deckIdSchema).min(1).max(50),
   }),
-  z.object({ action: z.literal("delete"), deckId: deckIdSchema }),
   z.object({
     action: z.literal("acknowledge"),
     deckId: deckIdSchema,
@@ -142,28 +183,45 @@ async function publishDeckInTx(
   if (deck.publishedVersion !== options.expectedVersion) {
     throw new AppError(409, `「${deck.title}」已有新版本，请刷新后再发布。`);
   }
-  const groupRows = await tx
-    .select()
-    .from(deckGroups)
-    .where(and(eq(deckGroups.deckId, deck.id), eq(deckGroups.ownerId, userId)))
-    .orderBy(
-      asc(deckGroups.position),
-      asc(deckGroups.createdAt),
-      asc(deckGroups.id),
-    );
-  const items = await tx
+
+  // Load author's active folder tree to collect the recursive owned subtree (subscriptions structurally excluded).
+  const ownedFolders = await loadActiveOwnedFolders(tx, userId);
+  const ownedTree = buildServerFolderTree(ownedFolders);
+  const rootFolder = ownedTree.byId.get(deck.id) ?? deck;
+  const subtreeFolderIds = new Set<string>([deck.id]);
+  {
+    const stack = [deck.id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const child of ownedTree.children.get(cur) ?? []) {
+        if (!subtreeFolderIds.has(child.id)) {
+          subtreeFolderIds.add(child.id);
+          stack.push(child.id);
+        }
+      }
+    }
+  }
+
+  const rawItems = await tx
     .select()
     .from(questions)
     .where(
       and(
-        eq(questions.deckId, deck.id),
         eq(questions.ownerId, userId),
+        inArray(questions.deckId, [...subtreeFolderIds]),
         isNull(questions.deletedAt),
+        isNull(questions.purgedAt),
       ),
     );
-  if (!deck.publishedVersion && !items.some((q) => !q.archived)) {
+  const subtree = buildOwnedPublishSubtree(ownedTree, rootFolder, rawItems);
+
+  if (
+    !deck.publishedVersion &&
+    !subtree.rawQuestions.some((q) => !q.archived)
+  ) {
     throw new AppError(400, `「${deck.title}」还没有题目，请先导入。`);
   }
+
   if (options.skipUnchanged && deck.publishedVersion > 0) {
     const [latest] = await tx
       .select()
@@ -178,8 +236,8 @@ async function publishDeckInTx(
       {
         title: deck.title,
         description: deck.description,
-        groups: groupRows.map(publishedDeckGroup),
-        questions: items.map(publishedQuestion),
+        groups: subtree.groups,
+        questions: subtree.questions,
       },
       latest,
     );
@@ -187,6 +245,7 @@ async function publishDeckInTx(
       return { deckId: deck.id, version: deck.publishedVersion, skipped: true };
     }
   }
+
   const version = deck.publishedVersion + 1;
   const history = await tx
     .select({ release: releases })
@@ -206,13 +265,15 @@ async function publishDeckInTx(
         if (!prior.has(source)) prior.set(source, item);
       } else publishedElsewhere.add(source);
     }
+
   const aliases: (typeof questions.$inferInsert)[] = [];
-  const snapshots = items.map((q) => {
-    const previous = prior.get(q.id);
+  const snapshots = subtree.questions.map((serialized) => {
+    const sourceId = serialized.id;
+    const previous = prior.get(sourceId);
     const id =
       previous?.id ??
-      (publishedElsewhere.has(q.id) ? crypto.randomUUID() : q.id);
-    if (id !== q.id && !previous)
+      (publishedElsewhere.has(sourceId) ? crypto.randomUUID() : sourceId);
+    if (id !== sourceId && !previous)
       aliases.push({
         id,
         ownerId: userId,
@@ -224,13 +285,14 @@ async function publishDeckInTx(
         purgedAt: new Date(),
       });
     return {
-      ...publishedQuestion(q),
+      ...serialized,
       id,
-      ...(id !== q.id ? { sourceQuestionId: q.id } : {}),
+      ...(id !== sourceId ? { sourceQuestionId: sourceId } : {}),
     };
   });
-  // A moved question gets a separate published identity in the new collection.
-  // Existing subscribers retain their original snapshot and study progress.
+
+  // Both moved questions and nested published folders get independent publication aliases so
+  // every subscription has isolated study progress and release snapshots.
   if (aliases.length) await tx.insert(questions).values(aliases);
   await tx.insert(releases).values({
     deckId: deck.id,
@@ -238,7 +300,7 @@ async function publishDeckInTx(
     title: deck.title,
     description: deck.description,
     summary: options.summary,
-    groups: groupRows.map(publishedDeckGroup),
+    groups: subtree.groups,
     questions: snapshots,
   });
   await tx
@@ -250,8 +312,8 @@ async function publishDeckInTx(
     })
     .where(eq(decks.id, deck.id));
 
-  // Auto-subscribe opted-in followers ONLY on the very first public release (v0 -> v1).
-  // Never auto-subscribe unlisted decks.
+  // Auto-subscribe opted-in followers ONLY on the very first public release (v0 -> v1),
+  // AND skip any follower who already subscribes to a published ancestor of this folder!
   if (deck.publishedVersion === 0 && options.visibility === "public") {
     const followers = await tx
       .select({ followerId: authorSubscriptions.followerId })
@@ -262,14 +324,35 @@ async function publishDeckInTx(
           eq(authorSubscriptions.autoSubscribeNew, true),
         ),
       );
-    const targets = followers.filter((f) => f.followerId !== userId);
+    let targets = followers
+      .map((f) => f.followerId)
+      .filter((id) => id !== userId);
+
+    if (targets.length) {
+      const ancestorIds = collectOwnedAncestorIds(ownedTree, deck.id);
+      if (ancestorIds.length) {
+        const coveredByAncestor = await tx
+          .select({ userId: subscriptions.userId })
+          .from(subscriptions)
+          .where(
+            and(
+              inArray(subscriptions.userId, targets),
+              inArray(subscriptions.deckId, ancestorIds),
+            ),
+          );
+        const coveredSet = new Set(coveredByAncestor.map((r) => r.userId));
+        targets = targets.filter((id) => !coveredSet.has(id));
+      }
+    }
+
     if (targets.length) {
       await tx
         .insert(subscriptions)
         .values(
-          targets.map((f) => ({
-            userId: f.followerId,
+          targets.map((followerId) => ({
+            userId: followerId,
             deckId: deck.id,
+            folderId: null,
             seenVersion: version,
             dismissedVersion: 0,
           })),
@@ -296,13 +379,10 @@ async function applySubscriptionUpdate(
       .from(subscriptions)
       .innerJoin(decks, eq(subscriptions.deckId, decks.id))
       .where(
-        and(
-          eq(subscriptions.userId, userId),
-          eq(subscriptions.deckId, deckId),
-        ),
+        and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)),
       )
-      .for("update");
-    if (!row) throw new AppError(404, "题库不可访问。");
+      .for("update", { of: subscriptions });
+    if (!row) throw new AppError(404, "订阅不可访问。");
     const targetVersion =
       requestedVersion === undefined || requestedVersion === 0
         ? row.publishedVersion
@@ -342,14 +422,31 @@ async function applySubscriptionUpdate(
       .select({ seenVersion: subscriptions.seenVersion })
       .from(subscriptions)
       .where(
-        and(
-          eq(subscriptions.userId, userId),
-          eq(subscriptions.deckId, deckId),
-        ),
+        and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)),
       );
-    if (!latest) throw new AppError(404, "题库不可访问。");
+    if (!latest) throw new AppError(404, "订阅不可访问。");
     return { ok: true, syncedVersion: latest.seenVersion };
   });
+}
+
+async function verifyTargetPlacementFolder(
+  db: Database,
+  userId: string,
+  folderId: string | null,
+): Promise<string | null> {
+  if (!folderId) return null;
+  const [folder] = await db
+    .select({ id: decks.id })
+    .from(decks)
+    .where(
+      and(
+        eq(decks.id, folderId),
+        eq(decks.ownerId, userId),
+        isNull(decks.deletedAt),
+      ),
+    );
+  if (!folder) throw new AppError(404, "目标文件夹不存在或没有访问权限。");
+  return folder.id;
 }
 
 export const GET = route(async (_request, user) =>
@@ -357,7 +454,7 @@ export const GET = route(async (_request, user) =>
     await (
       await getDb()
     )
-      .select({ id: decks.id, title: decks.title })
+      .select({ id: decks.id, parentId: decks.parentId, title: decks.title })
       .from(decks)
       .where(and(eq(decks.ownerId, user.id), isNull(decks.deletedAt))),
   ),
@@ -366,136 +463,97 @@ export const GET = route(async (_request, user) =>
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);
   const db = await getDb();
-  if (data.action === "delete")
-    return Response.json(
-      await db.transaction(async (tx) => {
-        const [deck] = await tx
-          .select()
-          .from(decks)
-          .where(and(eq(decks.id, data.deckId), eq(decks.ownerId, user.id)))
-          .for("update");
-        if (!deck) throw new AppError(404, "题库不存在或没有管理权限。");
-        const contents = await tx
-          .select({ id: questions.id })
-          .from(questions)
-          .where(
-            and(eq(questions.deckId, deck.id), eq(questions.ownerId, user.id)),
-          )
-          .orderBy(asc(questions.id))
-          .for("update");
-        if (contents.length)
-          await tx
-            .update(questions)
-            .set({ deckId: null, groupId: null, updatedAt: new Date() })
-            .where(
-              inArray(
-                questions.id,
-                contents.map((q) => q.id),
-              ),
-            );
-        // Retain only publication identity for existing subscribers; there is no category recycle bin.
-        await tx
-          .update(decks)
-          .set({
-            deletedAt: deck.deletedAt ?? new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(decks.id, deck.id));
-        return { ok: true, detached: contents.length };
+
+  if (data.action === "create") {
+    const deck = await db.transaction((tx) =>
+      createFolderInTx(tx, user.id, {
+        title: data.title,
+        parentId: data.parentId,
+        description: data.description,
+        color: data.color,
       }),
     );
-  if (data.action === "create") {
-    const [deck] = await db
-      .insert(decks)
-      .values({
-        id: crypto.randomUUID(),
-        ownerId: user.id,
-        title: data.title,
-        description: data.description,
-        groupName: data.groupName,
-        color: data.color,
-      })
-      .returning();
-    return NextResponse.json({ deck });
+    return NextResponse.json({ id: deck.id, deck });
   }
+
   if (data.action === "edit") {
-    const [changed] = await db
-      .update(decks)
-      .set({
+    await db.transaction((tx) =>
+      editFolderInTx(tx, user.id, {
+        deckId: data.deckId,
         title: data.title,
         description: data.description,
-        ...(data.color ? { color: data.color } : {}),
-        ...(data.groupName !== undefined ? { groupName: data.groupName } : {}),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(decks.id, data.deckId),
-          eq(decks.ownerId, user.id),
-          isNull(decks.deletedAt),
-          eq(decks.title, data.expected.title),
-          eq(decks.description, data.expected.description),
-          ...(data.expected.color !== undefined
-            ? [eq(decks.color, data.expected.color)]
-            : []),
-          ...(data.expected.groupName !== undefined
-            ? [eq(decks.groupName, data.expected.groupName)]
-            : []),
+        color: data.color,
+        expected: data.expected,
+      }),
+    );
+    return Response.json({ ok: true, updatedAt: new Date().toISOString() });
+  }
+
+  if (data.action === "moveFolder") {
+    return NextResponse.json(
+      await db.transaction((tx) =>
+        moveFolderInTx(tx, user.id, {
+          folderId: data.folderId,
+          targetParentId: data.targetParentId,
+          conflictStrategy: data.conflictStrategy,
+        }),
+      ),
+    );
+  }
+
+  if (data.action === "groupIntoNew") {
+    return NextResponse.json(
+      await db.transaction((tx) =>
+        groupIntoNewFolderInTx(tx, user.id, {
+          parentId: data.parentId,
+          title: data.title,
+          description: data.description,
+          color: data.color,
+          folderIds: data.folderIds,
+          questionIds: data.questionIds,
+          subscriptionDeckIds: data.subscriptionDeckIds,
+          conflictStrategy: data.conflictStrategy,
+        }),
+      ),
+    );
+  }
+
+  if (data.action === "dissolve") {
+    return NextResponse.json(
+      await db.transaction((tx) =>
+        dissolveFolderInTx(tx, user.id, {
+          folderId: data.folderId,
+          conflictStrategy: data.conflictStrategy,
+        }),
+      ),
+    );
+  }
+
+  if (data.action === "delete") {
+    if (data.mode === "trash") {
+      return NextResponse.json(
+        await db.transaction((tx) =>
+          deleteFolderToTrashInTx(tx, user.id, data.deckId),
         ),
-      )
-      .returning({ id: decks.id });
-    if (!changed) {
-      await ownedDeck(user.id, data.deckId);
-      throw new AppError(
-        409,
-        "题库信息已更新，请重新生成修改建议。",
-        "CONFLICT",
       );
     }
+    return NextResponse.json(
+      await db.transaction((tx) =>
+        dissolveFolderInTx(tx, user.id, {
+          folderId: data.deckId,
+          conflictStrategy: data.conflictStrategy,
+        }),
+      ),
+    );
+  }
+
+  if (data.action === "placeSubscription") {
+    await db.transaction((tx) =>
+      placeSubscriptionInTx(tx, user.id, data.deckId, data.folderId),
+    );
     return Response.json({ ok: true });
   }
-  if (data.action === "setSubscriptionGroup") {
-    const [changed] = await db
-      .update(subscriptions)
-      .set({ groupName: data.groupName })
-      .where(
-        and(
-          eq(subscriptions.userId, user.id),
-          eq(subscriptions.deckId, data.deckId),
-        ),
-      )
-      .returning({ deckId: subscriptions.deckId });
-    if (!changed) throw new AppError(404, "未订阅该题库。");
-    return Response.json({ ok: true });
-  }
-  if (data.action === "renameDeckGroup") {
-    const result = await db.transaction(async (tx) => {
-      const now = new Date();
-      const updatedOwned = await tx
-        .update(decks)
-        .set({ groupName: data.to, updatedAt: now })
-        .where(
-          and(
-            eq(decks.ownerId, user.id),
-            isNull(decks.deletedAt),
-            eq(decks.groupName, data.from),
-          ),
-        )
-        .returning({ id: decks.id });
-      const updatedSubs = await tx
-        .update(subscriptions)
-        .set({ groupName: data.to })
-        .where(
-          and(
-            eq(subscriptions.userId, user.id),
-            eq(subscriptions.groupName, data.from),
-          ),
-        )
-        .returning({ deckId: subscriptions.deckId });
-      return { ok: true, updated: updatedOwned.length + updatedSubs.length };
-    });
-    return Response.json(result);
-  }
+
   if (data.action === "publish") {
     await ownedDeck(user.id, data.deckId);
     return NextResponse.json(
@@ -510,8 +568,8 @@ export const POST = route(async (request, user) => {
               isNull(decks.deletedAt),
             ),
           )
-          .for("update");
-        if (!deck) throw new AppError(404, "题库不存在或没有编辑权限。");
+          .for("no key update");
+        if (!deck) throw new AppError(404, "文件夹不存在或没有编辑权限。");
         const published = await publishDeckInTx(tx, user.id, deck, {
           expectedVersion: data.expectedVersion,
           visibility: data.visibility,
@@ -521,6 +579,7 @@ export const POST = route(async (request, user) => {
       }),
     );
   }
+
   if (data.action === "batchPublish") {
     const deckIds = data.items.map((item) => item.deckId);
     return NextResponse.json(
@@ -536,20 +595,28 @@ export const POST = route(async (request, user) => {
             ),
           )
           .orderBy(asc(decks.id))
-          .for("update");
+          .for("no key update");
         const deckById = new Map(locked.map((d) => [d.id, d]));
         if (deckById.size !== deckIds.length) {
-          throw new AppError(404, "部分题库不存在或没有发布权限。");
+          throw new AppError(404, "部分文件夹不存在或没有发布权限。");
         }
+        // Publish ancestors before descendants so autoSubscribeNew ancestor coverage deduplicates cleanly.
+        const ownedTree = buildServerFolderTree(
+          await loadActiveOwnedFolders(tx, user.id),
+        );
+        const orderedItems = [...data.items].sort(
+          (a, b) =>
+            folderDepth(ownedTree, a.deckId) - folderDepth(ownedTree, b.deckId),
+        );
         const results: { deckId: string; version: number; skipped: boolean }[] =
           [];
-        for (const item of data.items) {
+        for (const item of orderedItems) {
           const deck = deckById.get(item.deckId)!;
           const published = await publishDeckInTx(tx, user.id, deck, {
             expectedVersion: item.expectedVersion,
             visibility: item.visibility ?? data.defaultVisibility,
             summary: item.summary ?? data.defaultSummary,
-            skipUnchanged: data.skipUnchanged,
+            skipUnchanged: item.skipUnchanged ?? data.skipUnchanged,
           });
           results.push(published);
         }
@@ -559,6 +626,7 @@ export const POST = route(async (request, user) => {
       }),
     );
   }
+
   if (data.action === "unpublish") {
     await ownedDeck(user.id, data.deckId);
     await db
@@ -573,6 +641,7 @@ export const POST = route(async (request, user) => {
       );
     return NextResponse.json({ ok: true });
   }
+
   if (data.action === "subscribe") {
     const [deck] = await db
       .select()
@@ -584,23 +653,34 @@ export const POST = route(async (request, user) => {
       !deck.publishedVersion ||
       deck.visibility === "private"
     )
-      throw new AppError(404, "题库尚未发布或不可订阅。");
+      throw new AppError(404, "内容尚未发布或不可订阅。");
     if (deck.ownerId === user.id)
-      throw new AppError(400, "你已经拥有这个题库。");
+      throw new AppError(400, "你已经拥有这个文件夹。");
+    const targetFolderId = await verifyTargetPlacementFolder(
+      db,
+      user.id,
+      data.folderId,
+    );
     await db
       .insert(subscriptions)
       .values({
         userId: user.id,
         deckId: deck.id,
-        groupName: data.groupName,
+        folderId: targetFolderId,
         seenVersion: deck.publishedVersion,
         dismissedVersion: 0,
       })
       .onConflictDoNothing();
     return NextResponse.json({ ok: true });
   }
+
   if (data.action === "batchSubscribe") {
     const uniqueIds = [...new Set(data.deckIds)];
+    const targetFolderId = await verifyTargetPlacementFolder(
+      db,
+      user.id,
+      data.folderId,
+    );
     const validDecks = await db
       .select({ id: decks.id, publishedVersion: decks.publishedVersion })
       .from(decks)
@@ -626,7 +706,7 @@ export const POST = route(async (request, user) => {
         validDecks.map((d) => ({
           userId: user.id,
           deckId: d.id,
-          groupName: data.groupName,
+          folderId: targetFolderId,
           seenVersion: d.publishedVersion,
           dismissedVersion: 0,
         })),
@@ -639,6 +719,7 @@ export const POST = route(async (request, user) => {
       skipped: uniqueIds.length - inserted.length,
     });
   }
+
   if (data.action === "unsubscribe") {
     await db
       .delete(subscriptions)
@@ -650,6 +731,7 @@ export const POST = route(async (request, user) => {
       );
     return NextResponse.json({ ok: true });
   }
+
   if (data.action === "batchUnsubscribe") {
     const uniqueIds = [...new Set(data.deckIds)];
     const removed = await db
@@ -663,11 +745,13 @@ export const POST = route(async (request, user) => {
       .returning({ deckId: subscriptions.deckId });
     return NextResponse.json({ ok: true, removed: removed.length });
   }
+
   if (data.action === "acknowledge") {
     return NextResponse.json(
       await applySubscriptionUpdate(db, user.id, data.deckId, data.version),
     );
   }
+
   if (data.action === "applyUpdate") {
     return NextResponse.json(
       await applySubscriptionUpdate(
@@ -678,6 +762,7 @@ export const POST = route(async (request, user) => {
       ),
     );
   }
+
   if (data.action === "dismissUpdate") {
     const [row] = await db
       .select({
@@ -692,7 +777,7 @@ export const POST = route(async (request, user) => {
           eq(subscriptions.deckId, data.deckId),
         ),
       );
-    if (!row) throw new AppError(404, "题库不可访问。");
+    if (!row) throw new AppError(404, "订阅不可访问。");
     if (data.version > row.publishedVersion) {
       throw new AppError(400, "版本号无效。");
     }
@@ -708,6 +793,7 @@ export const POST = route(async (request, user) => {
       );
     return NextResponse.json({ ok: true, dismissedVersion: nextDismissed });
   }
+
   if (data.action === "applyAllUpdates") {
     const targetIds = data.deckIds ? [...new Set(data.deckIds)] : undefined;
     const updated = await db.transaction(async (tx) => {
@@ -742,5 +828,6 @@ export const POST = route(async (request, user) => {
     });
     return NextResponse.json({ ok: true, updated });
   }
+
   return NextResponse.json({ ok: true });
 }, true);

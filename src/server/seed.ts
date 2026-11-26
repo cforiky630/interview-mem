@@ -1,8 +1,9 @@
 import { getDb } from "@/db";
 import { decks, questions } from "@/db/schema";
 import { contentHash } from "./crypto";
+import { lockUserTree } from "./folders";
 import { ensureWorkspace, nextQuestionBaseMs } from "./workspace";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 const samples = [
   {
@@ -76,12 +77,14 @@ export async function seedSamples(userId: string) {
   await ensureWorkspace(userId);
   const db = await getDb();
   return db.transaction(async (tx) => {
-    // Serialize sample loading for this user so double clicks do not duplicate it.
+    // Serialize sample loading in canonical lock order: users -> decks (ORDER BY id).
+    await lockUserTree(tx, userId);
     await tx
       .select()
       .from(decks)
       .where(eq(decks.ownerId, userId))
-      .for("update");
+      .orderBy(asc(decks.id))
+      .for("no key update");
     const existing = await tx
       .select()
       .from(decks)

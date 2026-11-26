@@ -1,9 +1,12 @@
 "use client";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
   FileText,
+  Folder,
+  FolderPlus,
   ListChecks,
   Loader2,
   Plus,
@@ -11,18 +14,19 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import {
-  api,
-  discardImportPreviewBatches,
-  type ImportGroupTarget,
-} from "@/lib/client";
+import { api, discardImportPreviewBatches } from "@/lib/client";
 import { createUuid } from "@/lib/utils";
 import { readPracticeDraft, savePracticeDraft } from "@/lib/drafts";
 import {
-  formatGroupLabel,
-  inferGroupFromSourceName,
-  listDeckCategories,
-} from "@/lib/grouping";
+  ROOT_FOLDER_LABEL,
+  buildFolderIndex,
+} from "@/lib/folders";
+import {
+  extractRelativeFolderSegments,
+  planFolderImport,
+  type FolderImportStructureMode,
+  type VirtualFolderNode,
+} from "@/lib/folder-import";
 import type { ImportType } from "@/lib/importer";
 import type { ImportFile } from "@/lib/import-files";
 import { IMPORT_LIMITS } from "@/lib/import-material";
@@ -30,10 +34,13 @@ import type { ProofreadItemResult } from "@/lib/ai-proofread";
 import type { ImportMethod, ImportPreview } from "@/lib/import-preview";
 import type { Workspace } from "@/lib/types";
 import type { Mutate } from "./dialogs";
-import { DeckSelectOptions, GroupSelectOptions } from "./deck-select-options";
+import { FolderSelectOptions } from "./folder-select-options";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
-import { ImportPreviewCard, type ImportCandidate } from "./import-preview-card";
+import {
+  ImportPreviewCard,
+  type ImportCandidate,
+} from "./import-preview-card";
 import { ImportSourceInput } from "./import-source-input";
 import "./import-dialog.css";
 
@@ -60,10 +67,8 @@ type SavedDraft = {
   inputType: ImportType;
   method: ImportMethod;
   deckId: string;
-  groupChoice?: string;
-  newGroupCategory?: string;
-  newGroupTitle?: string;
-  sourceGroups?: Record<string, { category: string; title: string }>;
+  structureMode?: FolderImportStructureMode;
+  stripOuterFolder?: boolean;
   proofreadEnabled?: boolean;
   sourceName?: string;
   batchId?: string;
@@ -82,12 +87,50 @@ function writeDraft(storage: string, draft: SavedDraft | null) {
   savePracticeDraft(`${storage}:review`, draft ? JSON.stringify(draft) : "");
 }
 
+function VirtualFolderTree({
+  nodes,
+  depth = 0,
+}: {
+  nodes: readonly VirtualFolderNode[];
+  depth?: number;
+}) {
+  return (
+    <ul className="import-virtual-tree-list">
+      {nodes.map((node) => (
+        <li key={node.pathKey}>
+          <div
+            className="import-virtual-tree-row"
+            style={{ paddingLeft: `${depth * 16}px` }}
+          >
+            {node.status === "create" ? (
+              <FolderPlus size={14} className="is-create" />
+            ) : (
+              <Folder size={14} className="is-reuse" />
+            )}
+            <span className="import-virtual-tree-name">{node.title}</span>
+            <span
+              className={`import-virtual-status ${node.status === "create" ? "is-create" : "is-reuse"}`}
+            >
+              {node.status === "create" ? "新建文件夹" : "沿用已有文件夹"}
+            </span>
+            {node.directQuestionCount > 0 && (
+              <small className="muted">+{node.directQuestionCount} 题</small>
+            )}
+          </div>
+          {node.children.length > 0 && (
+            <VirtualFolderTree nodes={node.children} depth={depth + 1} />
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ImportDialog({
   open,
   onClose,
   data,
   preferredDeck,
-  preferredGroupId,
   mutate,
   onView,
   onInbox,
@@ -99,7 +142,6 @@ export function ImportDialog({
   onClose: () => void;
   data: Workspace;
   preferredDeck?: string | null;
-  preferredGroupId?: string | null;
   mutate: Mutate;
   onView: (id: string | null) => void;
   onInbox: () => void;
@@ -107,32 +149,24 @@ export function ImportDialog({
   seed?: ImportSeed;
   onImported?: () => void;
 }) {
-  const own = data.decks.filter((d) => d.isOwner);
+  const folderIndex = useMemo(() => buildFolderIndex(data.decks), [data.decks]);
+  const own = useMemo(
+    () => data.decks.filter((d) => d.isOwner),
+    [data.decks],
+  );
   const storage = `shiyi:import:${data.user.id}${seed?.editQuestion ? `:edit:${seed.editQuestion.id}` : ""}`;
-  const categoryListId = useId();
   const [raw, setRaw] = useState("");
   const [inputType, setInputType] = useState<ImportType>("qa");
   const [method, setMethod] = useState<ImportMethod>("rules");
-  const [deckId, setDeckId] = useState(
-    preferredDeck === null ? "" : (preferredDeck ?? own[0]?.id ?? ""),
-  );
-  const [groupChoice, setGroupChoice] = useState(() => {
-    const initialDeckId =
-      preferredDeck === null ? "" : (preferredDeck ?? own[0]?.id ?? "");
-    const initialDeck = own.find((d) => d.id === initialDeckId);
-    if (
-      preferredGroupId &&
-      initialDeck?.groups.some((g) => g.id === preferredGroupId)
-    ) {
-      return preferredGroupId;
-    }
-    return "";
+  const [deckId, setDeckId] = useState(() => {
+    const initial = preferredDeck ?? null;
+    return initial && own.some((d) => d.id === initial) ? initial : "";
   });
-  const [newGroupCategory, setNewGroupCategory] = useState("");
-  const [newGroupTitle, setNewGroupTitle] = useState("");
-  const [sourceGroups, setSourceGroups] = useState<
-    Record<string, { category: string; title: string }>
-  >({});
+  const [structureMode, setStructureMode] =
+    useState<FolderImportStructureMode>("preserve");
+  const [stripOuterOverride, setStripOuterOverride] = useState<boolean | null>(
+    null,
+  );
   const [sourceName, setSourceName] = useState("");
   const [files, setFiles] = useState<ImportFile[]>([]);
   const [fileMode, setFileMode] = useState(false);
@@ -154,14 +188,19 @@ export function ImportDialog({
   const uncommittedBatchIdsRef = useRef<Set<string>>(new Set());
   const activeSourceBatchIdsRef = useRef<Set<string>>(new Set());
   activeSourceBatchIdsRef.current = new Set(sources.map((s) => s.batchId));
+
   function flushDiscard(batchIds: string[]) {
     const unique = [...new Set(batchIds.filter(Boolean))];
     if (!unique.length) return;
     for (const id of unique) uncommittedBatchIdsRef.current.delete(id);
-    void discardImportPreviewBatches(unique, data.user.id).catch(() => {});
+    void discardImportPreviewBatches(unique, data.user.id).catch(() => {
+      for (const id of unique) uncommittedBatchIdsRef.current.add(id);
+    });
   }
+
   const [previewSignature, setPreviewSignature] = useState("");
   const [busy, setBusy] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [progress, setProgress] = useState(0);
   const [proofreadEnabled, setProofreadEnabled] = useState(false);
   const [proofreading, setProofreading] = useState(false);
@@ -175,6 +214,8 @@ export function ImportDialog({
     added: number;
     duplicates: number;
     updated: number;
+    createdFolders: number;
+    reusedFolders: number;
   } | null>(null);
   const controller = useRef<AbortController | null>(null);
   const proofreadController = useRef<AbortController | null>(null);
@@ -185,81 +226,138 @@ export function ImportDialog({
   const committing = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const previewHeading = useRef<HTMLHeadingElement>(null);
-  const selectedDeck = own.find((deck) => deck.id === deckId);
-  const deckGroups = selectedDeck?.groups ?? [];
-  const deckCategories = useMemo(
-    () => listDeckCategories(deckGroups),
-    [deckGroups],
-  );
-  const canAssignGroup = Boolean(deckId) && !seed?.editQuestion;
-  const canAutoFileGroup =
-    canAssignGroup &&
-    (fileMode ? files.length > 0 : sources.some((s) => Boolean(s.name)));
-  const effectiveGroupChoice = !canAssignGroup
-    ? ""
-    : groupChoice === "__auto__" && !canAutoFileGroup
-      ? ""
-      : groupChoice &&
-          groupChoice !== "__new__" &&
-          groupChoice !== "__auto__" &&
-          !deckGroups.some((g) => g.id === groupChoice)
-        ? ""
-        : groupChoice;
-  const destinationBase = selectedDeck?.title ?? "未分类";
-  const destinationGroupLabel =
-    effectiveGroupChoice === "__auto__"
-      ? "按文件自动建组"
-      : effectiveGroupChoice === "__new__"
-        ? formatGroupLabel({
-            category: newGroupCategory,
-            title: newGroupTitle || "新建分组",
-          })
-        : effectiveGroupChoice
-          ? formatGroupLabel(
-              deckGroups.find((g) => g.id === effectiveGroupChoice),
-            )
-          : "";
-  const destination = destinationGroupLabel
-    ? `${destinationBase} / ${destinationGroupLabel}`
-    : destinationBase;
+
+  const destination = deckId
+    ? folderIndex.pathOf(deckId)
+    : ROOT_FOLDER_LABEL;
+
+  // Note: deckId is intentionally omitted from parse signature so changing target folder in preview never forces re-parsing!
   const signature = useMemo(
     () =>
       JSON.stringify(
         fileMode
-          ? ["files", files.map((file) => file.id), inputType, method, deckId]
-          : [raw, inputType, method, deckId, sourceName],
+          ? ["files", files.map((file) => file.id), inputType, method]
+          : [raw, inputType, method, sourceName],
       ),
-    [raw, inputType, method, deckId, sourceName, fileMode, files],
+    [raw, inputType, method, sourceName, fileMode, files],
   );
   const hasPreview = sources.length > 0;
   const canParse = fileMode ? files.length > 0 : !!raw.trim();
   const stale = hasPreview && signature !== previewSignature;
   const selected = questions.filter((q) => q.selected);
+  const duplicateDetectedCount = questions.filter(
+    (q) => (q.duplicateMatches?.length ?? 0) > 0,
+  ).length;
   const overBatch =
     selected.reduce((total, q) => total + q.title.length + q.answer.length, 0) >
     IMPORT_LIMITS.batchChars;
-  const groupInvalid =
-    canAssignGroup &&
-    ((effectiveGroupChoice === "__new__" && !newGroupTitle.trim()) ||
-      (effectiveGroupChoice === "__auto__" &&
-        sources.some((source) => {
-          const hasSelected = selected.some(
-            (q) => q.batchId === source.batchId,
-          );
-          if (!hasSelected) return false;
-          const info =
-            sourceGroups[source.batchId] ??
-            inferGroupFromSourceName(source.name);
-          return !info.title.trim();
-        })));
+
+  // Compute virtual local folder import plan.
+  const hasNestedPaths = useMemo(() => {
+    const names =
+      step === "preview" && sources.length
+        ? sources.map((s) => s.name)
+        : fileMode
+          ? files.map((f) => f.name)
+          : sourceName
+            ? [sourceName]
+            : [];
+    return names.some((n) => extractRelativeFolderSegments(n).length > 0);
+  }, [step, sources, fileMode, files, sourceName]);
+
+  const previewSourceCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const q of selected) {
+      map.set(q.batchId, (map.get(q.batchId) ?? 0) + 1);
+    }
+    return map;
+  }, [selected]);
+
+  const rawPlanProbe = useMemo(() => {
+    if (!hasNestedPaths || seed?.editQuestion) return null;
+    const planSources =
+      step === "preview" && sources.length
+        ? sources.map((s) => ({
+            batchId: s.batchId,
+            sourceName: s.name,
+            questionCount: previewSourceCounts.get(s.batchId) ?? 0,
+          }))
+        : files.map((f) => ({
+            batchId: f.id,
+            sourceName: f.name,
+            questionCount: 1,
+          }));
+    return planFolderImport({
+      existingFolders: data.decks,
+      baseFolderId: deckId || null,
+      sources: planSources,
+      structureMode,
+      stripOuterFolder: false,
+    });
+  }, [
+    hasNestedPaths,
+    seed?.editQuestion,
+    step,
+    sources,
+    previewSourceCounts,
+    files,
+    data.decks,
+    deckId,
+    structureMode,
+  ]);
+
+  const effectiveStripOuter =
+    stripOuterOverride !== null
+      ? stripOuterOverride
+      : Boolean(rawPlanProbe?.outerMatchesBase);
+
+  const folderPlan = useMemo(() => {
+    if (!hasNestedPaths || seed?.editQuestion) return null;
+    const planSources =
+      step === "preview" && sources.length
+        ? sources.map((s) => ({
+            batchId: s.batchId,
+            sourceName: s.name,
+            questionCount: previewSourceCounts.get(s.batchId) ?? 0,
+          }))
+        : files.map((f) => ({
+            batchId: f.id,
+            sourceName: f.name,
+            questionCount: 1,
+          }));
+    return planFolderImport({
+      existingFolders: data.decks,
+      baseFolderId: deckId || null,
+      sources: planSources,
+      structureMode,
+      stripOuterFolder: effectiveStripOuter,
+    });
+  }, [
+    hasNestedPaths,
+    seed?.editQuestion,
+    step,
+    sources,
+    previewSourceCounts,
+    files,
+    data.decks,
+    deckId,
+    structureMode,
+    effectiveStripOuter,
+  ]);
+
+  const folderPlanErrors = folderPlan
+    ? [...folderPlan.depthErrors, ...folderPlan.nameErrors]
+    : [];
+
   const invalid =
     overBatch ||
-    groupInvalid ||
+    folderPlanErrors.length > 0 ||
     selected.some(
       (q) =>
         !q.title.trim() || q.title.length > 200 || q.answer.length > 100_000,
     ) ||
     (!!replaceKey && !selected.some((q) => q.key === replaceKey));
+
   useEffect(() => {
     try {
       const saved = JSON.parse(
@@ -287,29 +385,17 @@ export function ImportDialog({
         setMethod(saved.method);
         setProofreadEnabled(!!saved.proofreadEnabled);
         setSourceName(saved.sourceName || "");
-        if (!saved.deckId || own.some((d) => d.id === saved.deckId))
+        if (!saved.deckId || own.some((d) => d.id === saved.deckId)) {
           setDeckId(saved.deckId);
-        if (typeof saved.groupChoice === "string")
-          setGroupChoice(saved.groupChoice);
-        if (typeof saved.newGroupCategory === "string")
-          setNewGroupCategory(saved.newGroupCategory.slice(0, 40));
-        if (typeof saved.newGroupTitle === "string")
-          setNewGroupTitle(saved.newGroupTitle.slice(0, 80));
-        if (saved.sourceGroups && typeof saved.sourceGroups === "object") {
-          const valid: Record<string, { category: string; title: string }> = {};
-          for (const [k, v] of Object.entries(saved.sourceGroups)) {
-            if (
-              v &&
-              typeof v.category === "string" &&
-              typeof v.title === "string"
-            ) {
-              valid[k] = {
-                category: v.category.slice(0, 40),
-                title: v.title.slice(0, 80),
-              };
-            }
-          }
-          setSourceGroups(valid);
+        }
+        if (
+          saved.structureMode === "preserve" ||
+          saved.structureMode === "flatten"
+        ) {
+          setStructureMode(saved.structureMode);
+        }
+        if (typeof saved.stripOuterFolder === "boolean") {
+          setStripOuterOverride(saved.stripOuterFolder);
         }
         const previousFiles = Array.isArray(saved.files)
           ? saved.files
@@ -354,7 +440,6 @@ export function ImportDialog({
         setFiles(previousFiles);
         setFileMode(!!saved.fileMode && previousFiles.length > 0);
         setPreviewSignature(saved.signature);
-        // 兼容此前只记录一个 batchId 的草稿，逐题补齐来源。
         setQuestions(
           saved.questions.flatMap(
             ({
@@ -364,6 +449,7 @@ export function ImportDialog({
               tags,
               selected,
               batchId,
+              duplicateMatches,
               proofreadStatus,
               corrections,
             }) => {
@@ -378,6 +464,9 @@ export function ImportDialog({
                       tags,
                       selected,
                       batchId: id,
+                      ...(Array.isArray(duplicateMatches)
+                        ? { duplicateMatches }
+                        : {}),
                       ...(proofreadStatus && proofreadStatus !== "checking"
                         ? { proofreadStatus }
                         : {}),
@@ -424,6 +513,7 @@ export function ImportDialog({
       }
     };
   }, [storage]);
+
   useEffect(() => {
     if (!loaded || result) return;
     writeDraft(storage, {
@@ -431,10 +521,10 @@ export function ImportDialog({
       inputType,
       method,
       deckId,
-      groupChoice,
-      newGroupCategory,
-      newGroupTitle,
-      sourceGroups,
+      structureMode,
+      ...(stripOuterOverride !== null
+        ? { stripOuterFolder: stripOuterOverride }
+        : {}),
       proofreadEnabled,
       sourceName,
       sources,
@@ -451,10 +541,8 @@ export function ImportDialog({
     inputType,
     method,
     deckId,
-    groupChoice,
-    newGroupCategory,
-    newGroupTitle,
-    sourceGroups,
+    structureMode,
+    stripOuterOverride,
     proofreadEnabled,
     sourceName,
     sources,
@@ -467,16 +555,19 @@ export function ImportDialog({
     result,
     storage,
   ]);
+
   useEffect(() => {
     if (loaded && seed && !hasPreview && !fileMode && method === "rules") {
       const timer = setTimeout(() => void parse(), 0);
       return () => clearTimeout(timer);
     }
   }, [loaded, storage]);
+
   useEffect(() => {
     if (step === "preview")
       previewHeading.current?.focus({ preventScroll: true });
   }, [step]);
+
   function abortProofread() {
     const old = proofreadController.current;
     proofreadController.current = null;
@@ -504,6 +595,7 @@ export function ImportDialog({
     stop();
     onClose();
   }
+
   async function runProofread(targets: ImportCandidate[]) {
     if (!data.settings.hasKey) {
       onSettings();
@@ -609,6 +701,7 @@ export function ImportDialog({
       }
     }
   }
+
   async function parse() {
     if (
       controller.current ||
@@ -666,7 +759,6 @@ export function ImportDialog({
           next.signal.throwIfAborted();
           setProgress(index + 1);
           const id = materials[index].id;
-          // 多文件 AI 按顺序调用。中途失败或取消后可复用本次已完成的文件。
           if (
             method === "ai" &&
             id &&
@@ -700,14 +792,22 @@ export function ImportDialog({
       }
       if (controller.current !== next) return;
       const candidates = previews.flatMap(({ batchId, questions }) =>
-        questions.map(({ key, title, answer, tags }) => ({
-          key,
-          title,
-          answer,
-          tags,
-          batchId,
-          selected: true,
-        })),
+        questions.map(({ key, title, answer, tags, duplicateMatches }) => {
+          // Global Soft Dedup: non-empty exact duplicates default to unchecked (skip), user can override; blank stubs stay checked with same-folder notice.
+          const defaultSkip =
+            !seed?.editQuestion &&
+            Boolean(answer.trim()) &&
+            Boolean(duplicateMatches && duplicateMatches.length > 0);
+          return {
+            key,
+            title,
+            answer,
+            tags,
+            batchId,
+            ...(duplicateMatches?.length ? { duplicateMatches } : {}),
+            selected: !defaultSkip,
+          };
+        }),
       );
       setQuestions(candidates);
       if (seed?.editQuestion) {
@@ -728,14 +828,6 @@ export function ImportDialog({
         ...(materials[index].id ? { fileId: materials[index].id } : {}),
       }));
       setSources(nextSources);
-      setSourceGroups(
-        Object.fromEntries(
-          nextSources.map((source) => [
-            source.batchId,
-            inferGroupFromSourceName(source.name),
-          ]),
-        ),
-      );
       setPreviewSignature(signature);
       setUndo(null);
       setExpandedKey(candidates[0]?.answer.trim() ? candidates[0].key : null);
@@ -756,6 +848,7 @@ export function ImportDialog({
       void runProofread(parsedCandidates);
     }
   }
+
   async function commit() {
     if (
       !hasPreview ||
@@ -770,44 +863,24 @@ export function ImportDialog({
     setSaving(true);
     setError("");
     try {
-      const resolveBatchGroup = (
-        source: PreviewSource,
-      ): ImportGroupTarget | undefined => {
-        if (!canAssignGroup || !effectiveGroupChoice) return undefined;
-        if (effectiveGroupChoice === "__new__") {
-          return {
-            mode: "create",
-            title: newGroupTitle.trim(),
-            category: newGroupCategory.trim(),
-            description: "",
-          };
-        }
-        if (effectiveGroupChoice === "__auto__") {
-          const inferred =
-            sourceGroups[source.batchId] ??
-            inferGroupFromSourceName(source.name);
-          return {
-            mode: "create",
-            title: inferred.title.trim(),
-            category: inferred.category.trim(),
-            description: "",
-          };
-        }
-        return { mode: "existing", groupId: effectiveGroupChoice };
-      };
       const batches = sources
         .map((source) => {
-          const batchGroup = resolveBatchGroup(source);
+          const placement = folderPlan?.placements.get(source.batchId);
+          const relativeFolderPath =
+            !seed?.editQuestion &&
+            structureMode === "preserve" &&
+            placement?.relativeSegments.length
+              ? placement.relativeSegments
+              : undefined;
           return {
             batchId: source.batchId,
-            ...(batchGroup ? { group: batchGroup } : {}),
+            ...(relativeFolderPath ? { relativeFolderPath } : {}),
             questions: selected
               .filter((q) => q.batchId === source.batchId)
               .map(({ key, title, answer, tags }) => ({
                 key,
                 title,
                 answer,
-                // 更新当前题时沿用编辑页的标签。
                 tags:
                   key === replaceKey && seed?.editQuestion
                     ? seed.editQuestion.tags
@@ -816,8 +889,16 @@ export function ImportDialog({
           };
         })
         .filter((batch) => batch.questions.length);
+
+      // Any selected candidate that had a duplicate match is explicitly overridden by user -> pass in forceIncludeKeys.
+      const forceIncludeKeys = selected
+        .filter((q) => (q.duplicateMatches?.length ?? 0) > 0)
+        .map((q) => q.key);
+
       const saved = await mutate("/api/import/commit", {
         ...(batches.length === 1 ? batches[0] : { batches }),
+        targetFolderId: deckId || null,
+        ...(forceIncludeKeys.length ? { forceIncludeKeys } : {}),
         ...(replaceKey && seed?.editQuestion
           ? {
               replace: {
@@ -840,8 +921,9 @@ export function ImportDialog({
           added: Number(saved.added),
           duplicates: Number(saved.duplicates),
           updated: Number(saved.updated ?? 0),
+          createdFolders: Number(saved.createdFolders ?? 0),
+          reusedFolders: Number(saved.reusedFolders ?? 0),
         });
-        // 只清理这次入库的来源。切到文件模式前粘贴的正文仍是另一份草稿。
         const remainingText = fileMode ? raw : "";
         const remainingFiles = fileMode ? [] : files;
         writeDraft(
@@ -870,6 +952,7 @@ export function ImportDialog({
       setSaving(false);
     }
   }
+
   function change(key: string, patch: Partial<ImportCandidate>) {
     if (patch.selected === false && key === replaceKey) setReplaceKey("");
     setQuestions((items) =>
@@ -896,11 +979,33 @@ export function ImportDialog({
     setReplaceKey("");
     setStep("source");
   }
-  function discardPreview() {
-    flushDiscard([
-      ...Array.from(uncommittedBatchIdsRef.current),
-      ...sources.map((s) => s.batchId),
-    ]);
+  async function discardPreview() {
+    if (locked) return;
+    const ids = [
+      ...new Set(
+        [
+          ...Array.from(uncommittedBatchIdsRef.current),
+          ...sources.map((s) => s.batchId),
+        ].filter(Boolean),
+      ),
+    ];
+    if (ids.length) {
+      setDiscarding(true);
+      setError("");
+      try {
+        await discardImportPreviewBatches(ids, data.user.id);
+        for (const id of ids) uncommittedBatchIdsRef.current.delete(id);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? `清空未保存内容失败：${err.message}`
+            : "清空未保存内容失败，请重试。",
+        );
+        return;
+      } finally {
+        setDiscarding(false);
+      }
+    }
     aiPreviews.current = null;
     if (fileMode || sources.some((s) => s.fileId || s.name)) {
       setFiles([]);
@@ -918,8 +1023,7 @@ export function ImportDialog({
         Array.isArray(parsed) &&
         parsed[0] === "files" &&
         parsed[2] === inputType &&
-        parsed[3] === method &&
-        parsed[4] === deckId
+        parsed[3] === method
       );
     } catch {
       return false;
@@ -959,7 +1063,6 @@ export function ImportDialog({
           remainingFiles.map((file) => file.id),
           inputType,
           method,
-          deckId,
         ]),
       );
     }
@@ -1006,7 +1109,6 @@ export function ImportDialog({
               remainingFiles.map((file) => file.id),
               inputType,
               method,
-              deckId,
             ]),
           );
         }
@@ -1078,7 +1180,9 @@ export function ImportDialog({
         ?.scrollIntoView({ block: "nearest" });
     });
   }
-  const locked = busy || proofreading || reading || saving || !!result;
+
+  const locked =
+    busy || proofreading || reading || saving || discarding || !!result;
   const parseLabel = hasPreview ? "重新解析" : "解析并预览";
   const toInbox = selected.every((q) => !q.answer.trim());
   const allSelected =
@@ -1088,13 +1192,14 @@ export function ImportDialog({
       sum + (q.corrections?.filter((c) => c.status === "pending").length ?? 0),
     0,
   );
+
   return (
     <Dialog
       open={open}
       onOpenChange={(value) => {
         if (!value) close();
       }}
-      title={seed?.editQuestion ? "预览题目切分" : "导入面试题"}
+      title={seed?.editQuestion ? "预览题目切分" : "导入资料"}
       className="import-workflow"
     >
       <div className="import-step-bar">
@@ -1118,17 +1223,11 @@ export function ImportDialog({
         </div>
         {step === "preview" && (
           <p className="import-destination">
-            保存到 <strong title={destination}>{destination}</strong>
+            导入到 <strong title={destination}>{destination}</strong>
           </p>
         )}
       </div>
-      {deckCategories.length > 0 && (
-        <datalist id={categoryListId}>
-          {deckCategories.map((cat) => (
-            <option key={cat} value={cat} />
-          ))}
-        </datalist>
-      )}
+
       {step === "source" ? (
         <section
           className="import-stage import-source-stage"
@@ -1196,79 +1295,22 @@ export function ImportDialog({
               </span>
             </label>
             <label className="field import-destination-field">
-              保存到题库
+              导入到文件夹
               <select
-                aria-label="保存到题库"
+                aria-label="导入到文件夹"
                 value={deckId}
                 disabled={locked}
-                onChange={(event) => {
-                  const nextDeckId = event.target.value;
-                  setDeckId(nextDeckId);
-                  if (!nextDeckId) {
-                    setGroupChoice("");
-                  } else if (
-                    groupChoice &&
-                    groupChoice !== "__new__" &&
-                    groupChoice !== "__auto__" &&
-                    !own
-                      .find((d) => d.id === nextDeckId)
-                      ?.groups.some((g) => g.id === groupChoice)
-                  ) {
-                    setGroupChoice("");
-                  }
-                }}
+                onChange={(event) => setDeckId(event.target.value)}
               >
-                <option value="">未分类</option>
-                <DeckSelectOptions decks={own} />
+                <FolderSelectOptions
+                  decks={data.decks}
+                  includeRoot
+                  rootLabel={ROOT_FOLDER_LABEL}
+                />
               </select>
             </label>
-            {canAssignGroup && (
-              <label className="field import-group-field">
-                归入分组（可选）
-                <select
-                  aria-label="归入分组"
-                  value={effectiveGroupChoice}
-                  disabled={locked}
-                  onChange={(event) => setGroupChoice(event.target.value)}
-                >
-                  <option value="">不分组</option>
-                  {canAutoFileGroup && (
-                    <option value="__auto__">按文件名自动建组</option>
-                  )}
-                  <GroupSelectOptions
-                    groups={deckGroups}
-                    includeUngrouped={false}
-                  />
-                  <option value="__new__">+ 新建分组…</option>
-                </select>
-              </label>
-            )}
           </div>
-          {canAssignGroup && effectiveGroupChoice === "__new__" && (
-            <div className="import-group-inline-create">
-                <label className="field">
-                一级分类 / 公司（可选）
-                <input
-                  list={categoryListId}
-                  value={newGroupCategory}
-                  disabled={locked}
-                  maxLength={40}
-                  placeholder="例如：字节跳动（可留空）"
-                  onChange={(event) => setNewGroupCategory(event.target.value)}
-                />
-              </label>
-              <label className="field">
-                新建分组名称
-                <input
-                  value={newGroupTitle}
-                  disabled={locked}
-                  maxLength={80}
-                  placeholder="例如：抖音后端一面 · 2026.03"
-                  onChange={(event) => setNewGroupTitle(event.target.value)}
-                />
-              </label>
-            </div>
-          )}
+
           <ImportSourceInput
             raw={raw}
             onRawChange={(value) => {
@@ -1280,6 +1322,7 @@ export function ImportDialog({
             files={files}
             onFilesChange={(nextFiles) => {
               setError("");
+              setStripOuterOverride(null);
               if (!nextFiles.length) {
                 setFiles([]);
                 if (fileMode) setFileMode(false);
@@ -1332,7 +1375,6 @@ export function ImportDialog({
                         nextFiles.map((file) => file.id),
                         inputType,
                         method,
-                        deckId,
                       ]),
                     );
                   }
@@ -1362,11 +1404,16 @@ export function ImportDialog({
         <section
           className="import-stage import-preview-stage"
           aria-label="解析结果"
-          aria-busy={busy || proofreading || saving}
+          aria-busy={busy || proofreading || saving || discarding}
         >
           <div className="import-review-header">
             <h2 ref={previewHeading} tabIndex={-1}>
-              {questions.length} 道主问题
+              {questions.length} 条解析结果
+              {duplicateDetectedCount > 0 && (
+                <small className="import-review-dup-badge">
+                  · {duplicateDetectedCount} 条重复
+                </small>
+              )}
               {proofreadPendingTotal > 0 && (
                 <small className="import-review-proofread-badge">
                   · {proofreadPendingTotal} 处待确认纠错
@@ -1379,7 +1426,7 @@ export function ImportDialog({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  disabled={busy || saving || proofreading}
+                  disabled={locked}
                   onClick={() => void runProofread(questions)}
                 >
                   <Sparkles size={14} /> AI 纠错核查
@@ -1389,7 +1436,7 @@ export function ImportDialog({
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={busy || saving}
+                  disabled={locked}
                   onClick={() => {
                     setQuestions(undo.questions);
                     setSources(undo.sources);
@@ -1408,7 +1455,7 @@ export function ImportDialog({
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={busy || saving}
+                  disabled={locked}
                   onClick={() => {
                     const nextSelected = !allSelected;
                     if (!nextSelected && replaceKey) setReplaceKey("");
@@ -1426,7 +1473,7 @@ export function ImportDialog({
                   <Button
                     variant="ghost"
                     size="sm"
-                    disabled={busy || saving || stale}
+                    disabled={locked || stale}
                     onClick={addQuestion}
                   >
                     <Plus size={15} /> 添加题目
@@ -1437,14 +1484,20 @@ export function ImportDialog({
                   variant="ghost"
                   size="sm"
                   className="danger-text"
-                  disabled={busy || saving}
-                  onClick={discardPreview}
+                  disabled={locked}
+                  onClick={() => void discardPreview()}
                 >
-                  <Trash2 size={14} /> 清空预览
+                  {discarding ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : (
+                    <Trash2 size={14} />
+                  )}{" "}
+                  清空预览
                 </Button>
               )}
             </div>
           </div>
+
           {stale && (
             <p className="import-notice">
               <span>原文或解析方式已改变，请重新解析后保存。</span>
@@ -1452,72 +1505,121 @@ export function ImportDialog({
                 type="button"
                 className="text-button danger-text"
                 disabled={locked}
-                onClick={discardPreview}
+                onClick={() => void discardPreview()}
               >
-                清空未保存内容
+                {discarding ? "正在清空…" : "清空未保存内容"}
               </button>
             </p>
           )}
           {!stale && overBatch && (
             <p className="import-notice">
-              选中的题目超过 15 万字符，请减少本次确认的题目。
+              选中的资料超过 15 万字符，请减少本次确认的条目。
             </p>
           )}
-          {!stale && groupInvalid && (
-            <p className="import-notice">
-              请填写要新建的分组名称，或切换为「不分组」。
-            </p>
-          )}
-          {canAssignGroup && !result && hasPreview && !stale && (
-            <div className="import-preview-group-bar">
-              <label className="field import-group-field">
-                入库分组（可选）
-                <select
-                  aria-label="预览入库分组"
-                  value={effectiveGroupChoice}
-                  disabled={locked}
-                  onChange={(event) => setGroupChoice(event.target.value)}
-                >
-                  <option value="">不分组</option>
-                  {canAutoFileGroup && (
-                    <option value="__auto__">按文件名自动建组</option>
-                  )}
-                  <GroupSelectOptions
-                    groups={deckGroups}
-                    includeUngrouped={false}
-                  />
-                  <option value="__new__">+ 新建分组…</option>
-                </select>
-              </label>
-              {effectiveGroupChoice === "__new__" && (
-                <div className="import-group-inline-create">
-                  <label className="field">
-                    一级分类 / 公司（可选）
-                    <input
-                      list={categoryListId}
-                      value={newGroupCategory}
-                      disabled={locked}
-                      maxLength={40}
-                      placeholder="例如：字节跳动"
-                      onChange={(event) =>
-                        setNewGroupCategory(event.target.value)
-                      }
+
+          {!result && hasPreview && !stale && !seed?.editQuestion && (
+            <div className="import-folder-plan-card">
+              <div className="import-folder-plan-bar">
+                <label className="field import-destination-field">
+                  目标文件夹
+                  <select
+                    aria-label="预览目标文件夹"
+                    value={deckId}
+                    disabled={locked}
+                    onChange={(event) => setDeckId(event.target.value)}
+                  >
+                    <FolderSelectOptions
+                      decks={data.decks}
+                      includeRoot
+                      rootLabel={ROOT_FOLDER_LABEL}
                     />
-                  </label>
-                  <label className="field">
-                    新建分组名称
-                    <input
-                      value={newGroupTitle}
+                  </select>
+                </label>
+
+                {hasNestedPaths && (
+                  <div
+                    className="import-choice"
+                    role="group"
+                    aria-label="本地目录处理方式"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={structureMode === "preserve"}
                       disabled={locked}
-                      maxLength={80}
-                      placeholder="例如：抖音后端一面 · 2026.03"
-                      onChange={(event) => setNewGroupTitle(event.target.value)}
-                    />
-                  </label>
-                </div>
-              )}
+                      onClick={() => setStructureMode("preserve")}
+                    >
+                      保留原有目录结构
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={structureMode === "flatten"}
+                      disabled={locked}
+                      onClick={() => setStructureMode("flatten")}
+                    >
+                      全部放到当前位置
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {hasNestedPaths &&
+                structureMode === "preserve" &&
+                folderPlan && (
+                  <div className="import-virtual-plan">
+                    <div className="import-virtual-plan-head">
+                      <span className="small">
+                        虚拟目录预览（取消导入不会产生任何空文件夹）：
+                        {folderPlan.foldersToCreate > 0 && (
+                          <strong> 将新建 {folderPlan.foldersToCreate} 个</strong>
+                        )}
+                        {folderPlan.foldersToReuse > 0 && (
+                          <span>
+                            {folderPlan.foldersToCreate > 0 ? "，" : " "}
+                            沿用已有 {folderPlan.foldersToReuse} 个
+                          </span>
+                        )}
+                        {folderPlan.foldersToCreate === 0 &&
+                          folderPlan.foldersToReuse === 0 && (
+                            <span> 直接存入「{destination}」</span>
+                          )}
+                      </span>
+                      {folderPlan.commonOuterFolder && (
+                        <label className="checkbox-inline">
+                          <input
+                            type="checkbox"
+                            checked={effectiveStripOuter}
+                            disabled={locked}
+                            onChange={(e) =>
+                              setStripOuterOverride(e.target.checked)
+                            }
+                          />
+                          <span>
+                            剥离外层目录「{folderPlan.commonOuterFolder}」
+                          </span>
+                        </label>
+                      )}
+                    </div>
+                    {folderPlan.tree.length > 0 && (
+                      <VirtualFolderTree nodes={folderPlan.tree} />
+                    )}
+                    {folderPlanErrors.length > 0 && (
+                      <div className="conflict-box" role="alert">
+                        <div className="conflict-box-head">
+                          <AlertTriangle size={14} />
+                          <strong>部分目录无法按当前结构导入</strong>
+                        </div>
+                        <ul className="small muted">
+                          {folderPlanErrors.slice(0, 4).map((msg, i) => (
+                            <li key={i}>{msg}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
             </div>
           )}
+
           {seed?.editQuestion && !!questions.length && !result && (
             <label className="field import-replace-field">
               当前题的处理
@@ -1554,11 +1656,13 @@ export function ImportDialog({
               </button>
             </p>
           )}
+
           {sources.map((source) => {
             const items = questions.flatMap((q, index) =>
               q.batchId === source.batchId ? [{ q, index }] : [],
             );
             if (!items.length) return null;
+            const placement = folderPlan?.placements.get(source.batchId);
             return (
               <section
                 className="import-review-group"
@@ -1569,6 +1673,11 @@ export function ImportDialog({
                   <h3>
                     <FileText size={15} aria-hidden="true" />
                     <span>{source.name}</span>
+                    {placement && (
+                      <small className="import-source-dest">
+                        → {placement.displayPath}
+                      </small>
+                    )}
                     <span>{items.length} 道</span>
                     {!result && (
                       <button
@@ -1583,58 +1692,6 @@ export function ImportDialog({
                     )}
                   </h3>
                 )}
-                {canAssignGroup &&
-                  effectiveGroupChoice === "__auto__" &&
-                  !result && (
-                    <div className="import-source-group-bar">
-                      {(() => {
-                        const currentGroup =
-                          sourceGroups[source.batchId] ??
-                          inferGroupFromSourceName(source.name);
-                        return (
-                          <>
-                            <label className="field">
-                              分类 / 公司
-                              <input
-                                list={categoryListId}
-                                value={currentGroup.category}
-                                disabled={locked}
-                                maxLength={40}
-                                placeholder="可选"
-                                onChange={(event) =>
-                                  setSourceGroups((prev) => ({
-                                    ...prev,
-                                    [source.batchId]: {
-                                      ...currentGroup,
-                                      category: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label className="field">
-                              分组名称
-                              <input
-                                value={currentGroup.title}
-                                disabled={locked}
-                                maxLength={80}
-                                placeholder="必填"
-                                onChange={(event) =>
-                                  setSourceGroups((prev) => ({
-                                    ...prev,
-                                    [source.batchId]: {
-                                      ...currentGroup,
-                                      title: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  )}
                 {source.warning && (
                   <p className="import-notice">{source.warning}</p>
                 )}
@@ -1673,13 +1730,13 @@ export function ImportDialog({
       {step === "source" &&
         (method === "ai" || proofreadEnabled) &&
         !data.settings.hasKey && (
-        <p className="import-notice">
-          先配置自己的 AI 连接。
-          <button className="text-button" onClick={onSettings}>
-            去配置
-          </button>
-        </p>
-      )}
+          <p className="import-notice">
+            先配置自己的 AI 连接。
+            <button className="text-button" onClick={onSettings}>
+              去配置
+            </button>
+          </p>
+        )}
       <div className="dialog-footer import-footer">
         {result ? (
           <>
@@ -1689,6 +1746,12 @@ export function ImportDialog({
                 {result.updated
                   ? `已更新 ${result.updated} 道，新增 ${result.added} 道题`
                   : `已入库 ${result.added} 道题`}
+                {result.createdFolders
+                  ? `，新建 ${result.createdFolders} 个文件夹`
+                  : ""}
+                {result.reusedFolders
+                  ? `，沿用 ${result.reusedFolders} 个文件夹`
+                  : ""}
                 {result.duplicates
                   ? `，跳过 ${result.duplicates} 道重复内容`
                   : ""}
@@ -1701,7 +1764,7 @@ export function ImportDialog({
                 else onView(deckId || null);
               }}
             >
-              {toInbox ? "去补答案" : "去题库看看"} <ArrowRight size={15} />
+              {toInbox ? "去补答案" : "去资料库看看"} <ArrowRight size={15} />
             </Button>
           </>
         ) : (
@@ -1747,7 +1810,8 @@ export function ImportDialog({
                   invalid ||
                   busy ||
                   proofreading ||
-                  saving
+                  saving ||
+                  discarding
                 }
                 onClick={() => void commit()}
               >
@@ -1756,7 +1820,7 @@ export function ImportDialog({
                 ) : (
                   <Check size={15} />
                 )}
-                {replaceKey ? "确认保存" : "确认入库"} {selected.length} 道
+                {replaceKey ? "确认保存" : "确认入库"} {selected.length} 条
               </Button>
             )}
           </>

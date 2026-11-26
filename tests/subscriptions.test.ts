@@ -33,7 +33,6 @@ const { getAuth } = await import("../src/server/auth");
 const healthRoute = await import("../src/app/api/health/route");
 const workspaceRoute = await import("../src/app/api/workspace/route");
 const decksRoute = await import("../src/app/api/decks/route");
-const deckGroupsRoute = await import("../src/app/api/deck-groups/route");
 const questionsRoute = await import("../src/app/api/questions/route");
 const reviewsRoute = await import("../src/app/api/reviews/route");
 const authorsRoute = await import("../src/app/api/authors/route");
@@ -289,12 +288,11 @@ test("batch publish, dirty diff detection, unpublish, version-pinned opt-in upda
     )
   ).json();
 
-  const { group: groupA } = await (
-    await deckGroupsRoute.POST(
-      req(alice, "/api/deck-groups", {
+  const { deck: subFolderA } = await (
+    await decksRoute.POST(
+      req(alice, "/api/decks", {
         action: "create",
-        deckId: deckA.id,
-        category: "字节跳动",
+        parentId: deckA.id,
         title: "后端一面",
       }),
     )
@@ -303,8 +301,7 @@ test("batch publish, dirty diff detection, unpublish, version-pinned opt-in upda
     await questionsRoute.POST(
       req(alice, "/api/questions", {
         action: "create",
-        deckId: deckA.id,
-        groupId: groupA.id,
+        deckId: subFolderA.id,
         title: "InnoDB MVCC 原理是什么？",
         answer: "ReadView + Undo Log 版本链",
         tags: ["MySQL", "事务"],
@@ -435,14 +432,19 @@ test("batch publish, dirty diff detection, unpublish, version-pinned opt-in upda
     403,
   );
 
-  // Bob follows Alice with autoSubscribeNew=true and subscribeAll=true (assigning deck group "大神题库").
+  // Bob follows Alice with autoSubscribeNew=true and subscribeAll=true (placing subscriptions in personal folder "大神题库").
+  const { deck: bobFolder } = await (
+    await decksRoute.POST(
+      req(bob, "/api/decks", { action: "create", title: "大神题库" }),
+    )
+  ).json();
   const followRes = await authorsRoute.POST(
     req(bob, "/api/authors", {
       action: "follow",
       authorId: alice.id,
       autoSubscribeNew: true,
       subscribeAll: true,
-      groupName: "大神题库",
+      folderId: bobFolder.id,
     }),
   );
   assert.equal(followRes.status, 200);
@@ -450,12 +452,17 @@ test("batch publish, dirty diff detection, unpublish, version-pinned opt-in upda
   assert.equal(followJson.followed, true);
   assert.equal(followJson.subscribedDecks, 2);
 
-  // Charlie uses batchSubscribe directly for deckA + deckB.
+  // Charlie uses batchSubscribe directly for deckA + deckB into personal folder "精选".
+  const { deck: charlieFolder } = await (
+    await decksRoute.POST(
+      req(charlie, "/api/decks", { action: "create", title: "精选" }),
+    )
+  ).json();
   const batchSubRes = await decksRoute.POST(
     req(charlie, "/api/decks", {
       action: "batchSubscribe",
       deckIds: [deckA.id, deckB.id],
-      groupName: "精选",
+      folderId: charlieFolder.id,
     }),
   );
   assert.equal(batchSubRes.status, 200);
@@ -593,8 +600,7 @@ test("batch publish, dirty diff detection, unpublish, version-pinned opt-in upda
   await questionsRoute.POST(
     req(alice, "/api/questions", {
       action: "create",
-      deckId: deckA.id,
-      groupId: groupA.id,
+      deckId: subFolderA.id,
       title: "间隙锁和临键锁的区别？",
       answer: "左开右开 vs 左开右闭",
       tags: ["MySQL"],

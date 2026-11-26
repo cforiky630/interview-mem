@@ -7,12 +7,14 @@ import {
   ChevronLeft,
   ChevronRight,
   Flame,
+  Folder,
   Plus,
   PenLine,
+  Rss,
   Sprout,
 } from "lucide-react";
 import type { QuestionView, Workspace } from "@/lib/types";
-import { formatGroupLabel, resolveQuestionGroup } from "@/lib/grouping";
+import { buildFolderIndex, ROOT_FOLDER_LABEL } from "@/lib/folders";
 import {
   buildReviewQueue,
   isQuestionMajorRevisionDue,
@@ -100,10 +102,6 @@ export function Dashboard({
   const cards = queue.slice(0, 12);
   const selectedIndex = cards.length ? index % cards.length : 0;
   const question = cards[selectedIndex];
-  const currentGroup = question
-    ? resolveQuestionGroup(data.decks, question)
-    : null;
-  const currentGroupLabel = formatGroupLabel(currentGroup);
 
   const queueWindowStart =
     cards.length <= 4
@@ -118,8 +116,13 @@ export function Dashboard({
     (data.stats.reviewedToday / data.settings.dailyGoal) * 100,
   );
 
-  // Smart 2-row deck ordering: due > 0, pendingUpdate, count > 0, up to 8 decks.
-  const sortedDecks = [...data.decks].sort((a, b) => {
+  // Smart 2-row top-level folder ordering: due > 0, pendingUpdate, count > 0, up to 8 folders.
+  const folderIndex = buildFolderIndex(data.decks);
+  const topLevelDecks = [
+    ...(folderIndex.ownedChildren.get(null) ?? []),
+    ...(folderIndex.subscriptionsByFolder.get(null) ?? []),
+  ];
+  const sortedDecks = [...topLevelDecks].sort((a, b) => {
     const aHasDue = a.due > 0 ? 1 : 0;
     const bHasDue = b.due > 0 ? 1 : 0;
     if (aHasDue !== bHasDue) return bHasDue - aHasDue;
@@ -246,7 +249,7 @@ export function Dashboard({
               待复习 {data.stats.due} · 新学 {data.stats.newLearnedToday}/
               {data.settings.dailyNewLimit}
             </span>
-            {missing > 0 && (
+            {missing > 0 && cards.length > 0 && (
               <button
                 type="button"
                 className="mobile-today-missing"
@@ -257,10 +260,17 @@ export function Dashboard({
             )}
           </div>
         </div>
-        <Button size="sm" className="mobile-today-cta" onClick={onReview}>
-          开始复习
-          <ArrowRight size={14} />
-        </Button>
+        {cards.length > 0 && (
+          <Button
+            size="sm"
+            variant="secondary"
+            className="mobile-today-cta"
+            onClick={onReview}
+          >
+            开始复习
+            <ArrowRight size={14} />
+          </Button>
+        )}
       </section>
       <div className="notebook-home-grid">
         <div className="notebook-home-main">
@@ -365,20 +375,7 @@ export function Dashboard({
                     <span className="card-number">
                       Q{String(selectedIndex + 1).padStart(2, "0")}
                     </span>
-                    <span>{question.deckTitle}</span>
-                    {currentGroupLabel && (
-                      <>
-                        <span
-                          className="focus-card-group-sep"
-                          aria-hidden="true"
-                        >
-                          /
-                        </span>
-                        <span title={currentGroupLabel}>
-                          {currentGroupLabel}
-                        </span>
-                      </>
-                    )}
+                    <span title={question.folderPath}>{question.folderPath}</span>
                     <span className="focus-card-state">
                       {isQuestionMajorRevisionDue(question)
                         ? "答案已更新"
@@ -494,7 +491,7 @@ export function Dashboard({
           </section>
           <section className="section-block notebook-decks">
             <div className="section-heading">
-              <h2>我的题库</h2>
+              <h2>{ROOT_FOLDER_LABEL}</h2>
               <button className="text-button" onClick={onLibrary}>
                 查看全部
                 <ArrowUpRight size={15} />
@@ -510,23 +507,22 @@ export function Dashboard({
                   >
                     <div className="deck-card-top">
                       <span className="deck-icon">
-                        <BookOpen size={22} strokeWidth={1.5} />
+                        {deck.isOwner ? (
+                          <Folder size={22} strokeWidth={1.5} />
+                        ) : (
+                          <Rss size={20} strokeWidth={1.6} />
+                        )}
                       </span>
                       <div className="deck-card-top-right">
-                        {deck.groupName && (
-                          <span
-                            className="deck-group-badge"
-                            title={deck.groupName}
-                          >
-                            {deck.groupName}
-                          </span>
+                        {!deck.isOwner && (
+                          <span className="deck-group-badge">订阅</span>
                         )}
                         <ArrowUpRight size={16} />
                       </div>
                     </div>
                     <h3>{deck.title}</h3>
                     <div className="deck-card-foot">
-                      <span>{deck.count} 道题</span>
+                      <span>{deck.count} 条资料</span>
                       <span>
                         {deck.due
                           ? `${deck.due} 题待复习`
@@ -534,9 +530,17 @@ export function Dashboard({
                             ? `v${deck.pendingUpdate.toVersion} 可更新`
                             : deck.newCount
                               ? `${deck.newCount} 道新题`
-                              : unanswered.some((q) => q.deckId === deck.id)
-                                ? `${unanswered.filter((q) => q.deckId === deck.id).length} 道待补答案`
-                                : "已学完"}
+                              : (() => {
+                                  const scope = folderIndex.subtreeDeckIds(
+                                    deck.id,
+                                  );
+                                  const missingInFolder = unanswered.filter(
+                                    (q) => scope.has(q.deckId),
+                                  ).length;
+                                  return missingInFolder > 0
+                                    ? `${missingInFolder} 道待补答案`
+                                    : "已学完";
+                                })()}
                       </span>
                     </div>
                   </button>
@@ -548,7 +552,7 @@ export function Dashboard({
                 onClick={data.stats.total ? () => onDeck(null) : onImport}
               >
                 <Plus size={18} />{" "}
-                {data.stats.total ? "查看未分类题目" : "导入题目或新建题库"}
+                {data.stats.total ? `打开${ROOT_FOLDER_LABEL}` : "导入资料或新建文件夹"}
               </button>
             )}
           </section>
@@ -571,48 +575,37 @@ export function Dashboard({
                 )}
               </div>
               <div className="focus-list-card">
-                {weakList.map((item) => {
-                  const groupLabel = formatGroupLabel(
-                    resolveQuestionGroup(data.decks, item),
-                  );
-                  return (
-                    <div key={item.id} className="focus-list-row">
-                      <button
-                        type="button"
-                        className="focus-list-main"
-                        onClick={() =>
-                          onQuestion
-                            ? onQuestion(item, weakIds)
-                            : onPractice(item)
-                        }
-                      >
-                        <span className="focus-list-title">{item.title}</span>
-                        <span className="focus-list-meta">
-                          <span>{item.deckTitle}</span>
-                          {groupLabel && (
-                            <>
-                              <span>·</span>
-                              <span>{groupLabel}</span>
-                            </>
-                          )}
-                          <span className="focus-list-lapse">
-                            易忘 {item.fsrs?.lapses ?? 0} 次
-                          </span>
+                {weakList.map((item) => (
+                  <div key={item.id} className="focus-list-row">
+                    <button
+                      type="button"
+                      className="focus-list-main"
+                      onClick={() =>
+                        onQuestion
+                          ? onQuestion(item, weakIds)
+                          : onPractice(item)
+                      }
+                    >
+                      <span className="focus-list-title">{item.title}</span>
+                      <span className="focus-list-meta">
+                        <span title={item.folderPath}>{item.folderPath}</span>
+                        <span className="focus-list-lapse">
+                          易忘 {item.fsrs?.lapses ?? 0} 次
                         </span>
-                      </button>
-                      <div className="focus-list-actions">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => onPractice(item)}
-                        >
-                          开练
-                        </Button>
-                      </div>
+                      </span>
+                    </button>
+                    <div className="focus-list-actions">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onPractice(item)}
+                      >
+                        开练
+                      </Button>
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             </section>
           ) : fallbackFocusList.length > 0 ? (
@@ -634,9 +627,6 @@ export function Dashboard({
               <div className="focus-list-card">
                 {fallbackFocusList.map((item) => {
                   const hasAnswer = Boolean(item.answer.trim());
-                  const groupLabel = formatGroupLabel(
-                    resolveQuestionGroup(data.decks, item),
-                  );
                   return (
                     <div key={item.id} className="focus-list-row">
                       <button
@@ -650,13 +640,7 @@ export function Dashboard({
                       >
                         <span className="focus-list-title">{item.title}</span>
                         <span className="focus-list-meta">
-                          <span>{item.deckTitle}</span>
-                          {groupLabel && (
-                            <>
-                              <span>·</span>
-                              <span>{groupLabel}</span>
-                            </>
-                          )}
+                          <span title={item.folderPath}>{item.folderPath}</span>
                           <span>{item.favorite ? "已收藏" : "待补答案"}</span>
                         </span>
                       </button>

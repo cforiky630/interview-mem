@@ -20,6 +20,7 @@ import {
   type ProofreadCorrection,
 } from "@/lib/ai-proofread";
 import type { ImportPreviewItem } from "@/lib/import-preview";
+import type { DuplicateHit } from "@/lib/types";
 import {
   markdownDocument,
   mergeQuestionTags,
@@ -36,6 +37,7 @@ export type ImportCandidate = Pick<
 > & {
   selected: boolean;
   batchId: string;
+  duplicateMatches?: DuplicateHit[];
   proofreadStatus?: "checking" | "clean" | "has_issues";
   corrections?: ProofreadCorrection[];
 };
@@ -242,9 +244,26 @@ export function ImportPreviewCard({
                 item.title.length > 200 ||
                 item.tags.length > 0 ||
                 noteMeta.properties.length > 0 ||
+                (item.duplicateMatches?.length ?? 0) > 0 ||
                 !!item.proofreadStatus) && (
                 <span className="import-card-meta">
                   {replacing && <span>更新当前题</span>}
+                  {item.duplicateMatches && item.duplicateMatches.length > 0 && (
+                    <span
+                      className="import-card-dup-badge"
+                      title={item.duplicateMatches
+                        .map((m) => `已存在：${m.path}`)
+                        .join("\n")}
+                    >
+                      {item.duplicateMatches[0].scope === "sameFolder"
+                        ? "目标目录已有相同内容"
+                        : `已在「${item.duplicateMatches[0].path}」中存在`}
+                      {item.duplicateMatches.length > 1
+                        ? ` 等 ${item.duplicateMatches.length} 处`
+                        : ""}
+                      {item.selected ? "（将保留两份）" : "（默认跳过）"}
+                    </span>
+                  )}
                   {item.title.length > 200 && (
                     <span>标题超过 200 字，需缩短</span>
                   )}

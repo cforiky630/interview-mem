@@ -172,7 +172,7 @@ test("deleting a category preserves every question, including identical copies, 
   assert.equal(current.questions.length, 2);
   assert.ok(
     current.questions.every(
-      (q) => q.deckId === null && q.deckTitle === "未分类",
+      (q) => q.deckId === null && q.deckTitle === "我的资料",
     ),
   );
   const retained = current.questions.find((item) => item.id === q.id)!;
@@ -621,17 +621,19 @@ test("restore with a duplicate preserves both identities; concurrent category de
   );
   const replacement = await add(alice, q.title, category);
   assert.notEqual(replacement.id, q.id);
-  assert.equal(
-    (
-      await questions.POST(
-        request(alice, "/api/questions", { action: "restore", id: q.id }),
-      )
-    ).status,
-    200,
+  const restoreRes = await questions.POST(
+    request(alice, "/api/questions", { action: "restore", id: q.id }),
   );
+  assert.equal(restoreRes.status, 200);
+  const restoreBody = (await restoreRes.json()) as {
+    deckId: string | null;
+    duplicates?: Array<{ id: string }>;
+  };
+  assert.equal(restoreBody.deckId, category);
+  assert.ok(restoreBody.duplicates?.some((d) => d.id === replacement.id));
   assert.equal(
     (await state(alice)).questions.find((item) => item.id === q.id)!.deckId,
-    null,
+    category,
   );
   assert.equal(
     (

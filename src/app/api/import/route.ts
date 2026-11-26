@@ -127,31 +127,36 @@ export const POST = route(async (request, user) => {
             isNull(decks.deletedAt),
           ),
         )
-        .for("update");
+        .for("no key update");
       if (!activeDeck) throw new AppError(404, "题库已删除，请选择其他题库。");
       let added = 0;
       let duplicates = 0;
       const normalizeTitle = (title: string) =>
         title.trim().replace(/\s+/g, " ");
+      const knownRows = await tx
+        .select({
+          title: questions.title,
+          contentHash: questions.contentHash,
+        })
+        .from(questions)
+        .where(
+          and(
+            eq(questions.ownerId, user.id),
+            eq(questions.deckId, data.deckId),
+            isNull(questions.deletedAt),
+          ),
+        );
+      const knownHashes = new Set(knownRows.map((q) => q.contentHash));
       const knownTitles = new Set(
         data.inputType === "questions"
-          ? (
-              await tx
-                .select({ title: questions.title })
-                .from(questions)
-                .where(
-                  and(
-                    eq(questions.deckId, data.deckId),
-                    isNull(questions.deletedAt),
-                  ),
-                )
-            ).map((q) => normalizeTitle(q.title))
+          ? knownRows.map((q) => normalizeTitle(q.title))
           : [],
       );
       const baseMs = await nextQuestionBaseMs(tx, user.id);
       let insertSeq = 0;
       for (const q of parsed) {
-        if (knownTitles.has(normalizeTitle(q.title))) {
+        const hash = contentHash(q.title, q.answer);
+        if (knownHashes.has(hash) || knownTitles.has(normalizeTitle(q.title))) {
           duplicates++;
           continue;
         }
@@ -168,14 +173,14 @@ export const POST = route(async (request, user) => {
             tags: q.tags,
             needsEditing: q.needsEditing,
             sourceText: q.title + "\n" + q.answer,
-            contentHash: contentHash(q.title, q.answer),
+            contentHash: hash,
             createdAt: ts,
             updatedAt: ts,
           })
-          .onConflictDoNothing()
           .returning({ id: questions.id });
         if (inserted.length) {
           added++;
+          knownHashes.add(hash);
           if (data.inputType === "questions")
             knownTitles.add(normalizeTitle(q.title));
         } else duplicates++;

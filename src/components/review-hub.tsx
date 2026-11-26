@@ -4,15 +4,17 @@ import { useMemo } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
-  BookOpen,
   Check,
   Flame,
+  Folder,
   History,
   PenLine,
   Plus,
   RotateCcw,
+  Rss,
 } from "lucide-react";
 import type { DeckView, QuestionView, Workspace } from "@/lib/types";
+import { buildFolderIndex, ROOT_FOLDER_LABEL } from "@/lib/folders";
 import { buildReviewQueue, isQuestionDue } from "@/lib/review-queue";
 import { Button } from "./ui/button";
 
@@ -87,9 +89,33 @@ export function ReviewHub({
       }
     }
 
+    const folderIndex = buildFolderIndex(data.decks);
+    const rootOwnedFolders = folderIndex.ownedChildren.get(null) ?? [];
+    const rootSubs = folderIndex.subscriptionsByFolder.get(null) ?? [];
+    const topEntries: { deck: DeckView; scopeIds: Set<string> }[] = [
+      ...rootOwnedFolders.map((folder) => {
+        const ownedSubtree = folderIndex.subtreeOwnedIds(folder.id);
+        const scopeIds = new Set<string>(ownedSubtree);
+        for (const fid of ownedSubtree) {
+          for (const sub of folderIndex.subscriptionsByFolder.get(fid) ?? []) {
+            scopeIds.add(sub.id);
+          }
+        }
+        return { deck: folder, scopeIds };
+      }),
+      ...rootSubs.map((sub) => ({
+        deck: sub,
+        scopeIds: new Set<string>([sub.id]),
+      })),
+    ];
+
     const decks: DeckReviewItem[] = [];
-    for (const deck of data.decks) {
-      const answerable = byDeck.get(deck.id) ?? [];
+    for (const { deck, scopeIds } of topEntries) {
+      const answerable: QuestionView[] = [];
+      for (const sid of scopeIds) {
+        const list = byDeck.get(sid);
+        if (list) answerable.push(...list);
+      }
       if (!answerable.length) continue;
       let dueInDeck = 0;
       let newInDeck = 0;
@@ -323,16 +349,16 @@ export function ReviewHub({
       </div>
       </div>
 
-      {deckItems.length > 0 && (
-        <section className="section-block review-hub-decks" aria-label="按题库复习">
+      {(deckItems.length > 0 || unfiledAnswerable.length > 0) && (
+        <section className="section-block review-hub-decks" aria-label="按文件夹复习">
           <div className="section-heading">
-            <h2>按题库复习</h2>
+            <h2>按文件夹复习</h2>
             <button
               type="button"
               className="text-button"
               onClick={() => onOpenDeck()}
             >
-              全部题库
+              全部资料
               <ArrowUpRight size={14} />
             </button>
           </div>
@@ -348,7 +374,11 @@ export function ReviewHub({
                   onClick={() => onOpenDeck(item.deck.id)}
                 >
                   <span className="deck-icon">
-                    <BookOpen size={18} strokeWidth={1.6} />
+                    {item.deck.isOwner ? (
+                      <Folder size={18} strokeWidth={1.6} />
+                    ) : (
+                      <Rss size={17} strokeWidth={1.7} />
+                    )}
                   </span>
                   <div className="review-hub-deck-meta">
                     <h3>{item.deck.title}</h3>
@@ -394,10 +424,10 @@ export function ReviewHub({
                   onClick={() => onOpenDeck(null)}
                 >
                   <span className="deck-icon">
-                    <BookOpen size={18} strokeWidth={1.6} />
+                    <Folder size={18} strokeWidth={1.6} />
                   </span>
                   <div className="review-hub-deck-meta">
-                    <h3>未分类</h3>
+                    <h3>{ROOT_FOLDER_LABEL}（根目录）</h3>
                     <p>共 {unfiledAnswerable.length} 道可练习题目</p>
                   </div>
                 </button>
@@ -405,7 +435,9 @@ export function ReviewHub({
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => onStartCram(unfiledAnswerable, "未分类")}
+                    onClick={() =>
+                      onStartCram(unfiledAnswerable, ROOT_FOLDER_LABEL)
+                    }
                   >
                     突击
                   </Button>

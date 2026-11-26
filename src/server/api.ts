@@ -64,7 +64,11 @@ export async function body<T>(
 export function failure(error: unknown) {
   if (error instanceof AppError)
     return NextResponse.json(
-      { error: error.message, code: error.code },
+      {
+        error: error.message,
+        code: error.code,
+        ...(error.details ? { details: error.details } : {}),
+      },
       { status: error.status },
     );
   if (error instanceof ZodError)

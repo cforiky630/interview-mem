@@ -28,14 +28,17 @@ export function buildReviewQueue(
     newLearnedToday: number;
     now?: number;
     deckId?: string | null;
+    deckIds?: ReadonlySet<string | null>;
   },
 ) {
   const now = opts.now ?? Date.now();
-  const active = questions.filter(
-    (q) =>
-      isQuestionReviewable(q) &&
-      (opts.deckId ? q.deckId === opts.deckId : true),
-  );
+  const active = questions.filter((q) => {
+    if (!isQuestionReviewable(q)) return false;
+    if (opts.deckIds) return opts.deckIds.has(q.deckId);
+    if (opts.deckId !== undefined && opts.deckId !== null)
+      return q.deckId === opts.deckId;
+    return true;
+  });
   const majorReview = active
     .filter((q) => isQuestionMajorRevisionDue(q))
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));

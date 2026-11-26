@@ -35,7 +35,10 @@ const schema = z.object({
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);
   const db = await getDb();
-  async function replay(existing: typeof reviewEvents.$inferSelect) {
+  async function replay(
+    existing: typeof reviewEvents.$inferSelect,
+    reader: Pick<typeof db, "select"> = db,
+  ) {
     if (
       existing.userId !== user.id ||
       existing.questionId !== data.questionId ||
@@ -44,8 +47,9 @@ export const POST = route(async (request, user) => {
       (existing.answer ?? "") !== data.answer
     )
       throw new AppError(409, "复习提交标识已被使用。");
-    const [cardRow] = await db
+    const [cardRow] = await reader
       .select({
+        fsrs: studyCards.fsrs,
         version: studyCards.version,
         reviewedRevision: studyCards.reviewedRevision,
       })
@@ -57,7 +61,7 @@ export const POST = route(async (request, user) => {
         ),
       );
     return {
-      card: existing.after,
+      card: (cardRow?.fsrs as StoredCard | null) ?? existing.after,
       duplicate: true,
       studyVersion: cardRow?.version ?? data.expectedVersion + 1,
       reviewedRevision: cardRow?.reviewedRevision ?? existing.questionRevision,
@@ -98,7 +102,7 @@ export const POST = route(async (request, user) => {
       .select()
       .from(reviewEvents)
       .where(eq(reviewEvents.id, data.eventId));
-    if (existing) return await replay(existing);
+    if (existing) return await replay(existing, tx);
     if (study.version !== data.expectedVersion)
       throw new AppError(
         409,

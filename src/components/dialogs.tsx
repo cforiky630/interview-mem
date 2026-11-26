@@ -1,32 +1,37 @@
 "use client";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Check,
+  Copy,
+  FolderTree as FolderTreeIcon,
+  Info,
   Loader2,
   Lock,
   Plus,
   Rss,
-  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { Workspace, DeckView } from "@/lib/types";
-import { unpublishDeck } from "@/lib/client";
+import type { DeckView, DuplicateHit, Workspace } from "@/lib/types";
+import {
+  batchPublishDecks,
+  unpublishDeck,
+  type WorkspaceMutate,
+} from "@/lib/client";
 import { normalizeTagValue } from "@/lib/markdown-source";
+import { buildFolderIndex, ROOT_FOLDER_LABEL } from "@/lib/folders";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
-import { DeckSelectOptions, GroupSelectOptions } from "./deck-select-options";
+import { FolderSelectOptions } from "./folder-select-options";
+import { isImeComposing } from "./folder-dialogs";
 
-export type Mutate = (
-  url: string,
-  data: unknown,
-) => Promise<Record<string, unknown> | null>;
+export type Mutate = WorkspaceMutate;
 
 function submitOnEnter(
   event: React.KeyboardEvent<HTMLInputElement>,
   canSubmit: boolean,
   submit: () => void | Promise<void>,
 ) {
-  if (event.key === "Enter" && !event.nativeEvent.isComposing && canSubmit) {
+  if (event.key === "Enter" && !isImeComposing(event) && canSubmit) {
     event.preventDefault();
     void submit();
   }
@@ -40,7 +45,7 @@ function submitOnCtrlEnter(
   if (
     event.key === "Enter" &&
     (event.ctrlKey || event.metaKey) &&
-    !event.nativeEvent.isComposing &&
+    !isImeComposing(event) &&
     canSubmit
   ) {
     event.preventDefault();
@@ -48,297 +53,9 @@ function submitOnCtrlEnter(
   }
 }
 
-const DECK_COLORS = [
-  { id: "sage", label: "鼠尾草绿" },
-  { id: "blue", label: "雾蓝" },
-  { id: "sand", label: "暖沙" },
-  { id: "rose", label: "浅玫瑰" },
-] as const;
-
-function DeckColorSwatches({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (color: string) => void;
-}) {
-  return (
-    <div className="color-options">
-      {DECK_COLORS.map((c) => (
-        <button
-          key={c.id}
-          type="button"
-          className={`color-swatch color-${c.id} ${value === c.id ? "selected" : ""}`}
-          aria-label={c.label}
-          aria-pressed={value === c.id}
-          onClick={() => onChange(c.id)}
-        >
-          {value === c.id && <Check size={18} />}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-export function CreateDeckDialog({
-  open,
-  onClose,
-  mutate,
-  onCreated,
-  existingGroups = [],
-  defaultGroupName = "",
-}: {
-  open: boolean;
-  onClose: () => void;
-  mutate: Mutate;
-  onCreated: (id: string) => void;
-  existingGroups?: string[];
-  defaultGroupName?: string;
-}) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [groupName, setGroupName] = useState(defaultGroupName);
-  const [color, setColor] = useState("sage");
-  const [busy, setBusy] = useState(false);
-  const groupListId = useId();
-  useEffect(() => {
-    if (open) setGroupName(defaultGroupName);
-  }, [open, defaultGroupName]);
-  async function create() {
-    setBusy(true);
-    try {
-      const result = await mutate("/api/decks", {
-        action: "create",
-        title,
-        description,
-        groupName: groupName.trim(),
-        color,
-      });
-      if (result) {
-        const deck = result.deck as { id: string };
-        setTitle("");
-        setDescription("");
-        setGroupName("");
-        onClose();
-        onCreated(deck.id);
-        toast.success("题库已创建");
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) onClose();
-      }}
-      title="新建题库"
-      description="按专题整理题目"
-    >
-      <div className="dialog-form">
-        <label className="field">
-          题库名称
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) =>
-              submitOnEnter(e, !busy && !!title.trim(), create)
-            }
-            maxLength={80}
-            placeholder="例如：前端工程化、MySQL 索引与锁、高并发系统设计"
-            autoFocus
-          />
-        </label>
-        <label className="field">
-          题库分组（可选）
-          <input
-            list={groupListId}
-            value={groupName}
-            onChange={(e) => setGroupName(e.target.value)}
-            onKeyDown={(e) =>
-              submitOnEnter(e, !busy && !!title.trim(), create)
-            }
-            maxLength={40}
-            disabled={busy}
-            placeholder="例如：八股专题、公司面经、AI / RAG"
-          />
-          <datalist id={groupListId}>
-            {existingGroups.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-        </label>
-        <label className="field">
-          简单介绍
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            onKeyDown={(e) =>
-              submitOnCtrlEnter(e, !busy && !!title.trim(), create)
-            }
-            maxLength={500}
-            rows={3}
-            placeholder="写一句话备注题库范围、目标岗位或当前复习重心（可选）…"
-          />
-        </label>
-        <div className="field">
-          主题颜色
-          <DeckColorSwatches value={color} onChange={setColor} />
-        </div>
-      </div>
-      <div className="dialog-footer">
-        <span className="muted small">默认仅自己可见。</span>
-        <Button disabled={busy || !title.trim()} onClick={() => void create()}>
-          {busy ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}{" "}
-          创建题库
-        </Button>
-      </div>
-    </Dialog>
-  );
-}
-
-export function EditDeckDialog({
-  deck,
-  onClose,
-  mutate,
-  existingGroups = [],
-}: {
-  deck: DeckView | null;
-  onClose: () => void;
-  mutate: Mutate;
-  existingGroups?: string[];
-}) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [groupName, setGroupName] = useState("");
-  const [color, setColor] = useState("sage");
-  const [busy, setBusy] = useState(false);
-  const groupListId = useId();
-  useEffect(() => {
-    if (deck) {
-      setTitle(deck.title);
-      setDescription(deck.description);
-      setGroupName(deck.groupName ?? "");
-      setColor(deck.color || "sage");
-    }
-  }, [deck]);
-  const validColor = DECK_COLORS.some((c) => c.id === deck?.color)
-    ? deck?.color
-    : undefined;
-  const dirty =
-    !!deck &&
-    (title.trim() !== deck.title ||
-      description !== deck.description ||
-      groupName.trim() !== (deck.groupName ?? "") ||
-      color !== (deck.color || "sage"));
-  async function save() {
-    if (!deck || !title.trim() || busy) return;
-    setBusy(true);
-    try {
-      const result = await mutate("/api/decks", {
-        action: "edit",
-        deckId: deck.id,
-        expected: {
-          title: deck.title,
-          description: deck.description,
-          groupName: deck.groupName ?? "",
-          ...(validColor ? { color: validColor } : {}),
-        },
-        title: title.trim(),
-        description,
-        groupName: groupName.trim(),
-        color,
-      });
-      if (result) {
-        toast.success("题库信息已更新。");
-        onClose();
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <Dialog
-      open={!!deck}
-      onOpenChange={(v) => {
-        if (!v && !busy) onClose();
-      }}
-      title="编辑题库"
-    >
-      <div className="dialog-form">
-        <label className="field">
-          题库名称
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) =>
-              submitOnEnter(e, !busy && !!title.trim() && dirty, save)
-            }
-            maxLength={80}
-            disabled={busy}
-            placeholder="输入题库名称"
-            autoFocus
-          />
-        </label>
-        <label className="field">
-          题库分组（可选）
-          <input
-            list={groupListId}
-            value={groupName}
-            onChange={(e) => setGroupName(e.target.value)}
-            onKeyDown={(e) =>
-              submitOnEnter(e, !busy && !!title.trim() && dirty, save)
-            }
-            maxLength={40}
-            disabled={busy}
-            placeholder="例如：八股专题、公司面经、AI / RAG（留空不分组）"
-          />
-          <datalist id={groupListId}>
-            {existingGroups.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-        </label>
-        <label className="field">
-          简单介绍
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            onKeyDown={(e) =>
-              submitOnCtrlEnter(e, !busy && !!title.trim() && dirty, save)
-            }
-            maxLength={500}
-            rows={3}
-            disabled={busy}
-            placeholder="题库范围、目标岗位或复习重心（可选）…"
-          />
-        </label>
-        <div className="field">
-          主题颜色
-          <DeckColorSwatches value={color} onChange={setColor} />
-        </div>
-      </div>
-      <div className="dialog-footer">
-        <Button variant="ghost" disabled={busy} onClick={onClose}>
-          取消
-        </Button>
-        <Button
-          disabled={busy || !title.trim() || !dirty}
-          onClick={() => void save()}
-        >
-          {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}{" "}
-          保存修改
-        </Button>
-      </div>
-    </Dialog>
-  );
-}
-
 export function CreateQuestionDialog({
   open,
   defaultDeckId,
-  defaultGroupId = null,
   data,
   mutate,
   onClose,
@@ -346,7 +63,6 @@ export function CreateQuestionDialog({
 }: {
   open: boolean;
   defaultDeckId?: string | null;
-  defaultGroupId?: string | null;
   data: Workspace;
   mutate: Mutate;
   onClose: () => void;
@@ -354,13 +70,15 @@ export function CreateQuestionDialog({
 }) {
   const [title, setTitle] = useState("");
   const [deckId, setDeckId] = useState("");
-  const [groupId, setGroupId] = useState("");
   const [tagsInput, setTagsInput] = useState("");
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
-  const ownedDecks = data.decks.filter((d) => d.isOwner);
-  const selectedDeck = ownedDecks.find((d) => d.id === deckId);
-  const availableGroups = selectedDeck?.groups ?? [];
+
+  const ownedDecks = useMemo(
+    () => data.decks.filter((d) => d.isOwner),
+    [data.decks],
+  );
+
   useEffect(() => {
     if (!open) return;
     const preferredDeck =
@@ -368,20 +86,10 @@ export function CreateQuestionDialog({
         ? defaultDeckId
         : "";
     setDeckId(preferredDeck);
-    const deck = ownedDecks.find((d) => d.id === preferredDeck);
-    const preferredGroup =
-      defaultGroupId && deck?.groups.some((g) => g.id === defaultGroupId)
-        ? defaultGroupId
-        : "";
-    setGroupId(preferredGroup);
-  }, [open, defaultDeckId, defaultGroupId]);
+  }, [open, defaultDeckId, ownedDecks]);
+
   const parsedTags = [
-    ...new Set(
-      tagsInput
-        .split(/[,，]/)
-        .map(normalizeTagValue)
-        .filter(Boolean),
-    ),
+    ...new Set(tagsInput.split(/[,，]/).map(normalizeTagValue).filter(Boolean)),
   ];
   const tagsTooMany = parsedTags.length > 12;
   const tagTooLong = parsedTags.some((t) => t.length > 30);
@@ -391,6 +99,7 @@ export function CreateQuestionDialog({
     answer.length > 100_000 ||
     tagsTooMany ||
     tagTooLong;
+
   async function create() {
     if (invalid || busy) return;
     setBusy(true);
@@ -398,35 +107,44 @@ export function CreateQuestionDialog({
       const result = await mutate("/api/questions", {
         action: "create",
         deckId: deckId || null,
-        groupId: deckId && groupId ? groupId : null,
         title: title.trim(),
         answer,
         tags: parsedTags,
       });
       if (result?.id) {
+        const duplicates = Array.isArray(result.duplicates)
+          ? (result.duplicates as DuplicateHit[])
+          : [];
         setTitle("");
         setTagsInput("");
         setAnswer("");
         onClose();
-        toast.success("题目已保存到题库。");
+        if (duplicates.length > 0) {
+          toast.info(
+            `已保存。提示：在「${duplicates[0].path}」已有相同内容，可在「重复内容」中合并整理。`,
+          );
+        } else {
+          toast.success("已保存到资料库。");
+        }
         onCreated(String(result.id));
       }
     } finally {
       setBusy(false);
     }
   }
+
   return (
     <Dialog
       open={open}
       onOpenChange={(v) => {
         if (!v && !busy) onClose();
       }}
-      title="新建单题"
-      description="随手记录刚遇到的一道面试题，答案可先留空稍后整理。"
+      title="新建资料"
+      description="记录一道面试题或整篇笔记，答案可先留空稍后补充。"
     >
       <div className="dialog-form">
         <label className="field">
-          题干
+          标题 / 题干
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -438,33 +156,20 @@ export function CreateQuestionDialog({
           />
         </label>
         <label className="field">
-          所属题库
+          存放文件夹
           <select
-            aria-label="所属题库"
+            aria-label="存放文件夹"
             value={deckId}
             disabled={busy}
-            onChange={(e) => {
-              setDeckId(e.target.value);
-              setGroupId("");
-            }}
+            onChange={(e) => setDeckId(e.target.value)}
           >
-            <option value="">未分类</option>
-            <DeckSelectOptions decks={ownedDecks} />
+            <FolderSelectOptions
+              decks={data.decks}
+              includeRoot
+              rootLabel={ROOT_FOLDER_LABEL}
+            />
           </select>
         </label>
-        {availableGroups.length > 0 && (
-          <label className="field">
-            所属分组（可选）
-            <select
-              aria-label="所属分组"
-              value={groupId}
-              disabled={busy}
-              onChange={(e) => setGroupId(e.target.value)}
-            >
-              <GroupSelectOptions groups={availableGroups} />
-            </select>
-          </label>
-        )}
         <label className="field">
           标签（逗号分隔，最多 12 个）
           <input
@@ -476,12 +181,14 @@ export function CreateQuestionDialog({
           />
           {(tagsTooMany || tagTooLong) && (
             <small className="danger-text">
-              {tagsTooMany ? "最多填写 12 个标签。" : "单个标签不超过 30 个字。"}
+              {tagsTooMany
+                ? "最多填写 12 个标签。"
+                : "单个标签不超过 30 个字。"}
             </small>
           )}
         </label>
         <label className="field">
-          参考答案（可选，支持 Markdown）
+          正文 / 参考答案（可选，支持 Markdown）
           <textarea
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
@@ -489,7 +196,7 @@ export function CreateQuestionDialog({
             rows={6}
             maxLength={100_000}
             disabled={busy}
-            placeholder="写下要点、代码块或追问；暂时留空将自动归入「待整理」…"
+            placeholder="写下要点、代码块或追问；暂时留空将自动归入「待补答案」…"
           />
         </label>
       </div>
@@ -497,14 +204,14 @@ export function CreateQuestionDialog({
         <span className="muted small">
           {answer.trim()
             ? `已填 ${answer.trim().length} 字（Ctrl/⌘+Enter 保存）`
-            : "答案留空将自动进入待整理"}
+            : "答案留空将自动进入待补答案"}
         </span>
         <Button variant="ghost" disabled={busy} onClick={onClose}>
           取消
         </Button>
         <Button disabled={busy || invalid} onClick={() => void create()}>
           {busy ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}{" "}
-          保存题目
+          保存资料
         </Button>
       </div>
     </Dialog>
@@ -513,79 +220,241 @@ export function CreateQuestionDialog({
 
 export function PublishDialog({
   deck,
+  decks = [],
   onClose,
   mutate,
 }: {
   deck: DeckView | null;
+  decks?: readonly DeckView[];
   onClose: () => void;
   mutate: Mutate;
 }) {
-  const [visibility, setVisibility] = useState("public");
+  const [visibility, setVisibility] = useState<"public" | "unlisted">("public");
   const [summary, setSummary] = useState("");
+  const [syncRelated, setSyncRelated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [link, setLink] = useState("");
+
+  const index = useMemo(() => buildFolderIndex(decks), [decks]);
+
+  const scopePreview = useMemo(() => {
+    if (!deck) return null;
+    const subtreeIds = index.subtreeOwnedIds(deck.id);
+    const subfolderCount = Math.max(0, subtreeIds.size - 1);
+    let excludedSubCount = 0;
+    for (const id of subtreeIds) {
+      excludedSubCount += (index.subscriptionsByFolder.get(id) ?? []).length;
+    }
+    const publishedAncestors = index.publishedAncestors(deck.id);
+    const publishedDescendants = index.publishedDescendants(deck.id);
+    const relatedPublished = [...publishedAncestors, ...publishedDescendants];
+    const syncableRelated = relatedPublished.filter(
+      (f) => f.publishStatus === "changes",
+    );
+    return {
+      subfolderCount,
+      excludedSubCount,
+      publishedAncestors,
+      publishedDescendants,
+      relatedPublished,
+      syncableRelated,
+      fullPath: index.pathOf(deck.id),
+    };
+  }, [deck, index]);
+
   useEffect(() => {
     if (deck) {
       setVisibility(deck.visibility === "unlisted" ? "unlisted" : "public");
       setSummary("");
+      setSyncRelated(false);
       setLink("");
     }
   }, [deck?.id]);
+
   async function publish() {
     if (!deck) return;
     setBusy(true);
     try {
-      const result = await mutate("/api/decks", {
-        action: "publish",
-        deckId: deck.id,
-        expectedVersion: deck.publishedVersion,
-        visibility,
-        summary,
-      });
-      if (result) {
+      let version = deck.publishedVersion + 1;
+      if (syncRelated && scopePreview?.syncableRelated.length) {
+        const items = [
+          {
+            deckId: deck.id,
+            expectedVersion: deck.publishedVersion,
+            visibility,
+            summary,
+            skipUnchanged: false,
+          },
+          ...scopePreview.syncableRelated.map((rel) => ({
+            deckId: rel.id,
+            expectedVersion: rel.publishedVersion,
+            visibility:
+              rel.visibility === "unlisted"
+                ? ("unlisted" as const)
+                : ("public" as const),
+            summary,
+            skipUnchanged: true,
+          })),
+        ];
+        const res = await batchPublishDecks(mutate, {
+          items,
+          defaultVisibility: visibility,
+          defaultSummary: summary,
+          skipUnchanged: true,
+        });
+        if (!res) return;
+        const results = Array.isArray(res.results)
+          ? (res.results as {
+              deckId: string;
+              version: number;
+              skipped: boolean;
+            }[])
+          : [];
+        const primaryResult = results.find((r) => r.deckId === deck.id);
+        if (primaryResult) version = primaryResult.version;
+        const relatedUpdated = results.length
+          ? results.filter((r) => r.deckId !== deck.id && !r.skipped).length
+          : Math.max(0, Number(res.publishedCount ?? 1) - 1);
         const share = new URL("/", window.location.origin);
         share.searchParams.set("subscribe", deck.id);
         setLink(share.href);
-        const ver = Number(result.version ?? deck.publishedVersion + 1);
-        toast.success(`已发布 v${ver}，订阅者打开题库时将收到更新提示。`);
+        toast.success(
+          relatedUpdated > 0
+            ? `已发布本文件夹 v${version} 并同步更新 ${relatedUpdated} 个关联发布。`
+            : `已发布 v${version}，关联文件夹均已是最新状态。`,
+        );
+      } else {
+        const result = await mutate("/api/decks", {
+          action: "publish",
+          deckId: deck.id,
+          expectedVersion: deck.publishedVersion,
+          visibility,
+          summary,
+        });
+        if (!result) return;
+        const share = new URL("/", window.location.origin);
+        share.searchParams.set("subscribe", deck.id);
+        setLink(share.href);
+        version = Number(result.version ?? version);
+        toast.success(`已发布 v${version}，订阅者打开资料库时将收到更新提示。`);
       }
     } finally {
       setBusy(false);
     }
   }
+
   async function handleUnpublish() {
     if (!deck || busy) return;
     setBusy(true);
     try {
       const result = await unpublishDeck(mutate, deck.id);
       if (result) {
-        toast.success("已转为私密，不再对外公开（既有订阅者的学习进度不受影响）。");
+        toast.success(
+          "已转为私密，不再对外公开（既有订阅者的学习进度不受影响）。",
+        );
         onClose();
       }
     } finally {
       setBusy(false);
     }
   }
+
   const diff = deck?.unpublishedDiff;
   const canUnpublish = Boolean(
     deck && deck.publishedVersion > 0 && deck.visibility !== "private",
   );
+
   return (
     <Dialog
       open={!!deck}
       onOpenChange={(v) => {
         if (!v && !busy) onClose();
       }}
-      title={deck?.publishedVersion ? "发布更新" : "发布题库"}
-      description={deck?.title}
+      title={deck?.publishedVersion ? "发布文件夹更新" : "发布文件夹"}
+      description={scopePreview?.fullPath || deck?.title}
     >
       <div className="dialog-form">
         <div className="publish-notice">
-          <Rss size={23} />
+          <Rss size={22} />
           <p>
-            发布只读快照供他人订阅；个人笔记与复习进度始终私有，订阅者可自行确认是否更新到新版本。
+            仅发布此刻快照中的自有内容（后续移入的新资料在再次点击「发布更新」前保持私密）；你的个人笔记与复习进度始终私有。
           </p>
         </div>
+
+        {scopePreview && (
+          <div className="publish-scope-box">
+            <div className="publish-scope-line">
+              <FolderTreeIcon size={15} />
+              <span>
+                本次将发布 <strong>{deck?.count ?? 0} 条自有资料</strong>
+                {scopePreview.subfolderCount > 0
+                  ? `（含 ${scopePreview.subfolderCount} 个子文件夹结构）`
+                  : ""}
+              </span>
+            </div>
+            {scopePreview.excludedSubCount > 0 && (
+              <div className="publish-scope-line muted small">
+                <Info size={14} />
+                <span>
+                  目录内放置的 {scopePreview.excludedSubCount}{" "}
+                  个他人订阅资料将自动排除，不会对外发布。
+                </span>
+              </div>
+            )}
+            {scopePreview.relatedPublished.length > 0 && (
+              <div className="publish-nested-notice">
+                <p className="small">
+                  {scopePreview.publishedAncestors.length > 0 && (
+                    <>
+                      上级已发布文件夹：
+                      <strong>
+                        {scopePreview.publishedAncestors
+                          .map((f) => f.title)
+                          .join("、")}
+                      </strong>
+                      。
+                    </>
+                  )}
+                  {scopePreview.publishedDescendants.length > 0 && (
+                    <>
+                      子级已发布文件夹：
+                      <strong>
+                        {scopePreview.publishedDescendants
+                          .map((f) => f.title)
+                          .join("、")}
+                      </strong>
+                      。
+                    </>
+                  )}
+                  各层快照相互独立，不会互相覆盖。
+                </p>
+                {scopePreview.syncableRelated.length > 0 ? (
+                  <label className="checkbox-inline">
+                    <input
+                      type="checkbox"
+                      checked={syncRelated}
+                      disabled={busy}
+                      onChange={(e) => setSyncRelated(e.target.checked)}
+                    />
+                    <span>
+                      同时同步推送更新到 {scopePreview.syncableRelated.length}{" "}
+                      个有待更新改动的关联文件夹（
+                      {scopePreview.syncableRelated
+                        .map((f) => f.title)
+                        .join("、")}
+                      ）
+                    </span>
+                  </label>
+                ) : (
+                  <p className="muted small">
+                    关联已发布文件夹当前均与已发布版本一致，无需同步推送。
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {deck && deck.publishedVersion > 0 && (
           <div className="update-diff-pills" aria-label="本次改动概览">
             {deck.publishStatus === "changes" && diff ? (
@@ -606,15 +475,16 @@ export function PublishDialog({
                   </span>
                 )}
                 {diff.groupsChanged && (
-                  <span className="update-diff-pill">分组已调整</span>
+                  <span className="update-diff-pill">目录结构已调整</span>
                 )}
                 {diff.metaChanged && (
-                  <span className="update-diff-pill">题库信息已更新</span>
+                  <span className="update-diff-pill">文件夹信息已更新</span>
                 )}
               </>
             ) : deck.visibility === "private" ? (
               <span className="muted small">
-                当前为私密状态（上次发布 v{deck.publishedVersion}），发布后将重新对外可见。
+                当前为私密状态（上次发布 v{deck.publishedVersion}
+                ），发布后将重新对外可见。
               </span>
             ) : (
               <span className="muted small">
@@ -623,14 +493,17 @@ export function PublishDialog({
             )}
           </div>
         )}
+
         <label className="field">
-          谁可以找到这个题库
+          谁可以找到这个文件夹
           <select
             value={visibility}
             disabled={busy}
-            onChange={(e) => setVisibility(e.target.value)}
+            onChange={(e) =>
+              setVisibility(e.target.value as "public" | "unlisted")
+            }
           >
-            <option value="public">公开 · 显示在发现题库中</option>
+            <option value="public">公开 · 显示在发现页中</option>
             <option value="unlisted">通过链接访问 · 不显示在发现页</option>
           </select>
         </label>
@@ -664,7 +537,7 @@ export function PublishDialog({
         )}
       </div>
       <div className="dialog-footer">
-        <span className="muted small">共 {deck?.count ?? 0} 道题</span>
+        <span className="muted small">共 {deck?.count ?? 0} 条自有资料</span>
         {canUnpublish && !link && (
           <Button
             variant="ghost"
@@ -675,14 +548,16 @@ export function PublishDialog({
           </Button>
         )}
         {link ? (
-          <Button onClick={onClose}>完成</Button>
+          <Button onClick={onClose}>
+            <Check size={15} /> 完成
+          </Button>
         ) : (
           <Button
             disabled={busy || (!deck?.count && !deck?.publishedVersion)}
             onClick={() => void publish()}
           >
             {busy ? <Loader2 size={16} className="spin" /> : <Rss size={16} />}{" "}
-            发布
+            {deck?.publishedVersion ? "发布更新" : "确认发布"}
           </Button>
         )}
       </div>

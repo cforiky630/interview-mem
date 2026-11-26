@@ -1,10 +1,12 @@
 import type { ParsedQuestion } from "./importer";
 import { followupRegions } from "./followups";
 import { markdownDocument } from "./markdown-source";
+import type { DuplicateHit } from "./types";
 export type ImportMethod = "rules" | "ai" | "whole";
 export type ImportPreviewItem = ParsedQuestion & {
   key: string;
   sourceText: string;
+  duplicateMatches?: DuplicateHit[];
 };
 export type ImportPreview = {
   batchId: string;

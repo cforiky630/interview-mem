@@ -1,17 +1,30 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
-  deckGroups,
   decks,
   questions,
   releases,
   studyCards,
   subscriptions,
+  type PublishedDeckGroup,
 } from "@/db/schema";
 import { markdownDocument, mergeQuestionTags } from "@/lib/markdown-source";
+import {
+  isQuestionDue,
+  isQuestionMajorRevisionDue,
+} from "@/lib/review-queue";
+import { ROOT_FOLDER_LABEL } from "@/lib/folders";
+import { normalizeReleaseGroups } from "@/lib/subscriptions";
+import type { StoredCard } from "@/lib/types";
 import type { ProviderTool } from "./ai";
 import { AppError } from "./errors";
 import { accessibleQuestion } from "./workspace";
+import {
+  buildServerFolderTree,
+  collectOwnedSubtreeIds,
+  formatOwnedFolderPath,
+  loadActiveOwnedFolders,
+} from "./folders";
 
 export type AiChatScope = "question" | "deck" | "workspace";
 export type ToolQuestionRef = {
@@ -24,9 +37,8 @@ type ScopedQuestionItem = {
   id: string;
   deckId: string | null;
   deckTitle: string;
+  folderPath: string;
   groupId: string | null;
-  groupTitle: string;
-  groupCategory: string;
   isOwner: boolean;
   title: string;
   answerSnippet: string;
@@ -34,6 +46,9 @@ type ScopedQuestionItem = {
   noteSnippet: string;
   tags: string[];
   needsEditing: boolean;
+  fsrs: StoredCard | null;
+  majorRevision: number;
+  reviewedRevision: number;
   due: string | null;
   updatedAt: string;
 };
@@ -43,11 +58,32 @@ export type ScopedPool = {
   deckRows: {
     id: string | null;
     title: string;
-    groupName: string;
+    path: string;
     isOwner: boolean;
-    groups: { id: string; title: string; category: string }[];
+    groups: { id: string; title: string; path: string }[];
   }[];
 };
+
+function formatReleaseGroupPath(
+  rootTitle: string,
+  releaseGroups: readonly PublishedDeckGroup[] | null | undefined,
+  groupId: string | null | undefined,
+): string {
+  if (!groupId || !releaseGroups?.length) return rootTitle;
+  const normalized = normalizeReleaseGroups(releaseGroups);
+  const byId = new Map(normalized.map((g) => [g.id, g]));
+  const parts: string[] = [];
+  const visited = new Set<string>();
+  let cursor: string | null = groupId;
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const node = byId.get(cursor);
+    if (!node) break;
+    parts.push(node.title);
+    cursor = node.parentId;
+  }
+  return parts.length ? `${rootTitle} / ${parts.reverse().join(" / ")}` : rootTitle;
+}
 
 export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
   {
@@ -55,7 +91,7 @@ export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
     function: {
       name: "search_questions",
       description:
-        "按关键词、标签、笔记或学习状态检索当前范围（当前题库或全部题库）内的相关面试题。",
+        "按关键词、标签、笔记、路径或学习状态检索当前范围（当前文件夹及全部子文件夹，或全部资料库）内的相关面试题。",
       parameters: {
         type: "object",
         properties: {
@@ -104,7 +140,7 @@ export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
     function: {
       name: "get_question_detail",
       description:
-        "读取指定题目的完整题干、标签、参考答案正文与当前用户的个人笔记摘要。",
+        "读取指定题目的完整题干、所在路径、标签、参考答案正文与当前用户的个人笔记摘要。",
       parameters: {
         type: "object",
         properties: {
@@ -122,7 +158,7 @@ export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
     function: {
       name: "list_workspace_overview",
       description:
-        "查看当前范围内各题库（含未分类）的题目总数、待复习数与待完善题数概览。",
+        "查看当前范围内各文件夹及订阅资料的题目总数、待复习数与待完善题数概览。",
       parameters: {
         type: "object",
         properties: {},
@@ -205,40 +241,57 @@ export async function assertDeckChatAccess(userId: string, deckId: string) {
   return { ...sub, isOwner: false };
 }
 
-async function resolveDeckTitle(
+async function resolveQuestionLocation(
   userId: string,
-  deckId: string | null,
-  isOwner: boolean,
-): Promise<string> {
-  if (!deckId) return "未分类";
-  const db = await getDb();
-  if (isOwner) {
-    const [own] = await db
-      .select({ title: decks.title })
-      .from(decks)
-      .where(
-        and(
-          eq(decks.id, deckId),
-          eq(decks.ownerId, userId),
-          isNull(decks.deletedAt),
-        ),
-      );
-    return own?.title ?? "未分类";
+  q: {
+    deckId: string | null;
+    groupId?: string | null;
+    isOwner: boolean;
+  },
+): Promise<{ deckTitle: string; folderPath: string }> {
+  if (!q.deckId) {
+    return { deckTitle: ROOT_FOLDER_LABEL, folderPath: ROOT_FOLDER_LABEL };
   }
-  const [rel] = await db
-    .select({ title: releases.title })
-    .from(subscriptions)
-    .innerJoin(
-      releases,
-      and(
-        eq(releases.deckId, subscriptions.deckId),
-        eq(releases.version, subscriptions.seenVersion),
+  const db = await getDb();
+  if (q.isOwner) {
+    const folders = await loadActiveOwnedFolders(db, userId);
+    const byId = new Map(folders.map((f) => [f.id, f]));
+    const own = byId.get(q.deckId);
+    return {
+      deckTitle: own?.title ?? ROOT_FOLDER_LABEL,
+      folderPath: formatOwnedFolderPath(byId, own ? q.deckId : null),
+    };
+  }
+  const [[rel], ownedFolders] = await Promise.all([
+    db
+      .select({
+        title: releases.title,
+        groups: releases.groups,
+        folderId: subscriptions.folderId,
+      })
+      .from(subscriptions)
+      .innerJoin(
+        releases,
+        and(
+          eq(releases.deckId, subscriptions.deckId),
+          eq(releases.version, subscriptions.seenVersion),
+        ),
+      )
+      .where(
+        and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, q.deckId)),
       ),
-    )
-    .where(
-      and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)),
-    );
-  return rel?.title ?? "订阅题库";
+    loadActiveOwnedFolders(db, userId),
+  ]);
+  const title = rel?.title ?? "订阅资料";
+  const ownedById = new Map(ownedFolders.map((f) => [f.id, f]));
+  const placementPrefix =
+    rel?.folderId && ownedById.has(rel.folderId)
+      ? `${formatOwnedFolderPath(ownedById, rel.folderId)} / `
+      : "";
+  return {
+    deckTitle: title,
+    folderPath: `${placementPrefix}${formatReleaseGroupPath(title, rel?.groups, q.groupId)}`,
+  };
 }
 
 export async function loadScopedPool(
@@ -247,110 +300,85 @@ export async function loadScopedPool(
   deckId: string | null,
 ): Promise<ScopedPool> {
   const db = await getDb();
-  const [ownDecks, ownGroups, subs, studyRows] = await Promise.all([
+  const [allOwnedFolders, allSubs, studyRows] = await Promise.all([
+    loadActiveOwnedFolders(db, userId),
     db
       .select({
-        id: decks.id,
-        title: decks.title,
-        groupName: decks.groupName,
-      })
-      .from(decks)
-      .where(
-        and(
-          eq(decks.ownerId, userId),
-          isNull(decks.deletedAt),
-          scope === "deck" && deckId ? eq(decks.id, deckId) : undefined,
-        ),
-      ),
-    db
-      .select({
-        id: deckGroups.id,
-        deckId: deckGroups.deckId,
-        title: deckGroups.title,
-        category: deckGroups.category,
-      })
-      .from(deckGroups)
-      .where(
-        and(
-          eq(deckGroups.ownerId, userId),
-          scope === "deck" && deckId ? eq(deckGroups.deckId, deckId) : undefined,
-        ),
-      )
-      .orderBy(
-        asc(deckGroups.position),
-        asc(deckGroups.createdAt),
-        asc(deckGroups.id),
-      ),
-    db
-      .select({
-        deckId: decks.id,
-        publishedVersion: decks.publishedVersion,
-        groupName: subscriptions.groupName,
+        deckId: subscriptions.deckId,
+        folderId: subscriptions.folderId,
+        seenVersion: subscriptions.seenVersion,
       })
       .from(subscriptions)
-      .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-      .where(
-        and(
-          eq(subscriptions.userId, userId),
-          scope === "deck" && deckId
-            ? eq(subscriptions.deckId, deckId)
-            : undefined,
-        ),
-      ),
+      .where(eq(subscriptions.userId, userId)),
     db
       .select({
         questionId: studyCards.questionId,
         fsrs: studyCards.fsrs,
+        reviewedRevision: studyCards.reviewedRevision,
         noteSnippet: sql<string>`left(${studyCards.note}, 1000)`,
       })
       .from(studyCards)
       .where(eq(studyCards.userId, userId)),
   ]);
 
+  const ownedTree = buildServerFolderTree(allOwnedFolders);
+  const isOwnedScope = Boolean(
+    scope === "deck" && deckId && ownedTree.byId.has(deckId),
+  );
+  const ownedSubtreeIds = isOwnedScope
+    ? new Set<string>(collectOwnedSubtreeIds(ownedTree, deckId!))
+    : scope === "workspace"
+      ? new Set(ownedTree.byId.keys())
+      : new Set<string>();
+
+  // Subscriptions in scope:
+  // - workspace: all user subscriptions
+  // - owned folder scope: subscriptions placed inside the folder's recursive subtree
+  // - subscribed deck scope: that specific subscription only
+  const scopedSubs =
+    scope === "workspace"
+      ? allSubs
+      : isOwnedScope
+        ? allSubs.filter(
+            (s) => s.folderId !== null && ownedSubtreeIds.has(s.folderId),
+          )
+        : allSubs.filter((s) => s.deckId === deckId);
+
   const deckInfoMap = new Map<
     string,
     {
       title: string;
-      groupName: string;
+      path: string;
       isOwner: boolean;
-      groups: { id: string; title: string; category: string }[];
+      groups: { id: string; title: string; path: string }[];
     }
   >();
-  const groupInfoMap = new Map<
-    string,
-    { title: string; category: string }
-  >();
-  for (const d of ownDecks) {
-    deckInfoMap.set(d.id, {
-      title: d.title,
-      groupName: d.groupName,
+
+  for (const folderId of ownedSubtreeIds) {
+    const f = ownedTree.byId.get(folderId);
+    if (!f) continue;
+    deckInfoMap.set(f.id, {
+      title: f.title,
+      path: formatOwnedFolderPath(ownedTree.byId, f.id),
       isOwner: true,
       groups: [],
     });
   }
-  for (const g of ownGroups) {
-    groupInfoMap.set(g.id, { title: g.title, category: g.category });
-    deckInfoMap.get(g.deckId)?.groups.push({
-      id: g.id,
-      title: g.title,
-      category: g.category,
-    });
-  }
-  const subGroupNameMap = new Map(subs.map((s) => [s.deckId, s.groupName]));
+
   const studyMap = new Map(studyRows.map((s) => [s.questionId, s]));
   const pool: ScopedQuestionItem[] = [];
 
-  if (!deckId || deckInfoMap.has(deckId)) {
+  if (scope === "workspace" || isOwnedScope) {
     const ownedRows = await db
       .select({
         id: questions.id,
         deckId: questions.deckId,
-        groupId: questions.groupId,
         title: questions.title,
         answerSnippet: sql<string>`left(${questions.answer}, 2000)`,
         hasAnswer: sql<boolean>`btrim(${questions.answer}) <> ''`,
         tags: questions.tags,
         needsEditing: questions.needsEditing,
+        majorRevision: questions.majorRevision,
         updatedAt: questions.updatedAt,
       })
       .from(questions)
@@ -360,25 +388,29 @@ export async function loadScopedPool(
           isNull(questions.deletedAt),
           isNull(questions.purgedAt),
           eq(questions.archived, false),
-          scope === "deck" && deckId ? eq(questions.deckId, deckId) : undefined,
+          isOwnedScope
+            ? inArray(questions.deckId, [...ownedSubtreeIds])
+            : undefined,
         ),
       );
     for (const q of ownedRows) {
       const study = studyMap.get(q.id);
-      const grp = q.groupId ? groupInfoMap.get(q.groupId) : undefined;
       const mergedTags = mergeQuestionTags(
         q.tags,
         markdownDocument(q.answerSnippet).tags,
       );
+      const fsrs = (study?.fsrs as StoredCard | null) ?? null;
+      const folder = q.deckId ? ownedTree.byId.get(q.deckId) : undefined;
+      const folderPath = formatOwnedFolderPath(
+        ownedTree.byId,
+        folder ? q.deckId : null,
+      );
       pool.push({
         id: q.id,
-        deckId: q.deckId,
-        deckTitle: q.deckId
-          ? (deckInfoMap.get(q.deckId)?.title ?? "未分类")
-          : "未分类",
-        groupId: q.groupId,
-        groupTitle: grp?.title ?? "",
-        groupCategory: grp?.category ?? "",
+        deckId: folder ? q.deckId : null,
+        deckTitle: folder?.title ?? ROOT_FOLDER_LABEL,
+        folderPath,
+        groupId: null,
         isOwner: true,
         title: q.title,
         answerSnippet: q.answerSnippet,
@@ -386,17 +418,19 @@ export async function loadScopedPool(
         noteSnippet: study?.noteSnippet ?? "",
         tags: mergedTags,
         needsEditing: q.needsEditing,
-        due: study?.fsrs?.due ? String(study.fsrs.due) : null,
+        fsrs,
+        majorRevision: q.majorRevision,
+        reviewedRevision: study?.reviewedRevision ?? 0,
+        due: fsrs?.due ? String(fsrs.due) : null,
         updatedAt: q.updatedAt.toISOString(),
       });
     }
   }
 
-  const subIds = subs.map((s) => s.deckId);
-
+  const subIds = scopedSubs.map((s) => s.deckId);
   if (subIds.length) {
     const published = await db
-      .select({ release: releases })
+      .select({ release: releases, folderId: subscriptions.folderId })
       .from(subscriptions)
       .innerJoin(
         releases,
@@ -411,35 +445,41 @@ export async function loadScopedPool(
           inArray(subscriptions.deckId, subIds),
         ),
       );
-    for (const { release } of published) {
-      const releaseGroups = (release.groups ?? []).map((g) => ({
+    for (const { release, folderId } of published) {
+      const placementPrefix =
+        folderId && ownedTree.byId.has(folderId)
+          ? `${formatOwnedFolderPath(ownedTree.byId, folderId)} / `
+          : "";
+      const rootPath = `${placementPrefix}${release.title}`;
+      const normalizedGroups = normalizeReleaseGroups(release.groups ?? []);
+      const releaseGroupEntries = normalizedGroups.map((g) => ({
         id: g.id,
         title: g.title,
-        category: g.category ?? "",
+        path: `${placementPrefix}${formatReleaseGroupPath(release.title, release.groups, g.id)}`,
       }));
-      const releaseGroupMap = new Map(releaseGroups.map((g) => [g.id, g]));
+      const groupPathMap = new Map(releaseGroupEntries.map((g) => [g.id, g.path]));
       deckInfoMap.set(release.deckId, {
         title: release.title,
-        groupName: subGroupNameMap.get(release.deckId) ?? "",
+        path: rootPath,
         isOwner: false,
-        groups: releaseGroups,
+        groups: releaseGroupEntries,
       });
       for (const q of release.questions) {
         if (q.archived) continue;
         const study = studyMap.get(q.id);
-        const grp = q.groupId ? releaseGroupMap.get(q.groupId) : undefined;
         const snippet = q.answer.slice(0, 2000);
         const mergedTags = mergeQuestionTags(
           q.tags,
           markdownDocument(snippet).tags,
         );
+        const fsrs = (study?.fsrs as StoredCard | null) ?? null;
+        const groupId = q.groupId && groupPathMap.has(q.groupId) ? q.groupId : null;
         pool.push({
           id: q.id,
           deckId: release.deckId,
           deckTitle: release.title,
-          groupId: q.groupId ?? null,
-          groupTitle: grp?.title ?? "",
-          groupCategory: grp?.category ?? "",
+          folderPath: groupId ? groupPathMap.get(groupId)! : rootPath,
+          groupId,
           isOwner: false,
           title: q.title,
           answerSnippet: snippet,
@@ -447,7 +487,10 @@ export async function loadScopedPool(
           noteSnippet: study?.noteSnippet ?? "",
           tags: mergedTags,
           needsEditing: q.needsEditing,
-          due: study?.fsrs?.due ? String(study.fsrs.due) : null,
+          fsrs,
+          majorRevision: q.majorRevision,
+          reviewedRevision: study?.reviewedRevision ?? 0,
+          due: fsrs?.due ? String(fsrs.due) : null,
           updatedAt: q.updatedAt,
         });
       }
@@ -458,7 +501,7 @@ export async function loadScopedPool(
     ...Array.from(deckInfoMap.entries()).map(([id, info]) => ({
       id,
       title: info.title,
-      groupName: info.groupName,
+      path: info.path,
       isOwner: info.isOwner,
       groups: info.groups,
     })),
@@ -466,8 +509,8 @@ export async function loadScopedPool(
       ? [
           {
             id: null,
-            title: "未分类",
-            groupName: "",
+            title: ROOT_FOLDER_LABEL,
+            path: ROOT_FOLDER_LABEL,
             isOwner: true,
             groups: [],
           },
@@ -521,15 +564,46 @@ export async function executeWorkspaceTool(
           refs: [],
         };
       }
-      if (scope === "deck" && deckId && q.deckId !== deckId) {
-        return {
-          output: { error: "该题目不属于当前题库范围。" },
-          label: "读取题目详情",
-          refs: [],
-        };
-      }
       const db = await getDb();
-      const [[study], deckTitle, groupInfo] = await Promise.all([
+      if (scope === "deck" && deckId) {
+        let inScope = false;
+        if (q.isOwner) {
+          const folders = await loadActiveOwnedFolders(db, userId);
+          const tree = buildServerFolderTree(folders);
+          const subtreeIds = tree.byId.has(deckId)
+            ? new Set<string>(collectOwnedSubtreeIds(tree, deckId))
+            : new Set<string>();
+          inScope = Boolean(q.deckId && subtreeIds.has(q.deckId));
+        } else if (q.deckId === deckId) {
+          inScope = true;
+        } else if (q.deckId) {
+          const [folders, [sub]] = await Promise.all([
+            loadActiveOwnedFolders(db, userId),
+            db
+              .select({ folderId: subscriptions.folderId })
+              .from(subscriptions)
+              .where(
+                and(
+                  eq(subscriptions.userId, userId),
+                  eq(subscriptions.deckId, q.deckId),
+                ),
+              ),
+          ]);
+          const tree = buildServerFolderTree(folders);
+          const subtreeIds = tree.byId.has(deckId)
+            ? new Set<string>(collectOwnedSubtreeIds(tree, deckId))
+            : new Set<string>();
+          inScope = Boolean(sub?.folderId && subtreeIds.has(sub.folderId));
+        }
+        if (!inScope) {
+          return {
+            output: { error: "该题目不属于当前文件夹范围。" },
+            label: "读取题目详情",
+            refs: [],
+          };
+        }
+      }
+      const [[study], location] = await Promise.all([
         db
           .select({ note: studyCards.note })
           .from(studyCards)
@@ -539,57 +613,16 @@ export async function executeWorkspaceTool(
               eq(studyCards.questionId, q.id),
             ),
           ),
-        resolveDeckTitle(userId, q.deckId, q.isOwner),
-        q.groupId && q.deckId
-          ? q.isOwner
-            ? db
-                .select({
-                  title: deckGroups.title,
-                  category: deckGroups.category,
-                })
-                .from(deckGroups)
-                .where(
-                  and(
-                    eq(deckGroups.id, q.groupId),
-                    eq(deckGroups.ownerId, userId),
-                  ),
-                )
-                .then((rows) => rows[0] ?? null)
-            : db
-                .select({ groups: releases.groups })
-                .from(subscriptions)
-                .innerJoin(
-                  releases,
-                  and(
-                    eq(releases.deckId, subscriptions.deckId),
-                    eq(releases.version, subscriptions.seenVersion),
-                  ),
-                )
-                .where(
-                  and(
-                    eq(subscriptions.userId, userId),
-                    eq(subscriptions.deckId, q.deckId),
-                  ),
-                )
-                .then(
-                  (rows) =>
-                    rows[0]?.groups?.find((g) => g.id === q.groupId) ?? null,
-                )
-          : Promise.resolve(null),
+        resolveQuestionLocation(userId, q),
       ]);
       const tags = mergeQuestionTags(q.tags, markdownDocument(q.answer).tags);
       return {
         label: `已读取「${q.title.slice(0, 20)}」`,
-        refs: [{ id: q.id, title: q.title, deckTitle }],
+        refs: [{ id: q.id, title: q.title, deckTitle: location.folderPath }],
         output: {
           id: q.id,
-          deckTitle,
-          ...(groupInfo
-            ? {
-                groupCategory: groupInfo.category,
-                groupTitle: groupInfo.title,
-              }
-            : {}),
+          deckTitle: location.deckTitle,
+          folderPath: location.folderPath,
           isOwner: q.isOwner,
           title: q.title,
           tags,
@@ -619,11 +652,11 @@ export async function executeWorkspaceTool(
         ? d.groups.map((g) => {
             const groupItems = items.filter((q) => q.groupId === g.id);
             return {
-              category: g.category,
               title: g.title,
+              path: g.path,
               total: groupItems.length,
               due: groupItems.filter(
-                (q) => q.hasAnswer && q.due && Date.parse(q.due) <= now,
+                (q) => q.hasAnswer && isQuestionDue(q, now),
               ).length,
               needsEditing: groupItems.filter((q) => q.needsEditing).length,
             };
@@ -632,18 +665,16 @@ export async function executeWorkspaceTool(
       return {
         deckId: d.id,
         title: d.title,
-        ...(d.groupName ? { groupName: d.groupName } : {}),
+        path: d.path,
         isOwner: d.isOwner,
         total: items.length,
-        due: items.filter(
-          (q) => q.hasAnswer && q.due && Date.parse(q.due) <= now,
-        ).length,
+        due: items.filter((q) => q.hasAnswer && isQuestionDue(q, now)).length,
         needsEditing: items.filter((q) => q.needsEditing).length,
         ...(groupSummary ? { groups: groupSummary } : {}),
       };
     });
     return {
-      label: `已概览 ${summary.length} 个题库分区（共 ${pool.length} 题）`,
+      label: `已概览 ${summary.length} 个文件夹位置（共 ${pool.length} 题）`,
       refs: [],
       output: { totalQuestions: pool.length, decks: summary },
     };
@@ -666,8 +697,7 @@ export async function executeWorkspaceTool(
         id: string;
         title: string;
         deckTitle: string;
-        groupCategory?: string;
-        groupTitle?: string;
+        folderPath: string;
         tags: string[];
         isOwner: boolean;
       };
@@ -675,8 +705,7 @@ export async function executeWorkspaceTool(
         id: string;
         title: string;
         deckTitle: string;
-        groupCategory?: string;
-        groupTitle?: string;
+        folderPath: string;
         tags: string[];
         isOwner: boolean;
       };
@@ -701,10 +730,7 @@ export async function executeWorkspaceTool(
               id: pa.item.id,
               title: pa.item.title,
               deckTitle: pa.item.deckTitle,
-              ...(pa.item.groupCategory
-                ? { groupCategory: pa.item.groupCategory }
-                : {}),
-              ...(pa.item.groupTitle ? { groupTitle: pa.item.groupTitle } : {}),
+              folderPath: pa.item.folderPath,
               tags: pa.item.tags,
               isOwner: pa.item.isOwner,
             },
@@ -712,10 +738,7 @@ export async function executeWorkspaceTool(
               id: pb.item.id,
               title: pb.item.title,
               deckTitle: pb.item.deckTitle,
-              ...(pb.item.groupCategory
-                ? { groupCategory: pb.item.groupCategory }
-                : {}),
-              ...(pb.item.groupTitle ? { groupTitle: pb.item.groupTitle } : {}),
+              folderPath: pb.item.folderPath,
               tags: pb.item.tags,
               isOwner: pb.item.isOwner,
             },
@@ -730,12 +753,12 @@ export async function executeWorkspaceTool(
       refsMap.set(pair.a.id, {
         id: pair.a.id,
         title: pair.a.title,
-        deckTitle: pair.a.deckTitle,
+        deckTitle: pair.a.folderPath,
       });
       refsMap.set(pair.b.id, {
         id: pair.b.id,
         title: pair.b.title,
-        deckTitle: pair.b.deckTitle,
+        deckTitle: pair.b.folderPath,
       });
     }
     return {
@@ -767,17 +790,15 @@ export async function executeWorkspaceTool(
     const ranked = pool
       .filter((q) => {
         if (filter === "needsEditing") return q.needsEditing;
-        if (filter === "due")
-          return q.hasAnswer && !!q.due && Date.parse(q.due) <= now;
-        if (filter === "new") return q.hasAnswer && !q.due;
+        if (filter === "due") return q.hasAnswer && isQuestionDue(q, now);
+        if (filter === "new") return q.hasAnswer && !q.fsrs;
         return true;
       })
       .map((q) => {
         if (!terms.length) return { item: q, score: 1 };
         const titleLower = q.title.toLowerCase();
         const tagsLower = q.tags.join(" ").toLowerCase();
-        const groupLower = `${q.groupCategory} ${q.groupTitle}`.toLowerCase();
-        const deckLower = q.deckTitle.toLowerCase();
+        const pathLower = q.folderPath.toLowerCase();
         const ansLower = q.answerSnippet.slice(0, 1200).toLowerCase();
         const noteLower = q.noteSnippet.toLowerCase();
         let score = 0;
@@ -791,12 +812,8 @@ export async function executeWorkspaceTool(
             score += 3;
             hit = true;
           }
-          if (groupLower.includes(term)) {
+          if (pathLower.includes(term)) {
             score += 3;
-            hit = true;
-          }
-          if (deckLower.includes(term)) {
-            score += 2;
             hit = true;
           }
           if (noteLower.includes(term)) {
@@ -815,22 +832,29 @@ export async function executeWorkspaceTool(
         (entry): entry is { item: ScopedQuestionItem; score: number } =>
           !!entry,
       )
-      .sort(
-        (a, b) =>
+      .sort((a, b) => {
+        if (filter === "due" && !terms.length) {
+          const majorDiff =
+            Number(isQuestionMajorRevisionDue(b.item)) -
+            Number(isQuestionMajorRevisionDue(a.item));
+          if (majorDiff !== 0) return majorDiff;
+        }
+        return (
           b.score - a.score ||
-          Date.parse(b.item.updatedAt) - Date.parse(a.item.updatedAt),
-      )
+          Date.parse(b.item.updatedAt) - Date.parse(a.item.updatedAt)
+        );
+      })
       .slice(0, limit);
 
     const items = ranked.map(({ item }) => ({
       id: item.id,
       title: item.title,
       deckTitle: item.deckTitle,
-      ...(item.groupCategory ? { groupCategory: item.groupCategory } : {}),
-      ...(item.groupTitle ? { groupTitle: item.groupTitle } : {}),
+      folderPath: item.folderPath,
       isOwner: item.isOwner,
       tags: item.tags,
       needsEditing: item.needsEditing,
+      ...(isQuestionMajorRevisionDue(item) ? { needsRelearn: true } : {}),
       due: item.due,
       snippet: item.answerSnippet.replace(/\s+/g, " ").trim().slice(0, 160),
     }));
@@ -842,7 +866,7 @@ export async function executeWorkspaceTool(
       refs: items.slice(0, 8).map((q) => ({
         id: q.id,
         title: q.title,
-        deckTitle: q.deckTitle,
+        deckTitle: q.folderPath,
       })),
       output: { totalInScope: pool.length, matches: items },
     };
@@ -870,23 +894,18 @@ export async function buildFallbackScopeSummary(
       id: q.id,
       title: q.title,
       deckTitle: q.deckTitle,
-      ...(q.groupCategory ? { groupCategory: q.groupCategory } : {}),
-      ...(q.groupTitle ? { groupTitle: q.groupTitle } : {}),
+      folderPath: q.folderPath,
       tags: q.tags,
       needsEditing: q.needsEditing,
     }));
   return JSON.stringify({
     scope,
     totalInScope: pool.length,
-    decks: deckRows.map((d) => ({
+    folders: deckRows.map((d) => ({
       title: d.title,
-      ...(d.groupName ? { groupName: d.groupName } : {}),
+      path: d.path,
       ...(d.groups.length
-        ? {
-            groups: d.groups.map((g) =>
-              g.category ? `${g.category} · ${g.title}` : g.title,
-            ),
-          }
+        ? { subfolders: d.groups.map((g) => g.path) }
         : {}),
     })),
     recentQuestions: top,

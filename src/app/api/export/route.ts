@@ -3,7 +3,6 @@ import { getWorkspace } from "@/server/workspace";
 import { getDb } from "@/db";
 import {
   conversations,
-  deckGroups,
   messages,
   imports,
   preferences,
@@ -34,7 +33,6 @@ export const GET = route(async (_request, user) => {
     logs,
     sourceRows,
     prefRows,
-    ownGroups,
     ownReleases,
     subRows,
     trashRows,
@@ -64,7 +62,6 @@ export const GET = route(async (_request, user) => {
         ),
       ),
     db.select().from(preferences).where(eq(preferences.userId, user.id)),
-    db.select().from(deckGroups).where(eq(deckGroups.ownerId, user.id)),
     ownedDeckIds.length
       ? db
           .select()
@@ -84,7 +81,12 @@ export const GET = route(async (_request, user) => {
       ),
     db.select().from(studyCards).where(eq(studyCards.userId, user.id)),
   ]);
-  const sourceMap = new Map(sourceRows.map((row) => [row.id, row.sourceText]));
+  const sourceMap = new Map(
+    sourceRows.map((row) => [
+      row.id,
+      { sourceText: row.sourceText, importId: row.importId },
+    ]),
+  );
   const referencedImportIds = new Set<string>();
   for (const row of sourceRows) {
     if (row.importId) referencedImportIds.add(row.importId);
@@ -115,7 +117,7 @@ export const GET = route(async (_request, user) => {
   const pref = prefRows[0];
   const exported = {
     format: "shiyi-backup",
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
     user: workspace.user,
     preferences: {
@@ -125,13 +127,20 @@ export const GET = route(async (_request, user) => {
       timeZone: pref?.timeZone ?? workspace.settings.timeZone,
     },
     decks: workspace.decks,
-    deckGroups: ownGroups,
     releases: ownReleases,
     subscriptions: subRows,
     followedAuthors: workspace.followedAuthors ?? [],
-    questions: workspace.questions.map((q) =>
-      q.isOwner ? { ...q, sourceText: sourceMap.get(q.id) ?? "" } : q,
-    ),
+    conceptFolders: workspace.conceptFolders,
+    concepts: workspace.concepts,
+    questions: workspace.questions.map((q) => {
+      if (!q.isOwner) return q;
+      const source = sourceMap.get(q.id);
+      return {
+        ...q,
+        sourceText: source?.sourceText ?? "",
+        importId: source?.importId ?? null,
+      };
+    }),
     trash: trashRows.map((q) => ({
       ...q,
       expiresAt: questionExpiresAt(q.deletedAt!).toISOString(),

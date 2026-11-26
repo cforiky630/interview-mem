@@ -3,7 +3,6 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -19,6 +18,7 @@ import {
   Download,
   Eye,
   FolderOpen,
+  Info,
   Layers2,
   Loader2,
   RefreshCw,
@@ -49,8 +49,9 @@ import {
   subscribeAllByAuthor,
   unfollowAuthor,
 } from "@/lib/client";
-import { listDeckGroupNames } from "@/lib/grouping";
+import { buildFolderIndex, ROOT_FOLDER_LABEL } from "@/lib/folders";
 import type { Mutate } from "./dialogs";
+import { FolderSelectOptions } from "./folder-select-options";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { useDiscretePresence } from "./use-discrete-presence";
@@ -75,7 +76,7 @@ export function Catalog({
   initialAuthorId,
   initialSharedDeckId,
   onOpenDeck,
-  onSetDeckGroup,
+  onMoveSubscription,
   onClearDeepLink,
   onSelectAuthorUrl,
 }: {
@@ -84,7 +85,7 @@ export function Catalog({
   initialAuthorId?: string | null;
   initialSharedDeckId?: string | null;
   onOpenDeck: (deckId: string) => void;
-  onSetDeckGroup?: (deck: Workspace["decks"][number]) => void;
+  onMoveSubscription?: (deck: Workspace["decks"][number]) => void;
   onClearDeepLink?: () => void;
   onSelectAuthorUrl?: (authorId: string | null) => void;
 }) {
@@ -106,7 +107,7 @@ export function Catalog({
   const [batchMode, setBatchMode] = useState(false);
   const batchBarPresence = useDiscretePresence<HTMLDivElement>(batchMode);
   const [batchIds, setBatchIds] = useState<string[]>([]);
-  const [batchGroupName, setBatchGroupName] = useState("");
+  const [batchFolderId, setBatchFolderId] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [updatingAll, setUpdatingAll] = useState(false);
 
@@ -117,18 +118,13 @@ export function Catalog({
   );
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
-  const [previewGroupName, setPreviewGroupName] = useState("");
+  const [previewFolderId, setPreviewFolderId] = useState("");
   const [previewFromDeepLink, setPreviewFromDeepLink] = useState(false);
 
-  const batchGroupListId = useId();
-  const previewGroupListId = useId();
   const fetchAbortRef = useRef<AbortController | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
 
-  const existingDeckGroups = useMemo(
-    () => listDeckGroupNames(data.decks),
-    [data.decks],
-  );
+  const folderIndex = useMemo(() => buildFolderIndex(data.decks), [data.decks]);
   const ownPublicDeckCount = useMemo(
     () =>
       data.decks.filter(
@@ -203,7 +199,7 @@ export function Catalog({
       setPreviewFromDeepLink(fromDeepLink);
       setPreviewData(null);
       setPreviewError("");
-      setPreviewGroupName("");
+      setPreviewFolderId("");
       setPreviewLoading(true);
       try {
         const res = await fetchCatalogDeckPreview(deckId, {
@@ -257,8 +253,8 @@ export function Catalog({
           : d.syncedVersion;
       const hasUpdate = Boolean(
         subscribed &&
-          syncedVersion !== null &&
-          d.publishedVersion > syncedVersion,
+        syncedVersion !== null &&
+        d.publishedVersion > syncedVersion,
       );
       return {
         ...d,
@@ -311,7 +307,8 @@ export function Catalog({
       if (authorFilter && d.ownerId !== authorFilter) return false;
       if (onlyUnsubscribed && (d.subscribed || d.isOwner)) return false;
       if (!deferredSearch) return true;
-      const haystack = `${d.title} ${d.description} ${d.ownerName} ${d.tags.map((t) => `${t} #${t}`).join(" ")}`.toLowerCase();
+      const haystack =
+        `${d.title} ${d.description} ${d.ownerName} ${d.tags.map((t) => `${t} #${t}`).join(" ")}`.toLowerCase();
       return haystack.includes(deferredSearch);
     });
     const sorted = [...list];
@@ -337,9 +334,7 @@ export function Catalog({
 
   const subscribableVisibleIds = useMemo(
     () =>
-      visibleDecks
-        .filter((d) => !d.isOwner && !d.subscribed)
-        .map((d) => d.id),
+      visibleDecks.filter((d) => !d.isOwner && !d.subscribed).map((d) => d.id),
     [visibleDecks],
   );
   const subscribableSet = useMemo(
@@ -350,7 +345,10 @@ export function Catalog({
     () => batchIds.filter((id) => subscribableSet.has(id)),
     [batchIds, subscribableSet],
   );
-  const activeBatchSet = useMemo(() => new Set(activeBatchIds), [activeBatchIds]);
+  const activeBatchSet = useMemo(
+    () => new Set(activeBatchIds),
+    [activeBatchIds],
+  );
 
   const visibleAuthors = useMemo(() => {
     if (authorTabFilter === "followed") {
@@ -382,7 +380,7 @@ export function Catalog({
 
   async function handleSubscribeSingle(
     deckId: string,
-    groupName = "",
+    folderId = "",
     openAfter = false,
   ) {
     if (busyKey) return;
@@ -391,7 +389,7 @@ export function Catalog({
       const res = await mutate("/api/decks", {
         action: "subscribe",
         deckId,
-        ...(groupName.trim() ? { groupName: groupName.trim() } : {}),
+        folderId: folderId || null,
       });
       if (res) {
         toast.success("订阅成功；作者发布新版本时你可以自行选择是否更新。");
@@ -413,17 +411,16 @@ export function Catalog({
       const res = await batchSubscribeDecks(
         mutate,
         activeBatchIds,
-        batchGroupName,
+        batchFolderId || null,
       );
       if (res) {
         const added = Number(res.subscribed ?? activeBatchIds.length);
-        toast.success(
-          batchGroupName.trim()
-            ? `已批量订阅 ${added} 个题库并归入「${batchGroupName.trim()}」。`
-            : `已批量订阅 ${added} 个题库。`,
-        );
+        const targetLabel = batchFolderId
+          ? folderIndex.pathOf(batchFolderId)
+          : ROOT_FOLDER_LABEL;
+        toast.success(`已批量订阅 ${added} 份资料并放入「${targetLabel}」。`);
         setBatchIds([]);
-        setBatchGroupName("");
+        setBatchFolderId("");
         setBatchMode(false);
         void loadCatalog({ silent: true });
       }
@@ -452,7 +449,9 @@ export function Catalog({
     try {
       const res = await applyAllDeckUpdates(mutate);
       if (res) {
-        toast.success(`已更新 ${Number(res.updated ?? outdatedSubs.length)} 个订阅题库。`);
+        toast.success(
+          `已更新 ${Number(res.updated ?? outdatedSubs.length)} 个订阅题库。`,
+        );
         void loadCatalog({ silent: true });
       }
     } finally {
@@ -488,7 +487,9 @@ export function Catalog({
       if (author.followed) {
         const res = await unfollowAuthor(mutate, author.id, false);
         if (res) {
-          toast.success(`已取消关注「${author.name}」（已订阅的题库保持不变）。`);
+          toast.success(
+            `已取消关注「${author.name}」（已订阅的题库保持不变）。`,
+          );
           void loadCatalog({ silent: true });
         }
       } else {
@@ -507,10 +508,7 @@ export function Catalog({
     }
   }
 
-  async function handleToggleAutoSubscribe(
-    authorId: string,
-    next: boolean,
-  ) {
+  async function handleToggleAutoSubscribe(authorId: string, next: boolean) {
     if (busyKey) return;
     setBusyKey(`auto:${authorId}`);
     try {
@@ -565,8 +563,8 @@ export function Catalog({
       syncedVersion,
       hasUpdate: Boolean(
         subscribed &&
-          syncedVersion !== null &&
-          d.publishedVersion > syncedVersion,
+        syncedVersion !== null &&
+        d.publishedVersion > syncedVersion,
       ),
       authorFollowed: followedAuthorMap.has(d.ownerId),
     };
@@ -597,7 +595,8 @@ export function Catalog({
             disabled={loading}
             onClick={() => void loadCatalog()}
           >
-            <RefreshCw size={14} className={loading ? "spin" : undefined} /> 刷新
+            <RefreshCw size={14} className={loading ? "spin" : undefined} />{" "}
+            刷新
           </Button>
         </div>
       </div>
@@ -609,7 +608,7 @@ export function Catalog({
           aria-selected={tab === "discover"}
           onClick={() => setTab("discover")}
         >
-          发现题库
+          公开题库
           {enrichedDecks.length > 0 && <small>{enrichedDecks.length}</small>}
         </button>
         <button
@@ -1006,22 +1005,18 @@ export function Catalog({
               </button>
             </div>
             <div className="batch-bar-actions">
-              <input
-                aria-label="批量订阅目标题库分组（可选）"
-                list={existingDeckGroups.length ? batchGroupListId : undefined}
-                value={batchGroupName}
-                onChange={(e) => setBatchGroupName(e.target.value)}
-                maxLength={40}
+              <select
+                aria-label="批量订阅目标文件夹"
+                value={batchFolderId}
+                onChange={(e) => setBatchFolderId(e.target.value)}
                 disabled={busyKey === "batch-sub"}
-                placeholder="归入题库分组（可选）"
-              />
-              {existingDeckGroups.length > 0 && (
-                <datalist id={batchGroupListId}>
-                  {existingDeckGroups.map((g) => (
-                    <option key={g} value={g} />
-                  ))}
-                </datalist>
-              )}
+              >
+                <FolderSelectOptions
+                  decks={data.decks}
+                  includeRoot
+                  rootLabel={`放到：${ROOT_FOLDER_LABEL}`}
+                />
+              </select>
               <Button
                 size="sm"
                 disabled={
@@ -1054,11 +1049,7 @@ export function Catalog({
 
       {tab === "authors" && (
         <>
-          <div
-            className="deck-group-bar"
-            role="group"
-            aria-label="筛选创作者"
-          >
+          <div className="deck-group-bar" role="group" aria-label="筛选创作者">
             <button
               type="button"
               className={`deck-group-pill ${authorTabFilter === "all" ? "is-active" : ""}`}
@@ -1074,9 +1065,7 @@ export function Catalog({
               onClick={() => setAuthorTabFilter("followed")}
             >
               我关注的{" "}
-              <small>
-                {enrichedAuthors.filter((a) => a.followed).length}
-              </small>
+              <small>{enrichedAuthors.filter((a) => a.followed).length}</small>
             </button>
           </div>
           {visibleAuthors.length ? (
@@ -1242,7 +1231,9 @@ export function Catalog({
           )}
 
           {followedAuthors.length > 0 && (
-            <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <section
+              style={{ display: "flex", flexDirection: "column", gap: 8 }}
+            >
               <div className="deck-group-heading-main">
                 <strong style={{ fontSize: "0.84rem", color: "var(--text)" }}>
                   我关注的创作者
@@ -1368,9 +1359,9 @@ export function Catalog({
                             {deck.title}
                           </strong>
                           <span className="deck-status-pill">v{pinnedVer}</span>
-                          {deck.groupName && (
+                          {deck.parentId && (
                             <span className="deck-group-badge">
-                              {deck.groupName}
+                              {folderIndex.pathOf(deck.parentId)}
                             </span>
                           )}
                           {deck.sourceDeleted && (
@@ -1433,14 +1424,16 @@ export function Catalog({
                           立即更新
                         </Button>
                       )}
-                      {onSetDeckGroup && (
+                      {onMoveSubscription && (
                         <Button
                           size="sm"
                           variant="ghost"
-                          onClick={() => onSetDeckGroup(deck)}
+                          onClick={() => onMoveSubscription(deck)}
                         >
                           <FolderOpen size={14} />{" "}
-                          {deck.groupName || "设置分组"}
+                          {deck.parentId
+                            ? folderIndex.pathOf(deck.parentId)
+                            : "移动到文件夹"}
                         </Button>
                       )}
                       <Button
@@ -1502,7 +1495,13 @@ export function Catalog({
           ) : previewData && previewLiveDeck ? (
             <>
               {previewLiveDeck.description && (
-                <p style={{ margin: 0, fontSize: "0.86rem", color: "var(--subtle)" }}>
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: "0.86rem",
+                    color: "var(--subtle)",
+                  }}
+                >
                   {previewLiveDeck.description}
                 </p>
               )}
@@ -1539,7 +1538,8 @@ export function Catalog({
                   >
                     {previewLiveDeck.authorFollowed ? (
                       <>
-                        <UserCheck size={14} /> 已关注 {previewLiveDeck.ownerName}
+                        <UserCheck size={14} /> 已关注{" "}
+                        {previewLiveDeck.ownerName}
                       </>
                     ) : (
                       <>
@@ -1558,6 +1558,31 @@ export function Catalog({
                   </p>
                 </div>
               )}
+              {!previewLiveDeck.isOwner &&
+                (previewData.overlaps?.length ?? 0) > 0 && (
+                  <div
+                    className="conflict-box catalog-overlap-notice"
+                    role="note"
+                  >
+                    <div className="conflict-box-head">
+                      <Info size={15} />
+                      <strong>与已有订阅存在内容重叠</strong>
+                    </div>
+                    {previewData.overlaps!.map((item) => (
+                      <p
+                        className="muted small"
+                        key={item.deckId}
+                        style={{ margin: 0 }}
+                      >
+                        {item.relation === "ancestor"
+                          ? `你已订阅该作者的「${item.title}」（包含此目录内容），同时订阅会各自独立记录复习进度。`
+                          : item.relation === "descendant"
+                            ? `你已订阅该作者的子目录「${item.title}」（被此目录包含），同时订阅会各自独立记录复习进度。`
+                            : `你已订阅该作者的「${item.title}」（与本目录有 ${item.overlapCount} 道重合题目），同时订阅会各自独立记录复习进度。`}
+                      </p>
+                    ))}
+                  </div>
+                )}
               {previewData.groups.length > 0 && (
                 <div>
                   <strong
@@ -1568,15 +1593,33 @@ export function Catalog({
                       marginBottom: 6,
                     }}
                   >
-                    包含分组（{previewData.groups.length}）
+                    包含目录结构（{previewData.groups.length}）
                   </strong>
                   <div className="catalog-author-decks">
-                    {previewData.groups.map((g) => (
-                      <span className="deck-group-pill" key={g.id}>
-                        {g.category ? `${g.category} · ${g.title}` : g.title}
-                        <small>{g.count}</small>
-                      </span>
-                    ))}
+                    {(() => {
+                      const byId = new Map(
+                        previewData.groups.map((g) => [g.id, g]),
+                      );
+                      const pathOfGroup = (gid: string) => {
+                        const parts: string[] = [];
+                        const seen = new Set<string>();
+                        let cur: string | null = gid;
+                        while (cur && !seen.has(cur)) {
+                          seen.add(cur);
+                          const node = byId.get(cur);
+                          if (!node) break;
+                          parts.push(node.title);
+                          cur = node.parentId ?? null;
+                        }
+                        return parts.reverse().join(" / ");
+                      };
+                      return previewData.groups.map((g) => (
+                        <span className="deck-group-pill" key={g.id}>
+                          {pathOfGroup(g.id)}
+                          <small>{g.count}</small>
+                        </span>
+                      ));
+                    })()}
                   </div>
                 </div>
               )}
@@ -1590,7 +1633,8 @@ export function Catalog({
                   }}
                 >
                   题目预览（
-                  {previewData.totalQuestions > previewData.sampleQuestions.length
+                  {previewData.totalQuestions >
+                  previewData.sampleQuestions.length
                     ? `展示前 ${previewData.sampleQuestions.length} / 共 ${previewData.totalQuestions} 题`
                     : `共 ${previewData.sampleQuestions.length} 题`}
                   ）
@@ -1633,31 +1677,30 @@ export function Catalog({
               </div>
               {!previewLiveDeck.isOwner && !previewLiveDeck.subscribed && (
                 <label className="field">
-                  归入我的题库分组（可选）
-                  <input
-                    list={
-                      existingDeckGroups.length ? previewGroupListId : undefined
-                    }
-                    value={previewGroupName}
-                    onChange={(e) => setPreviewGroupName(e.target.value)}
-                    maxLength={40}
+                  订阅后放入我的文件夹
+                  <select
+                    aria-label="订阅后放入我的文件夹"
+                    value={previewFolderId}
+                    onChange={(e) => setPreviewFolderId(e.target.value)}
                     disabled={busyKey !== null}
-                    placeholder="例如：公司面经、大神题库（留空不分组）"
-                  />
-                  {existingDeckGroups.length > 0 && (
-                    <datalist id={previewGroupListId}>
-                      {existingDeckGroups.map((g) => (
-                        <option key={g} value={g} />
-                      ))}
-                    </datalist>
-                  )}
+                  >
+                    <FolderSelectOptions
+                      decks={data.decks}
+                      includeRoot
+                      rootLabel={ROOT_FOLDER_LABEL}
+                    />
+                  </select>
                 </label>
               )}
             </>
           ) : null}
         </div>
         <div className="dialog-footer">
-          <Button variant="ghost" disabled={busyKey !== null} onClick={closePreview}>
+          <Button
+            variant="ghost"
+            disabled={busyKey !== null}
+            onClick={closePreview}
+          >
             关闭
           </Button>
           {previewLiveDeck &&
@@ -1684,7 +1727,8 @@ export function Catalog({
                   onOpenDeck(previewLiveDeck.id);
                 }}
               >
-                <Download size={15} /> 更新至 v{previewLiveDeck.publishedVersion}
+                <Download size={15} /> 更新至 v
+                {previewLiveDeck.publishedVersion}
                 并打开
               </Button>
             ) : previewLiveDeck.subscribed ? (
@@ -1703,7 +1747,7 @@ export function Catalog({
                 onClick={() =>
                   void handleSubscribeSingle(
                     previewLiveDeck.id,
-                    previewGroupName,
+                    previewFolderId,
                     true,
                   )
                 }

@@ -5,7 +5,7 @@ import { BookmarkPlus, Layers2, Loader2 } from "lucide-react";
 import type { ChatMessage, DeckView, QuestionView } from "@/lib/types";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
-import { DeckSelectOptions } from "./deck-select-options";
+import { FolderSelectOptions } from "./folder-select-options";
 
 export type AiSaveTarget =
   | { kind: "note"; message: ChatMessage }
@@ -145,14 +145,13 @@ export function AiSaveDialog({
                   />
                 </label>
                 <label className="field">
-                  <span>存入题库</span>
+                  <span>存入文件夹</span>
                   <select
                     disabled={busy}
                     value={deckId}
                     onChange={(e) => setDeckId(e.target.value)}
                   >
-                    <DeckSelectOptions decks={ownedDecks} />
-                    <option value="">未分类</option>
+                    <FolderSelectOptions decks={ownedDecks} includeRoot />
                   </select>
                 </label>
               </>

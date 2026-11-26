@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   authorSubscriptions,
@@ -10,7 +10,7 @@ import {
 } from "@/db/schema";
 import { body, route } from "@/server/api";
 import { AppError } from "@/server/errors";
-import { deckGroupNameSchema } from "@/server/content-fields";
+import { deckIdSchema } from "@/server/resource-ids";
 
 const authorIdSchema = z.string().trim().min(1, "缺少创作者标识。").max(128);
 
@@ -20,7 +20,7 @@ const schema = z.discriminatedUnion("action", [
     authorId: authorIdSchema,
     autoSubscribeNew: z.boolean().default(false),
     subscribeAll: z.boolean().default(false),
-    groupName: deckGroupNameSchema.default(""),
+    folderId: deckIdSchema.nullable().default(null),
   }),
   z.object({
     action: z.literal("unfollow"),
@@ -30,7 +30,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("subscribeAll"),
     authorId: authorIdSchema,
-    groupName: deckGroupNameSchema.default(""),
+    folderId: deckIdSchema.nullable().default(null),
   }),
   z.object({
     action: z.literal("setAutoSubscribe"),
@@ -38,6 +38,71 @@ const schema = z.discriminatedUnion("action", [
     autoSubscribeNew: z.boolean(),
   }),
 ]);
+
+async function assertOptionalOwnedFolder(
+  tx: Parameters<Parameters<Awaited<ReturnType<typeof getDb>>["transaction"]>[0]>[0] | Awaited<ReturnType<typeof getDb>>,
+  userId: string,
+  folderId: string | null,
+) {
+  if (!folderId) return;
+  const [folder] = await tx
+    .select({ id: decks.id })
+    .from(decks)
+    .where(
+      and(
+        eq(decks.id, folderId),
+        eq(decks.ownerId, userId),
+        isNull(decks.deletedAt),
+      ),
+    );
+  if (!folder) throw new AppError(404, "目标文件夹不存在或没有访问权限。");
+}
+
+/**
+ * Filter author's public decks so that if a public ancestor folder is already
+ * in the public set (or already subscribed), its nested public descendants
+ * are not redundantly subscribed by `subscribeAll` / `follow(subscribeAll)`.
+ */
+async function selectTopMostPublicDecks(
+  tx: Parameters<Parameters<Awaited<ReturnType<typeof getDb>>["transaction"]>[0]>[0] | Awaited<ReturnType<typeof getDb>>,
+  authorId: string,
+  followerId: string,
+) {
+  const [authorFolders, existingSubs] = await Promise.all([
+    tx
+      .select({
+        id: decks.id,
+        parentId: decks.parentId,
+        visibility: decks.visibility,
+        publishedVersion: decks.publishedVersion,
+      })
+      .from(decks)
+      .where(and(eq(decks.ownerId, authorId), isNull(decks.deletedAt))),
+    tx
+      .select({ deckId: subscriptions.deckId })
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, followerId)),
+  ]);
+  const parentById = new Map(authorFolders.map((f) => [f.id, f.parentId]));
+  const publicDecks = authorFolders.filter(
+    (f) => f.visibility === "public" && f.publishedVersion > 0,
+  );
+  const publicIds = new Set(publicDecks.map((f) => f.id));
+  const subscribedIds = new Set(existingSubs.map((s) => s.deckId));
+
+  const hasCoveredAncestor = (id: string) => {
+    const visited = new Set<string>([id]);
+    let cur = parentById.get(id) ?? null;
+    while (cur && !visited.has(cur)) {
+      visited.add(cur);
+      if (publicIds.has(cur) || subscribedIds.has(cur)) return true;
+      cur = parentById.get(cur) ?? null;
+    }
+    return false;
+  };
+
+  return publicDecks.filter((d) => !hasCoveredAncestor(d.id));
+}
 
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);
@@ -54,6 +119,9 @@ export const POST = route(async (request, user) => {
     if (!author) throw new AppError(404, "创作者不存在。");
 
     const subscribedDecks = await db.transaction(async (tx) => {
+      if (data.subscribeAll) {
+        await assertOptionalOwnedFolder(tx, user.id, data.folderId);
+      }
       await tx
         .insert(authorSubscriptions)
         .values({
@@ -69,17 +137,11 @@ export const POST = route(async (request, user) => {
           set: { autoSubscribeNew: data.autoSubscribeNew },
         });
       if (!data.subscribeAll) return 0;
-      const publicDecks = await tx
-        .select({ id: decks.id, publishedVersion: decks.publishedVersion })
-        .from(decks)
-        .where(
-          and(
-            eq(decks.ownerId, data.authorId),
-            eq(decks.visibility, "public"),
-            gt(decks.publishedVersion, 0),
-            isNull(decks.deletedAt),
-          ),
-        );
+      const publicDecks = await selectTopMostPublicDecks(
+        tx,
+        data.authorId,
+        user.id,
+      );
       if (!publicDecks.length) return 0;
       const inserted = await tx
         .insert(subscriptions)
@@ -87,7 +149,7 @@ export const POST = route(async (request, user) => {
           publicDecks.map((d) => ({
             userId: user.id,
             deckId: d.id,
-            groupName: data.groupName,
+            folderId: data.folderId,
             seenVersion: d.publishedVersion,
             dismissedVersion: 0,
           })),
@@ -147,17 +209,12 @@ export const POST = route(async (request, user) => {
       .from(users)
       .where(eq(users.id, data.authorId));
     if (!author) throw new AppError(404, "创作者不存在。");
-    const publicDecks = await db
-      .select({ id: decks.id, publishedVersion: decks.publishedVersion })
-      .from(decks)
-      .where(
-        and(
-          eq(decks.ownerId, data.authorId),
-          eq(decks.visibility, "public"),
-          gt(decks.publishedVersion, 0),
-          isNull(decks.deletedAt),
-        ),
-      );
+    await assertOptionalOwnedFolder(db, user.id, data.folderId);
+    const publicDecks = await selectTopMostPublicDecks(
+      db,
+      data.authorId,
+      user.id,
+    );
     if (!publicDecks.length) {
       return NextResponse.json({
         ok: true,
@@ -171,7 +228,7 @@ export const POST = route(async (request, user) => {
         publicDecks.map((d) => ({
           userId: user.id,
           deckId: d.id,
-          groupName: data.groupName,
+          folderId: data.folderId,
           seenVersion: d.publishedVersion,
           dismissedVersion: 0,
         })),

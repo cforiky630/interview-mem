@@ -41,7 +41,7 @@ export async function importLibrary(
       .select({ id: user.id })
       .from(user)
       .where(eq(user.id, ownerId))
-      .for("update");
+      .for("no key update");
     const deckIds = {
       question: stableId(`interview-library:${ownerId}:RAG`),
       note: stableId(`interview-library:${ownerId}:notes`),

@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { getDb, type Database } from "@/db";
 import {
   authorSubscriptions,
+  conceptFolders,
+  concepts,
   decks,
-  deckGroups,
   questions,
   releases,
   subscriptions,
@@ -18,24 +19,37 @@ import {
 } from "@/db/schema";
 import type { Identity } from "./api";
 import type {
+  ConceptFolderView,
+  ConceptView,
   DeckGroupView,
   DeckView,
   FollowedAuthorView,
   PendingDeckUpdate,
-  PublishStatus,
   QuestionView,
   StoredCard,
-  UnpublishedDeckDiff,
   Workspace,
 } from "@/lib/types";
 import {
+  CONCEPT_ROOT_LABEL,
+  recomputeConceptFolderState,
+} from "@/lib/concepts";
+import {
   computeUnpublishedDiff,
   diffReleaseVersions,
+  normalizeReleaseGroups,
 } from "@/lib/subscriptions";
+import { ROOT_FOLDER_LABEL } from "@/lib/folders";
 import { isQuestionDue } from "@/lib/review-queue";
 import { dateKey } from "@/lib/utils";
 import { AppError } from "./errors";
 import { contentHash } from "./crypto";
+import {
+  buildServerFolderTree,
+  collectOwnedSubtreeIds,
+  formatOwnedFolderPath,
+  type OwnedFolderRow,
+  type ServerFolderTree,
+} from "./folders";
 
 export async function nextQuestionBaseMs(
   tx: Pick<Database, "select">,
@@ -51,24 +65,10 @@ export async function nextQuestionBaseMs(
   return Math.max(Date.now(), Number.isFinite(maxMs) ? maxMs + 1 : 0);
 }
 
-export async function nextDeckGroupPosition(
-  tx: Pick<Database, "select">,
-  deckId: string,
-): Promise<number> {
-  const [row] = await tx
-    .select({
-      maxPosition: sql<number | null>`max(${deckGroups.position})`,
-    })
-    .from(deckGroups)
-    .where(eq(deckGroups.deckId, deckId));
-  return typeof row?.maxPosition === "number" ? row.maxPosition + 1 : 0;
-}
-
 export async function nextQuestionPosition(
   tx: Pick<Database, "select">,
   ownerId: string,
   deckId: string | null,
-  groupId: string | null,
 ): Promise<number> {
   const [row] = await tx
     .select({
@@ -79,26 +79,10 @@ export async function nextQuestionPosition(
       and(
         eq(questions.ownerId, ownerId),
         deckId ? eq(questions.deckId, deckId) : isNull(questions.deckId),
-        groupId ? eq(questions.groupId, groupId) : isNull(questions.groupId),
         isNull(questions.deletedAt),
       ),
     );
   return typeof row?.maxPosition === "number" ? row.maxPosition + 1 : 0;
-}
-
-export function publishedDeckGroup(
-  g: Pick<
-    typeof deckGroups.$inferSelect,
-    "id" | "title" | "category" | "description" | "position"
-  >,
-): PublishedDeckGroup {
-  return {
-    id: g.id,
-    title: g.title,
-    category: g.category,
-    description: g.description,
-    position: g.position,
-  };
 }
 
 export async function ensureWorkspace(userId: string) {
@@ -113,6 +97,7 @@ export async function ensureWorkspace(userId: string) {
       await tx.insert(decks).values({
         id: crypto.randomUUID(),
         ownerId: userId,
+        parentId: null,
         title: "我的面试题",
         description:
           "收录日常整理的高频面经、技术盲点与复盘思路，按记忆曲线逐步内化为自己的表达。",
@@ -126,7 +111,6 @@ export function publishedQuestion(
     typeof questions.$inferSelect,
     | "id"
     | "deckId"
-    | "groupId"
     | "position"
     | "parentId"
     | "title"
@@ -140,11 +124,12 @@ export function publishedQuestion(
     | "updatedAt"
     | "validation"
   >,
+  override?: { deckId?: string | null; groupId?: string | null },
 ): PublishedQuestion {
   return {
     id: q.id,
-    deckId: q.deckId,
-    groupId: q.groupId,
+    deckId: override?.deckId !== undefined ? override.deckId : q.deckId,
+    groupId: override?.groupId !== undefined ? override.groupId : null,
     position: q.position,
     parentId: q.parentId,
     title: q.title,
@@ -165,6 +150,66 @@ export function publishedQuestion(
   };
 }
 
+/**
+ * Collect the recursive owned subfolder tree and owned questions for publishing or diffing a folder.
+ * Subscriptions placed inside this folder are structurally excluded (they are not owned `decks` rows).
+ */
+export function buildOwnedPublishSubtree<
+  Q extends Pick<
+    typeof questions.$inferSelect,
+    | "id"
+    | "deckId"
+    | "position"
+    | "parentId"
+    | "title"
+    | "answer"
+    | "tags"
+    | "revision"
+    | "majorRevision"
+    | "needsEditing"
+    | "archived"
+    | "createdAt"
+    | "updatedAt"
+    | "validation"
+  >,
+>(
+  tree: ServerFolderTree,
+  rootFolder: OwnedFolderRow,
+  allOwnedQuestions: readonly Q[],
+): {
+  subtreeFolderIds: string[];
+  groups: PublishedDeckGroup[];
+  questions: PublishedQuestion[];
+  rawQuestions: Q[];
+} {
+  const subtreeFolderIds = collectOwnedSubtreeIds(tree, rootFolder.id);
+  const subtreeSet = new Set(subtreeFolderIds);
+  const groups: PublishedDeckGroup[] = [];
+  for (const id of subtreeFolderIds) {
+    if (id === rootFolder.id) continue;
+    const node = tree.byId.get(id);
+    if (!node) continue;
+    groups.push({
+      id: node.id,
+      parentId: node.parentId === rootFolder.id ? null : (node.parentId ?? null),
+      title: node.title,
+      category: "",
+      description: node.description,
+      position: 0,
+    });
+  }
+  const rawQuestions = allOwnedQuestions.filter(
+    (q) => q.deckId !== null && subtreeSet.has(q.deckId),
+  );
+  const serialized = rawQuestions.map((q) =>
+    publishedQuestion(q, {
+      deckId: rootFolder.id,
+      groupId: q.deckId === rootFolder.id ? null : q.deckId,
+    }),
+  );
+  return { subtreeFolderIds, groups, questions: serialized, rawQuestions };
+}
+
 export async function ownedDeck(userId: string, deckId: string) {
   const db = await getDb();
   const [deck] = await db
@@ -177,7 +222,7 @@ export async function ownedDeck(userId: string, deckId: string) {
         isNull(decks.deletedAt),
       ),
     );
-  if (!deck) throw new AppError(404, "题库不存在或没有编辑权限。");
+  if (!deck) throw new AppError(404, "文件夹不存在或没有编辑权限。");
   return deck;
 }
 
@@ -196,7 +241,7 @@ export async function accessibleQuestion(
       throw new AppError(404, "题目已删除或不可访问。");
     return { ...publishedQuestion(row), isOwner: true };
   }
-  // A published question keeps its stable identity when the author removes a category or deletes the draft.
+  // A published question keeps its stable identity when the author removes a folder or deletes the draft.
   // Subscribers stay pinned to their accepted release version (`subscriptions.seenVersion`) until opting into updates.
   const snapshots = await db
     .select({ release: releases })
@@ -230,12 +275,13 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
     [prefRow],
     [credRow],
     [ownDecksAgg],
-    [ownGroupsAgg],
     [ownQuestionsAgg],
     [subAgg],
     [followAgg],
     [studyAgg],
     [reviewAgg],
+    [conceptsAgg],
+    [conceptFoldersAgg],
   ] = await Promise.all([
     db
       .select({
@@ -263,17 +309,10 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
         totalCount: sql<number>`count(*)::int`,
         maxUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
         sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
+        treeSig: sql<string>`coalesce(string_agg(${decks.id} || ':' || coalesce(${decks.parentId}, '') || ':' || ${decks.title}, ',' order by ${decks.id}) filter (where ${decks.deletedAt} is null), '')`,
       })
       .from(decks)
       .where(eq(decks.ownerId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxUpdated: sql<string>`coalesce(max(${deckGroups.updatedAt})::text, '')`,
-        sumPos: sql<string>`coalesce(sum(${deckGroups.position})::bigint, 0)::text`,
-      })
-      .from(deckGroups)
-      .where(eq(deckGroups.ownerId, userId)),
     db
       .select({
         count: sql<number>`count(*)::int`,
@@ -298,7 +337,7 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
         sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
         maxDeckUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
         deletedCount: sql<number>`(count(*) filter (where ${decks.deletedAt} is not null))::int`,
-        groupsSig: sql<string>`coalesce(string_agg(${subscriptions.deckId} || ':' || ${subscriptions.groupName}, ',' order by ${subscriptions.deckId}), '')`,
+        foldersSig: sql<string>`coalesce(string_agg(${subscriptions.deckId} || ':' || coalesce(${subscriptions.folderId}, ''), ',' order by ${subscriptions.deckId}), '')`,
       })
       .from(subscriptions)
       .innerJoin(decks, eq(subscriptions.deckId, decks.id))
@@ -319,6 +358,7 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
         maxUpdated: sql<string>`coalesce(max(${studyCards.updatedAt})::text, '')`,
         sumVersions: sql<string>`coalesce(sum(${studyCards.version} + ${studyCards.noteVersion} + ${studyCards.annotationsVersion})::bigint, 0)::text`,
         favCount: sql<number>`(count(*) filter (where ${studyCards.favorite}))::int`,
+        favSig: sql<string>`coalesce(string_agg(${studyCards.questionId}, ',' order by ${studyCards.questionId}) filter (where ${studyCards.favorite}), '')`,
         dueCount: sql<number>`(count(*) filter (where ${studyCards.fsrs} is not null and case when (${studyCards.fsrs}->>'due') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' then (${studyCards.fsrs}->>'due')::timestamptz <= now() else false end))::int`,
       })
       .from(studyCards)
@@ -330,6 +370,22 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
       })
       .from(reviewEvents)
       .where(eq(reviewEvents.userId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${concepts.updatedAt})::text, '')`,
+        sig: sql<string>`coalesce(string_agg(${concepts.id} || ':' || coalesce(${concepts.folderId}, '') || ':' || ${concepts.normalizedKey} || ':' || ${concepts.groupName} || ':' || ${concepts.color} || ':' || md5(${concepts.definition} || ':' || ${concepts.aliases}::text) || ':' || ${concepts.updatedAt}::text, ',' order by ${concepts.id}), '')`,
+      })
+      .from(concepts)
+      .where(eq(concepts.userId, userId)),
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        maxUpdated: sql<string>`coalesce(max(${conceptFolders.updatedAt})::text, '')`,
+        sig: sql<string>`coalesce(string_agg(${conceptFolders.id} || ':' || coalesce(${conceptFolders.parentId}, '') || ':' || ${conceptFolders.title} || ':' || ${conceptFolders.color} || ':' || ${conceptFolders.updatedAt}::text, ',' order by ${conceptFolders.id}), '')`,
+      })
+      .from(conceptFolders)
+      .where(eq(conceptFolders.userId, userId)),
   ]);
 
   let followedPublicSig = "";
@@ -363,63 +419,110 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
     prefRow ?? null,
     credRow ?? null,
     ownDecksAgg ?? null,
-    ownGroupsAgg ?? null,
     ownQuestionsAgg ?? null,
     subAgg ?? null,
     followAgg ?? null,
     followedPublicSig,
     studyAgg ?? null,
     reviewAgg ?? null,
+    conceptsAgg ?? null,
+    conceptFoldersAgg ?? null,
   ]);
   const hash = createHash("sha256").update(fingerprint).digest("hex").slice(0, 24);
   return `W/"${hash}"`;
 }
 
+function formatSubGroupPath(
+  rootTitle: string,
+  releaseGroups: readonly DeckGroupView[],
+  groupId: string | null | undefined,
+): string {
+  if (!groupId || !releaseGroups.length) return rootTitle;
+  const map = new Map(releaseGroups.map((g) => [g.id, g]));
+  const segs: string[] = [];
+  const visited = new Set<string>();
+  let cursor: string | null = groupId;
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const node = map.get(cursor);
+    if (!node) break;
+    segs.push(node.title);
+    cursor = node.parentId && map.has(node.parentId) ? node.parentId : null;
+  }
+  return segs.length ? `${rootTitle} / ${segs.reverse().join(" / ")}` : rootTitle;
+}
+
 export async function getWorkspace(identity: Identity): Promise<Workspace> {
-  await ensureWorkspace(identity.id);
   const db = await getDb();
-  const [own, subscribed, followedRows, states, logs, prefRows, keyRows] =
-    await Promise.all([
+  let [
+    own,
+    subscribed,
+    followedRows,
+    states,
+    logs,
+    prefRows,
+    keyRows,
+    conceptRows,
+    conceptFolderRows,
+  ] = await Promise.all([
+    db
+      .select()
+      .from(decks)
+      .where(and(eq(decks.ownerId, identity.id), isNull(decks.deletedAt)))
+      .orderBy(decks.createdAt),
+    db
+      .select({ deck: decks, subscription: subscriptions, owner: users.name })
+      .from(subscriptions)
+      .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+      .innerJoin(users, eq(decks.ownerId, users.id))
+      .where(eq(subscriptions.userId, identity.id)),
+    db
+      .select({
+        authorId: authorSubscriptions.authorId,
+        authorName: users.name,
+        autoSubscribeNew: authorSubscriptions.autoSubscribeNew,
+        createdAt: authorSubscriptions.createdAt,
+      })
+      .from(authorSubscriptions)
+      .innerJoin(users, eq(authorSubscriptions.authorId, users.id))
+      .where(eq(authorSubscriptions.followerId, identity.id))
+      .orderBy(desc(authorSubscriptions.createdAt)),
+    db.select().from(studyCards).where(eq(studyCards.userId, identity.id)),
+    db
+      .select()
+      .from(reviewEvents)
+      .where(eq(reviewEvents.userId, identity.id))
+      .orderBy(desc(reviewEvents.createdAt))
+      .limit(30),
+    db.select().from(preferences).where(eq(preferences.userId, identity.id)),
+    db
+      .select({
+        keyHint: credentials.keyHint,
+        provider: credentials.provider,
+        baseUrl: credentials.baseUrl,
+        model: credentials.model,
+      })
+      .from(credentials)
+      .where(eq(credentials.userId, identity.id)),
+    db.select().from(concepts).where(eq(concepts.userId, identity.id)),
+    db
+      .select()
+      .from(conceptFolders)
+      .where(eq(conceptFolders.userId, identity.id)),
+  ]);
+
+  // Only execute the write transaction on brand-new user first boot (when preferences row is absent).
+  if (prefRows.length === 0) {
+    await ensureWorkspace(identity.id);
+    [own, prefRows] = await Promise.all([
       db
         .select()
         .from(decks)
         .where(and(eq(decks.ownerId, identity.id), isNull(decks.deletedAt)))
         .orderBy(decks.createdAt),
-      db
-        .select({ deck: decks, subscription: subscriptions, owner: users.name })
-        .from(subscriptions)
-        .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-        .innerJoin(users, eq(decks.ownerId, users.id))
-        .where(eq(subscriptions.userId, identity.id)),
-      db
-        .select({
-          authorId: authorSubscriptions.authorId,
-          authorName: users.name,
-          autoSubscribeNew: authorSubscriptions.autoSubscribeNew,
-          createdAt: authorSubscriptions.createdAt,
-        })
-        .from(authorSubscriptions)
-        .innerJoin(users, eq(authorSubscriptions.authorId, users.id))
-        .where(eq(authorSubscriptions.followerId, identity.id))
-        .orderBy(desc(authorSubscriptions.createdAt)),
-      db.select().from(studyCards).where(eq(studyCards.userId, identity.id)),
-      db
-        .select()
-        .from(reviewEvents)
-        .where(eq(reviewEvents.userId, identity.id))
-        .orderBy(desc(reviewEvents.createdAt))
-        .limit(30),
       db.select().from(preferences).where(eq(preferences.userId, identity.id)),
-      db
-        .select({
-          keyHint: credentials.keyHint,
-          provider: credentials.provider,
-          baseUrl: credentials.baseUrl,
-          model: credentials.model,
-        })
-        .from(credentials)
-        .where(eq(credentials.userId, identity.id)),
     ]);
+  }
   const timeZone = prefRows[0]?.timeZone ?? "Asia/Shanghai";
   const today = dateKey(new Date(), timeZone);
   const dayExpression = sql<string>`to_char(${reviewEvents.createdAt} at time zone ${timeZone}, 'YYYY-MM-DD')`;
@@ -435,7 +538,6 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
   const followedAuthorIds = followedRows.map((row) => row.authorId);
   const [
     drafts,
-    ownGroups,
     activityRows,
     aggregateRows,
     pinnedSubReleases,
@@ -446,7 +548,6 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       .select({
         id: questions.id,
         deckId: questions.deckId,
-        groupId: questions.groupId,
         position: questions.position,
         parentId: questions.parentId,
         title: questions.title,
@@ -469,15 +570,6 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
         ),
       )
       .orderBy(asc(questions.createdAt), asc(questions.id)),
-    db
-      .select()
-      .from(deckGroups)
-      .where(eq(deckGroups.ownerId, identity.id))
-      .orderBy(
-        asc(deckGroups.position),
-        asc(deckGroups.createdAt),
-        asc(deckGroups.id),
-      ),
     db
       .select({ date: dayExpression, count: sql<number>`count(*)::int` })
       .from(reviewEvents)
@@ -533,6 +625,7 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
           )
       : [],
   ]);
+
   const stateMap = new Map(states.map((s) => [s.questionId, s]));
   const pinnedReleaseMap = new Map(
     pinnedSubReleases.map((p) => [p.release.deckId, p.release]),
@@ -561,42 +654,13 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       ),
     };
   });
-  const ownGroupsByDeck = new Map<string, DeckGroupView[]>();
-  for (const g of ownGroups) {
-    const view: DeckGroupView = {
-      id: g.id,
-      deckId: g.deckId,
-      title: g.title,
-      category: g.category,
-      description: g.description,
-      position: g.position,
-      createdAt: g.createdAt.toISOString(),
-      updatedAt: g.updatedAt.toISOString(),
-    };
-    const list = ownGroupsByDeck.get(g.deckId);
-    if (list) list.push(view);
-    else ownGroupsByDeck.set(g.deckId, [view]);
-  }
+
+  const ownedTree = buildServerFolderTree(own);
   const questionViews: QuestionView[] = [];
   const deckViews: DeckView[] = [];
   const now = Date.now();
-  function append(
-    deck: typeof decks.$inferSelect | null,
-    qs: PublishedQuestion[],
-    isOwner: boolean,
-    ownerName: string,
-    seenVersion: number,
-    options: {
-      releaseSummary?: string;
-      groupName?: string;
-      groups?: DeckGroupView[];
-      pinnedRelease?: typeof releases.$inferSelect;
-      dismissedVersion?: number;
-      pendingUpdate?: PendingDeckUpdate | null;
-      publishStatus?: PublishStatus;
-      unpublishedDiff?: UnpublishedDeckDiff | null;
-    } = {},
-  ) {
+
+  const countMetrics = (qs: readonly PublishedQuestion[]) => {
     const active = qs.filter((q) => !q.archived);
     const eligible = active.filter((q) => q.answer.trim());
     const due = eligible.filter((q) => {
@@ -611,52 +675,272 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       );
     }).length;
     const newCount = eligible.filter((q) => !stateMap.get(q.id)?.fsrs).length;
-    const release = options.pinnedRelease;
-    const title = deck
-      ? isOwner
-        ? deck.title
-        : (release?.title ?? deck.title)
-      : "未分类";
-    if (deck)
-      deckViews.push({
-        id: deck.id,
-        title,
-        description: isOwner
-          ? deck.description
-          : (release?.description ?? deck.description),
-        groupName: options.groupName ?? "",
-        groups: options.groups ?? [],
-        color: deck.color,
-        visibility: deck.visibility,
-        isOwner,
-        ownerId: deck.ownerId,
-        ownerName,
-        publishedVersion: deck.publishedVersion,
-        seenVersion,
-        syncedVersion: seenVersion,
-        dismissedVersion: options.dismissedVersion ?? 0,
-        pendingUpdate: options.pendingUpdate ?? null,
-        ...(options.publishStatus !== undefined
-          ? { publishStatus: options.publishStatus }
-          : {}),
-        ...(options.unpublishedDiff !== undefined
-          ? { unpublishedDiff: options.unpublishedDiff }
-          : {}),
-        count: active.length,
-        due,
-        newCount,
-        updatedAt: deck.updatedAt.toISOString(),
-        releaseSummary: options.releaseSummary ?? "",
-        sourceDeleted: !!deck.deletedAt,
-      });
-    for (const q of qs) {
+    return { count: active.length, due, newCount };
+  };
+
+  // Single O(Q) pass: pre-serialize owned questions, bucket by deckId, and compute direct metrics.
+  const serializedDraftsByDeck = new Map<string | null, PublishedQuestion[]>();
+  const directMetricsByDeck = new Map<
+    string,
+    { count: number; due: number; newCount: number }
+  >();
+  const serializedDraftList: PublishedQuestion[] = [];
+
+  for (const rawQ of drafts) {
+    const q = publishedQuestion(rawQ);
+    serializedDraftList.push(q);
+    const bucket = serializedDraftsByDeck.get(q.deckId);
+    if (bucket) bucket.push(q);
+    else serializedDraftsByDeck.set(q.deckId, [q]);
+
+    if (q.deckId && !q.archived) {
+      let m = directMetricsByDeck.get(q.deckId);
+      if (!m) {
+        m = { count: 0, due: 0, newCount: 0 };
+        directMetricsByDeck.set(q.deckId, m);
+      }
+      m.count += 1;
+      if (q.answer.trim()) {
+        const s = stateMap.get(q.id);
+        if (
+          isQuestionDue(
+            {
+              fsrs: (s?.fsrs as StoredCard | null) ?? null,
+              majorRevision: q.majorRevision,
+              reviewedRevision: s?.reviewedRevision ?? 0,
+            },
+            now,
+          )
+        ) {
+          m.due += 1;
+        } else if (!s?.fsrs) {
+          m.newCount += 1;
+        }
+      }
+    }
+  }
+
+  // O(F) memoized bottom-up subtree metrics over owned folder tree.
+  const subtreeMetricsMemo = new Map<
+    string,
+    { count: number; due: number; newCount: number }
+  >();
+  const computeOwnedSubtreeMetrics = (
+    folderId: string,
+    visiting: Set<string>,
+  ): { count: number; due: number; newCount: number } => {
+    const cached = subtreeMetricsMemo.get(folderId);
+    if (cached) return cached;
+    if (visiting.has(folderId)) return { count: 0, due: 0, newCount: 0 };
+    visiting.add(folderId);
+    const direct = directMetricsByDeck.get(folderId) ?? {
+      count: 0,
+      due: 0,
+      newCount: 0,
+    };
+    let count = direct.count;
+    let due = direct.due;
+    let newCount = direct.newCount;
+    for (const child of ownedTree.children.get(folderId) ?? []) {
+      const childMetrics = computeOwnedSubtreeMetrics(child.id, visiting);
+      count += childMetrics.count;
+      due += childMetrics.due;
+      newCount += childMetrics.newCount;
+    }
+    const result = { count, due, newCount };
+    subtreeMetricsMemo.set(folderId, result);
+    return result;
+  };
+
+  // Emit owned folders with O(F + Q) subtree metrics and on-demand publish diffs.
+  for (const deck of own) {
+    const directActiveCount = directMetricsByDeck.get(deck.id)?.count ?? 0;
+    const metrics = computeOwnedSubtreeMetrics(deck.id, new Set());
+    const latestRel =
+      deck.publishedVersion > 0 ? latestReleaseMap.get(deck.id) : undefined;
+
+    let publishStatus: DeckView["publishStatus"] = "unpublished";
+    let unpublishedDiff: DeckView["unpublishedDiff"] = null;
+    if (deck.publishedVersion > 0 && latestRel) {
+      const subtreeFolderIds = collectOwnedSubtreeIds(ownedTree, deck.id);
+      const subtreeGroups: PublishedDeckGroup[] = [];
+      const subtreeQuestions: PublishedQuestion[] = [];
+      for (const fid of subtreeFolderIds) {
+        if (fid !== deck.id) {
+          const node = ownedTree.byId.get(fid);
+          if (node) {
+            subtreeGroups.push({
+              id: node.id,
+              parentId:
+                node.parentId === deck.id ? null : (node.parentId ?? null),
+              title: node.title,
+              category: "",
+              description: node.description,
+              position: 0,
+            });
+          }
+        }
+        const bucket = serializedDraftsByDeck.get(fid);
+        if (bucket) {
+          for (const q of bucket) {
+            subtreeQuestions.push({
+              ...q,
+              deckId: deck.id,
+              groupId: fid === deck.id ? null : fid,
+            });
+          }
+        }
+      }
+      const diffRes = computeUnpublishedDiff(
+        {
+          title: deck.title,
+          description: deck.description,
+          groups: subtreeGroups,
+          questions: subtreeQuestions,
+        },
+        latestRel,
+      );
+      publishStatus = diffRes.publishStatus;
+      unpublishedDiff = diffRes.unpublishedDiff;
+    }
+
+    const validParentId =
+      deck.parentId && ownedTree.byId.has(deck.parentId) && deck.parentId !== deck.id
+        ? deck.parentId
+        : null;
+    deckViews.push({
+      id: deck.id,
+      parentId: validParentId,
+      title: deck.title,
+      description: deck.description,
+      groups: [],
+      color: deck.color,
+      visibility: deck.visibility,
+      isOwner: true,
+      ownerId: deck.ownerId,
+      ownerName: identity.name,
+      publishedVersion: deck.publishedVersion,
+      seenVersion: deck.publishedVersion,
+      syncedVersion: deck.publishedVersion,
+      dismissedVersion: 0,
+      pendingUpdate: null,
+      publishStatus,
+      unpublishedDiff,
+      directCount: directActiveCount,
+      count: metrics.count,
+      due: metrics.due,
+      newCount: metrics.newCount,
+      updatedAt: deck.updatedAt.toISOString(),
+      releaseSummary: latestRel?.summary ?? "",
+      sourceDeleted: false,
+    });
+  }
+
+  // Emit all owned questions once with their real folder title and full path.
+  const ownedPathCache = new Map<string | null, string>();
+  const getOwnedFolderPath = (deckId: string | null) => {
+    const cached = ownedPathCache.get(deckId);
+    if (cached !== undefined) return cached;
+    const p = formatOwnedFolderPath(ownedTree.byId, deckId);
+    ownedPathCache.set(deckId, p);
+    return p;
+  };
+  for (const q of serializedDraftList) {
+    const s = stateMap.get(q.id);
+    const folder = q.deckId ? ownedTree.byId.get(q.deckId) : undefined;
+    const deckTitle = folder ? folder.title : ROOT_FOLDER_LABEL;
+    const folderPath = getOwnedFolderPath(q.deckId);
+    questionViews.push({
+      ...q,
+      groupId: null,
+      position: q.position ?? 0,
+      isOwner: true,
+      deckTitle,
+      folderPath,
+      note: s?.note ?? "",
+      noteVersion: s?.noteVersion ?? 0,
+      annotations: Array.isArray(s?.annotations) ? s.annotations : [],
+      annotationsVersion: s?.annotationsVersion ?? 0,
+      favorite: s?.favorite ?? false,
+      fsrs: (s?.fsrs as StoredCard | null) ?? null,
+      studyVersion: s?.version ?? 0,
+      reviewedRevision: s?.reviewedRevision ?? 0,
+    });
+  }
+
+  // Emit subscribed decks (placed inside user's personal folder via subscriptions.folderId) and their pinned release questions.
+  for (const item of subscribed) {
+    const pinned = pinnedReleaseMap.get(item.deck.id);
+    if (!pinned) continue;
+    const releaseTime = pinned.createdAt.toISOString();
+    const releaseGroups = normalizeReleaseGroups(
+      pinned.groups,
+      item.deck.id,
+      releaseTime,
+    );
+    const validGroupIds = new Set(releaseGroups.map((g) => g.id));
+    const latest =
+      item.deck.publishedVersion > item.subscription.seenVersion
+        ? latestReleaseMap.get(item.deck.id)
+        : undefined;
+    const pendingUpdate: PendingDeckUpdate | null =
+      latest && latest.version > pinned.version
+        ? diffReleaseVersions(pinned, latest)
+        : null;
+    const metrics = countMetrics(pinned.questions);
+    const placedFolderId =
+      item.subscription.folderId && ownedTree.byId.has(item.subscription.folderId)
+        ? item.subscription.folderId
+        : null;
+    const placedPrefix = placedFolderId
+      ? `${formatOwnedFolderPath(ownedTree.byId, placedFolderId)} / `
+      : "";
+    const directCount = pinned.questions.filter(
+      (q) => !q.archived && (!q.groupId || !validGroupIds.has(q.groupId)),
+    ).length;
+
+    deckViews.push({
+      id: item.deck.id,
+      parentId: placedFolderId,
+      title: pinned.title,
+      description: pinned.description,
+      groups: releaseGroups,
+      color: item.deck.color,
+      visibility: item.deck.visibility,
+      isOwner: false,
+      ownerId: item.deck.ownerId,
+      ownerName: item.owner,
+      publishedVersion: item.deck.publishedVersion,
+      seenVersion: item.subscription.seenVersion,
+      syncedVersion: item.subscription.seenVersion,
+      dismissedVersion: item.subscription.dismissedVersion,
+      pendingUpdate,
+      directCount,
+      count: metrics.count,
+      due: metrics.due,
+      newCount: metrics.newCount,
+      updatedAt: item.deck.updatedAt.toISOString(),
+      releaseSummary: pinned.summary,
+      sourceDeleted: !!item.deck.deletedAt,
+    });
+
+    for (const q of pinned.questions) {
       const s = stateMap.get(q.id);
+      const validGroupId =
+        q.groupId && validGroupIds.has(q.groupId) ? q.groupId : null;
+      const relPath = formatSubGroupPath(
+        pinned.title,
+        releaseGroups,
+        validGroupId,
+      );
       questionViews.push({
         ...q,
-        groupId: q.groupId ?? null,
+        deckId: item.deck.id,
+        groupId: validGroupId,
         position: q.position ?? 0,
-        isOwner,
-        deckTitle: title,
+        isOwner: false,
+        deckTitle: pinned.title,
+        folderPath: `${placedPrefix}${relPath}`,
         note: s?.note ?? "",
         noteVersion: s?.noteVersion ?? 0,
         annotations: Array.isArray(s?.annotations) ? s.annotations : [],
@@ -668,83 +952,13 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       });
     }
   }
-  for (const deck of own) {
-    const deckDrafts = drafts
-      .filter((q) => q.deckId === deck.id)
-      .map(publishedQuestion);
-    const deckGroupViews = ownGroupsByDeck.get(deck.id) ?? [];
-    const latestRel =
-      deck.publishedVersion > 0 ? latestReleaseMap.get(deck.id) : undefined;
-    const { publishStatus, unpublishedDiff } = computeUnpublishedDiff(
-      {
-        title: deck.title,
-        description: deck.description,
-        groups: deckGroupViews,
-        questions: deckDrafts,
-      },
-      latestRel,
-    );
-    append(deck, deckDrafts, true, identity.name, deck.publishedVersion, {
-      groupName: deck.groupName,
-      groups: deckGroupViews,
-      releaseSummary: latestRel?.summary ?? "",
-      publishStatus,
-      unpublishedDiff,
-    });
-  }
-  append(
-    null,
-    drafts.filter((q) => !q.deckId).map(publishedQuestion),
-    true,
-    identity.name,
-    0,
-  );
-  for (const item of subscribed) {
-    const pinned = pinnedReleaseMap.get(item.deck.id);
-    if (pinned) {
-      const releaseTime = pinned.createdAt.toISOString();
-      const releaseGroups: DeckGroupView[] = (pinned.groups ?? [])
-        .map((g) => ({
-          id: g.id,
-          deckId: item.deck.id,
-          title: g.title,
-          category: g.category ?? "",
-          description: g.description ?? "",
-          position: g.position ?? 0,
-          createdAt: releaseTime,
-          updatedAt: releaseTime,
-        }))
-        .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
-      const latest =
-        item.deck.publishedVersion > item.subscription.seenVersion
-          ? latestReleaseMap.get(item.deck.id)
-          : undefined;
-      const pendingUpdate =
-        latest && latest.version > pinned.version
-          ? diffReleaseVersions(pinned, latest)
-          : null;
-      append(
-        item.deck,
-        pinned.questions,
-        false,
-        item.owner,
-        item.subscription.seenVersion,
-        {
-          pinnedRelease: pinned,
-          releaseSummary: pinned.summary,
-          groupName: item.subscription.groupName,
-          groups: releaseGroups,
-          dismissedVersion: item.subscription.dismissedVersion,
-          pendingUpdate,
-        },
-      );
-    }
-  }
+
   questionViews.sort((a, b) => {
     const diff =
       new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     return diff !== 0 ? diff : a.id.localeCompare(b.id);
   });
+
   const pref = prefRows[0];
   const counts = new Map(activityRows.map((row) => [row.date, row.count]));
   let streak = 0;
@@ -754,6 +968,35 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     streak++;
     cursor.setUTCDate(cursor.getUTCDate() - 1);
   }
+  const rawConceptFolders: ConceptFolderView[] = conceptFolderRows.map(
+    (row) => ({
+      id: row.id,
+      parentId: row.parentId ?? null,
+      title: row.title,
+      color: row.color,
+      count: 0,
+      directCount: 0,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    }),
+  );
+  const rawConcepts: ConceptView[] = conceptRows.map((row) => ({
+    id: row.id,
+    term: row.term,
+    aliases: Array.isArray(row.aliases) ? row.aliases : [],
+    normalizedKey: row.normalizedKey,
+    definition: row.definition,
+    folderId: row.folderId ?? null,
+    folderPath: CONCEPT_ROOT_LABEL,
+    groupName: row.groupName,
+    color: row.color,
+    sourceQuestionId: row.sourceQuestionId ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }));
+  const { conceptFolders: conceptFolderViews, concepts: conceptViews } =
+    recomputeConceptFolderState(rawConceptFolders, rawConcepts);
+
   const active = questionViews.filter((q) => !q.archived);
   const aggregate = aggregateRows[0];
   const titles = new Map(questionViews.map((q) => [q.id, q.title]));
@@ -761,11 +1004,11 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     user: identity,
     decks: deckViews,
     questions: questionViews,
+    concepts: conceptViews,
+    conceptFolders: conceptFolderViews,
     followedAuthors,
     stats: {
-      due: active.filter(
-        (q) => q.answer.trim() && isQuestionDue(q, now),
-      ).length,
+      due: active.filter((q) => q.answer.trim() && isQuestionDue(q, now)).length,
       new: active.filter((q) => q.answer.trim() && !q.fsrs).length,
       reviewedToday: aggregate.today,
       newLearnedToday: aggregate.newToday,

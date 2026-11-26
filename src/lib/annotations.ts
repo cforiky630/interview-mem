@@ -11,7 +11,7 @@ export const ANNOTATION_COLORS: {
 ];
 
 const SKIP_SELECTOR =
-  "pre, code, .katex, .katex-display, button, textarea, input, select, script, style, svg, mark.prose-annotation-mark";
+  "pre, code, .katex, .katex-display, button, textarea, input, select, script, style, svg, mark.prose-annotation-mark, .prose-concept-link";
 
 const BLOCK_TAGS = new Set([
   "P",
@@ -199,6 +199,10 @@ export function applyAnnotationHighlights(
         activeId === annotation.id ? " is-active" : ""
       }`;
       mark.dataset.annotationId = annotation.id;
+      if (annotation.conceptId) {
+        mark.dataset.conceptId = annotation.conceptId;
+        mark.setAttribute("data-concept-id", annotation.conceptId);
+      }
       mark.tabIndex = 0;
       mark.setAttribute("role", "button");
       mark.setAttribute("aria-label", "查看批注");

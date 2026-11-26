@@ -2452,6 +2452,12 @@
 .answer-draft-heading > strong {
   font-size: 0.95rem;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.answer-mode-badge {
+  display: none;
 }
 
 .segmented-control {
@@ -2474,6 +2480,7 @@
   color: var(--subtle);
   border-radius: var(--radius-xs);
   border: 0;
+  white-space: nowrap;
   transition:
     background-color var(--dur-fast) ease,
     color var(--dur-fast) ease,
@@ -2692,6 +2699,19 @@
   opacity: 0.72;
 }
 
+@media (max-width: 560px) {
+  html:not([data-shell="mobile"]) .rating-button {
+    padding: 22px 6px 10px;
+  }
+  html:not([data-shell="mobile"]) .rating-key {
+    top: 5px;
+    left: 6px;
+    min-width: 16px;
+    height: 16px;
+    font-size: 0.625rem;
+  }
+}
+
 .followup-workspace {
   min-width: 0;
 }
@@ -2718,6 +2738,7 @@
 .mobile-review-reveal-bar,
 .reader-mobile-theme-btn,
 .reader-mobile-ai-btn,
+.reader-mobile-concepts-btn,
 .ai-sheet-backdrop,
 .sheet-grabber {
   display: none;
@@ -4629,28 +4650,6 @@ html[data-input="touch"] .inline-title-trigger {
   font-variant-numeric: tabular-nums;
 }
 
-.deck-group-bar-manage {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 28px;
-  padding: 3px 10px;
-  margin-left: auto;
-  border-radius: var(--radius-pill);
-  border: 1px dashed var(--border-control);
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.765rem;
-  font-weight: 500;
-  line-height: 1.35;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition:
-    background-color var(--dur-fast) ease,
-    border-color var(--dur-fast) ease,
-    color var(--dur-fast) ease;
-}
-
 .deck-title-row {
   display: flex;
   align-items: center;
@@ -5429,12 +5428,6 @@ html[data-input="touch"] .inline-title-trigger {
   .group-category-pill.is-active:hover {
     color: var(--accent-dark);
   }
-  .deck-group-bar-manage:hover {
-    border-style: solid;
-    border-color: var(--border-accent);
-    background: var(--accent-wash);
-    color: var(--accent-dark);
-  }
   .deck-current-group-pill:hover {
     background: var(--accent-soft);
     border-color: var(--accent);
@@ -5481,7 +5474,6 @@ html[data-input="touch"] .inline-title-trigger {
 
 @media (prefers-reduced-motion: reduce) {
   .deck-group-pill,
-  .deck-group-bar-manage,
   .deck-current-group-pill,
   .group-category-pill,
   .group-view-toggle > button,
@@ -6554,6 +6546,17 @@ html[data-input="touch"] .inline-title-trigger {
   overflow-y: auto;
 }
 
+.compare-layout-toggle {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+@media (max-width: 1119px) {
+  .compare-layout-toggle {
+    display: none;
+  }
+}
+
 @media (min-width: 1120px) {
   .app-shell:not(.ai-pushed) .notebook-reader.is-compare-split .reader-toolbar,
   .app-shell:not(.ai-pushed) .notebook-reader.is-compare-split .question-article {
@@ -6868,8 +6871,9 @@ html[data-input="touch"] .inline-title-trigger {
   gap: 3px;
 }
 
-/* —— 3. 阅读器侧边栏批注与可逆正文高亮 —— */
-.reader-annotations-toggle {
+/* —— 3. 阅读器侧边栏批注、概念自动释义与可逆正文高亮 —— */
+.reader-annotations-toggle,
+.reader-concepts-toggle {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -6889,11 +6893,13 @@ html[data-input="touch"] .inline-title-trigger {
     transform var(--dur-fast) var(--ease-smooth);
 }
 
-.reader-annotations-toggle:active {
+.reader-annotations-toggle:active,
+.reader-concepts-toggle:active {
   transform: scale(0.96);
 }
 
-.reader-annotations-toggle.is-active {
+.reader-annotations-toggle.is-active,
+.reader-concepts-toggle.is-active {
   background: var(--accent-soft);
   border-color: var(--border-accent);
   color: var(--accent-dark);
@@ -6918,7 +6924,8 @@ html[data-input="touch"] .inline-title-trigger {
     color var(--dur-fast) ease;
 }
 
-.reader-annotations-toggle.is-active .reader-annotations-count {
+.reader-annotations-toggle.is-active .reader-annotations-count,
+.reader-concepts-toggle.is-active .reader-annotations-count {
   background: var(--accent);
   color: var(--btn-primary-text);
 }
@@ -7397,10 +7404,644 @@ html[data-input="touch"] .inline-title-trigger {
   animation: annotation-mark-pulse 700ms var(--ease-smooth);
 }
 
+/* —— 概念释义正文编辑感引用（克制、无位移、无粗暴蓝色下划线） —— */
+.prose-concept-link {
+  --concept-tone: var(--hl-accent-dot);
+  color: inherit;
+  font-weight: inherit;
+  background-color: transparent;
+  border-bottom: 1.5px dotted
+    color-mix(in srgb, var(--concept-tone) 62%, transparent);
+  padding-bottom: 1px;
+  border-radius: 2px;
+  cursor: pointer;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition:
+    background-color 160ms ease,
+    border-bottom-color 160ms ease,
+    box-shadow 160ms ease;
+  animation: concept-link-in 220ms var(--ease-smooth) both;
+}
+
+[data-theme="dark"] .prose-concept-link {
+  border-bottom-color: color-mix(in srgb, var(--concept-tone) 68%, transparent);
+}
+
+.prose-concept-link.color-accent {
+  --concept-tone: var(--hl-accent-dot);
+}
+
+.prose-concept-link.color-amber {
+  --concept-tone: var(--hl-amber-dot);
+}
+
+.prose-concept-link.color-sky {
+  --concept-tone: var(--hl-sky-dot);
+}
+
+.prose-concept-link.color-rose {
+  --concept-tone: var(--hl-rose-dot);
+}
+
+.prose-concept-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--concept-tone) 72%, transparent);
+  outline-offset: 2px;
+  background-color: color-mix(in srgb, var(--concept-tone) 11%, transparent);
+  border-bottom-style: solid;
+  border-bottom-color: color-mix(in srgb, var(--concept-tone) 88%, transparent);
+}
+
+.prose-concept-link.is-active {
+  background-color: color-mix(in srgb, var(--concept-tone) 14%, transparent);
+  border-bottom-style: solid;
+  border-bottom-color: var(--concept-tone);
+}
+
+[data-theme="dark"] .prose-concept-link:focus-visible {
+  background-color: color-mix(in srgb, var(--concept-tone) 15%, transparent);
+}
+
+[data-theme="dark"] .prose-concept-link.is-active {
+  background-color: color-mix(in srgb, var(--concept-tone) 18%, transparent);
+}
+
+@keyframes concept-link-in {
+  from {
+    border-bottom-color: transparent;
+  }
+}
+
+@starting-style {
+  .prose-concept-link {
+    border-bottom-color: transparent;
+  }
+}
+
+/* —— 概念释义锚定浮层（桌面端）与共享内容样式 —— */
+.concept-popover {
+  position: fixed;
+  z-index: var(--z-floating-card);
+  width: min(364px, calc(100vw - 24px));
+  max-height: min(72dvh, 460px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-floating-card);
+  border-radius: var(--radius-md);
+  background: var(--surface-floating-card);
+  color: var(--text);
+  box-shadow: var(--shadow-floating-card);
+  transform-origin: top center;
+  opacity: 1;
+  scale: 1;
+  translate: 0 0;
+  transition:
+    display 240ms,
+    opacity 130ms ease-out,
+    scale 220ms cubic-bezier(0.34, 1.4, 0.64, 1),
+    translate 220ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  transition-behavior: allow-discrete;
+}
+
+.concept-popover[data-placement="above"] {
+  transform-origin: bottom center;
+}
+
+.concept-popover:where([hidden], [data-closing]) {
+  opacity: 0;
+  scale: 0.95;
+  translate: 0 -4px;
+  pointer-events: none;
+  transition:
+    display 140ms,
+    opacity 120ms ease-out,
+    scale 140ms cubic-bezier(0.32, 0, 0.2, 1),
+    translate 140ms cubic-bezier(0.32, 0, 0.2, 1);
+  transition-behavior: allow-discrete;
+}
+
+.concept-popover[data-placement="above"]:where([hidden], [data-closing]) {
+  translate: 0 4px;
+}
+
+.concept-popover[hidden] {
+  display: none;
+}
+
+@starting-style {
+  .concept-popover {
+    opacity: 0;
+    scale: 0.94;
+    translate: 0 -6px;
+  }
+  .concept-popover[data-placement="above"] {
+    translate: 0 6px;
+  }
+}
+
+.concept-popover-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 11px 10px 15px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.concept-popover-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding-top: 2px;
+}
+
+.concept-popover-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--hl-accent-dot);
+}
+
+.concept-popover-dot.color-accent {
+  background: var(--hl-accent-dot);
+}
+
+.concept-popover-dot.color-amber {
+  background: var(--hl-amber-dot);
+}
+
+.concept-popover-dot.color-sky {
+  background: var(--hl-sky-dot);
+}
+
+.concept-popover-dot.color-rose {
+  background: var(--hl-rose-dot);
+}
+
+.concept-popover-term {
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.38;
+  color: var(--text);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.concept-popover-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+  color: var(--subtle);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.5;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.concept-popover-group > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.concept-popover-aliases {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 15px 0;
+  flex-shrink: 0;
+}
+
+.concept-popover-alias {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+  color: var(--muted);
+  font-size: 0.71rem;
+  line-height: 1.48;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.concept-popover-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 11px 15px 13px;
+}
+
+.concept-popover-definition {
+  font-size: 0.865rem;
+  line-height: 1.72;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.concept-popover-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.concept-popover-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.concept-popover-field-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.concept-popover-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.concept-popover-input,
+.concept-popover-select,
+.concept-popover-textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-recessed);
+  box-shadow: var(--shadow-inset);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
+}
+
+.concept-popover-select {
+  min-height: 35px;
+  padding-right: 28px;
+}
+
+.concept-popover-textarea {
+  min-height: 88px;
+  line-height: 1.62;
+  resize: vertical;
+}
+
+.concept-popover-input:focus,
+.concept-popover-select:focus,
+.concept-popover-textarea:focus {
+  background-color: var(--focus-surface);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+.concept-popover-edit-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.concept-popover-more-btn,
+.annotation-concept-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-popover-more-btn.has-value,
+.annotation-concept-more-btn.has-value,
+.concept-popover-more-btn.is-open,
+.annotation-concept-more-btn.is-open {
+  color: var(--accent-dark);
+  background: var(--accent-wash);
+  border-color: color-mix(in oklab, var(--accent) 22%, transparent);
+}
+
+.concept-popover-more-btn > svg,
+.annotation-concept-more-btn > svg {
+  transition: transform 180ms var(--ease-smooth);
+}
+
+.concept-popover-more-btn.is-open > svg,
+.annotation-concept-more-btn.is-open > svg {
+  transform: rotate(180deg);
+}
+
+.concept-popover-extras-collapse,
+.annotation-concept-extras-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-top: -6px;
+  transition:
+    grid-template-rows 200ms var(--ease-smooth),
+    opacity 150ms ease-out,
+    margin-top 200ms var(--ease-smooth);
+}
+
+.concept-popover-extras-collapse[data-open="true"],
+.annotation-concept-extras-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  margin-top: 0;
+}
+
+.concept-popover-extras-inner,
+.annotation-concept-extras-inner {
+  overflow: hidden;
+  min-height: 0;
+  padding: 1px;
+  margin: -1px;
+}
+
+.concept-popover-hint {
+  font-size: 0.71rem;
+  color: var(--muted);
+}
+
+.concept-popover-error {
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.concept-popover-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 10px 14px;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in oklab, var(--surface-recessed) 52%, transparent);
+  flex-shrink: 0;
+}
+
+.concept-popover-foot-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.concept-popover-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: var(--radius-xs);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--subtle);
+  background: transparent;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-popover-action.is-primary {
+  color: var(--accent-dark);
+}
+
+/* —— 批注 <-> 概念统一创建与联动 —— */
+.annotation-concept-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.annotation-concept-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.annotation-concept-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.annotation-concept-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 7px;
+}
+
+.annotation-concept-fields.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.annotation-concept-input,
+.annotation-concept-select {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-xs);
+  background-color: var(--surface);
+  box-shadow: var(--shadow-inset);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
+}
+
+.annotation-concept-select {
+  min-height: 31px;
+  padding-right: 26px;
+}
+
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  @supports (appearance: base-select) {
+    .concept-popover-select {
+      padding: 6px 9px 6px 10px;
+    }
+    .annotation-concept-select {
+      padding: 5px 8px 5px 9px;
+    }
+  }
+}
+
+.annotation-concept-input:focus,
+.annotation-concept-select:focus {
+  background-color: var(--focus-surface);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+.annotation-concept-match {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-accent);
+  background: color-mix(in oklab, var(--accent-wash) 78%, var(--surface));
+}
+
+.annotation-concept-match-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+
+.annotation-concept-match-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-concept-match-def {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--subtle);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.annotation-concept-match-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.annotation-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.annotation-concept-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-wash);
+  border: 1px solid color-mix(in oklab, var(--accent) 24%, transparent);
+  color: var(--accent-dark);
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.5;
+  max-width: 100%;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+
+.annotation-concept-badge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-promote-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-recessed);
+  color: var(--subtle);
+  font-size: 0.69rem;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .oral-scratchpad textarea:hover:not(:disabled),
   .annotation-composer textarea:hover:not(:disabled),
-  .annotation-card textarea:hover:not(:disabled) {
+  .annotation-card textarea:hover:not(:disabled),
+  .annotation-concept-input:hover:not(:disabled),
+  .annotation-concept-select:hover:not(:disabled),
+  .concept-popover-input:hover:not(:disabled),
+  .concept-popover-select:hover:not(:disabled),
+  .concept-popover-textarea:hover:not(:disabled) {
     border-color: var(--border-accent);
   }
   .focus-queue-chip:hover {
@@ -7413,11 +8054,13 @@ html[data-input="touch"] .inline-title-trigger {
   .focus-list-row:hover {
     background: var(--hover);
   }
-  .reader-annotations-toggle:hover {
+  .reader-annotations-toggle:hover,
+  .reader-concepts-toggle:hover {
     background: var(--hover);
     color: var(--text);
   }
-  .reader-annotations-toggle.is-active:hover {
+  .reader-annotations-toggle.is-active:hover,
+  .reader-concepts-toggle.is-active:hover {
     background: var(--accent-soft);
     color: var(--accent-dark);
   }
@@ -7440,6 +8083,41 @@ html[data-input="touch"] .inline-title-trigger {
   .prose-annotation-mark.color-rose:hover {
     background: var(--hl-rose-bg-active);
   }
+  .prose-concept-link:hover {
+    background-color: color-mix(in srgb, var(--concept-tone) 11%, transparent);
+    border-bottom-style: solid;
+    border-bottom-color: color-mix(in srgb, var(--concept-tone) 88%, transparent);
+  }
+  [data-theme="dark"] .prose-concept-link:hover {
+    background-color: color-mix(in srgb, var(--concept-tone) 15%, transparent);
+  }
+  .concept-popover-action:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .concept-popover-action.is-primary:hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+  }
+  .concept-popover-more-btn:hover:not(:disabled),
+  .annotation-concept-more-btn:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .concept-popover-more-btn:is(.is-open, .has-value):hover:not(:disabled),
+  .annotation-concept-more-btn:is(.is-open, .has-value):hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+  }
+  button.annotation-concept-badge:hover {
+    background: var(--accent-soft);
+    border-color: var(--border-accent);
+  }
+  .annotation-promote-btn:hover:not(:disabled) {
+    background: var(--accent-wash);
+    border-color: var(--border-accent);
+    color: var(--accent-dark);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -7448,20 +8126,32 @@ html[data-input="touch"] .inline-title-trigger {
   .mastery-bar-track .seg-mastered,
   .mastery-bar-track .seg-learning,
   .reader-annotations-toggle,
+  .reader-concepts-toggle,
   .reader-annotations-count,
   .notebook-reader.can-annotate-rail .reader-toolbar,
   .notebook-reader.can-annotate-rail .reader-workspace,
   .annotation-composer-collapse,
+  .annotation-concept-extras-collapse,
+  .concept-popover-extras-collapse,
+  .concept-popover-more-btn,
+  .annotation-concept-more-btn,
+  .concept-popover-more-btn > svg,
+  .annotation-concept-more-btn > svg,
   .oral-scratchpad-collapse,
   .annotation-color-dot,
   .annotation-card,
-  .prose-annotation-mark {
+  .annotation-concept-badge,
+  .annotation-promote-btn,
+  .prose-annotation-mark,
+  .prose-concept-link {
     transition: none;
   }
   .annotations-rail-shell,
   .annotations-rail-shell:where([hidden], [data-closing]),
   .notebook-reader.can-annotate-rail .annotations-rail-shell,
-  .notebook-reader.can-annotate-rail .annotations-rail-shell:where([hidden], [data-closing]) {
+  .notebook-reader.can-annotate-rail .annotations-rail-shell:where([hidden], [data-closing]),
+  .concept-popover,
+  .concept-popover:where([hidden], [data-closing]) {
     scale: 1;
     translate: none;
     transition:
@@ -7469,7 +8159,8 @@ html[data-input="touch"] .inline-title-trigger {
       opacity 100ms ease-out;
     transition-behavior: allow-discrete;
   }
-  .prose-annotation-mark.is-pulse {
+  .prose-annotation-mark.is-pulse,
+  .prose-concept-link {
     animation: none;
   }
 }
@@ -7477,7 +8168,8 @@ html[data-input="touch"] .inline-title-trigger {
 @starting-style {
   @media (prefers-reduced-motion: reduce) {
     .annotations-rail-shell,
-    .notebook-reader.can-annotate-rail .annotations-rail-shell {
+    .notebook-reader.can-annotate-rail .annotations-rail-shell,
+    .concept-popover {
       scale: 1;
       translate: none;
     }

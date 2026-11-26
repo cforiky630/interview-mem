@@ -32,17 +32,19 @@ export const ParagraphPractice = memo(function ParagraphPractice({
   hideAll: boolean;
 }) {
   const [active, setActive] = useState(hideAll);
+  const [prevHideAll, setPrevHideAll] = useState(hideAll);
   const [showReference, setShowReference] = useState(false);
+  if (hideAll !== prevHideAll) {
+    setPrevHideAll(hideAll);
+    setActive(hideAll);
+    setShowReference(false);
+  }
   const [refMounted, setRefMounted] = useState(false);
   const [draft, setDraft] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     setDraft(readPracticeDraft(draftKey));
   }, [draftKey]);
-  useEffect(() => {
-    setActive(hideAll);
-    setShowReference(false);
-  }, [hideAll]);
   useEffect(() => {
     if (showReference) setRefMounted(true);
   }, [showReference]);

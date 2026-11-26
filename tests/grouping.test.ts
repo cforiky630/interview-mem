@@ -1,18 +1,20 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import type { DeckGroupView, DeckView, QuestionView, Workspace } from "../src/lib/types";
+import type { DeckView, QuestionView, Workspace } from "../src/lib/types";
 import {
-  bucketQuestionsByGroup,
-  clusterDeckGroupsByCategory,
-  computeDeckReadingOrder,
-  computeReaderGroupContext,
-  formatGroupLabel,
-  groupDecksByName,
-  inferGroupFromSourceName,
-  listDeckCategories,
-  listDeckGroupNames,
-} from "../src/lib/grouping";
+  ROOT_FOLDER_LABEL,
+  buildFolderIndex,
+  findExactDuplicateClusters,
+  sortFoldersNatural,
+  sortQuestionsList,
+  validateFolderTitle,
+} from "../src/lib/folders";
+import {
+  detectCommonOuterFolder,
+  extractRelativeFolderSegments,
+  planFolderImport,
+} from "../src/lib/folder-import";
 
 Object.assign(process.env, {
   NODE_ENV: "test",
@@ -27,7 +29,6 @@ delete process.env.PGHOST;
 const { getAuth } = await import("../src/server/auth");
 const workspace = await import("../src/app/api/workspace/route");
 const decks = await import("../src/app/api/decks/route");
-const deckGroupsRoute = await import("../src/app/api/deck-groups/route");
 const questions = await import("../src/app/api/questions/route");
 const preview = await import("../src/app/api/import/preview/route");
 const commit = await import("../src/app/api/import/commit/route");
@@ -89,75 +90,131 @@ async function register(name: string): Promise<Account> {
 }
 
 before(async () => {
-  alice = await register("group-alice");
-  bob = await register("group-bob");
+  alice = await register("folder-alice");
+  bob = await register("folder-bob");
 });
 
-test("pure grouping helpers compute canonical reading order, reader boundaries, deck buckets, and path inference", () => {
-  const groups: DeckGroupView[] = [
-    {
-      id: "g-ali-1",
-      deckId: "d1",
-      title: "淘天一面",
-      category: "阿里巴巴",
-      description: "",
-      position: 2,
-      createdAt: "2026-03-01T00:00:00Z",
-      updatedAt: "2026-03-01T00:00:00Z",
-    },
-    {
-      id: "g-bd-1",
-      deckId: "d1",
-      title: "抖音一面",
-      category: "字节跳动",
-      description: "偏 Redis",
-      position: 0,
-      createdAt: "2026-03-01T00:00:00Z",
-      updatedAt: "2026-03-01T00:00:00Z",
-    },
-    {
-      id: "g-bd-2",
-      deckId: "d1",
-      title: "飞书一面",
-      category: "字节跳动",
-      description: "",
-      position: 3,
-      createdAt: "2026-03-01T00:00:00Z",
-      updatedAt: "2026-03-01T00:00:00Z",
-    },
-    {
-      id: "g-empty",
-      deckId: "d1",
-      title: "空分组",
-      category: "",
-      description: "",
-      position: 4,
-      createdAt: "2026-03-01T00:00:00Z",
-      updatedAt: "2026-03-01T00:00:00Z",
-    },
-  ];
-  const makeQ = (
+test("pure folder helpers validate Finder names, natural sort, build recursive paths, plan folder imports, and cluster exact duplicates", () => {
+  // Finder / Explorer folder name validation
+  assert.equal(validateFolderTitle("字节跳动"), null);
+  assert.ok(validateFolderTitle("   "));
+  assert.ok(validateFolderTitle("a/b"));
+  assert.ok(validateFolderTitle("a\\b"));
+  assert.ok(validateFolderTitle("."));
+  assert.ok(validateFolderTitle(".."));
+  assert.ok(validateFolderTitle("bad\u0007name"));
+
+  // Natural numeric sort: 第2章 before 第10章
+  const sortedFolders = sortFoldersNatural([
+    { id: "3", title: "第10章 分布式" },
+    { id: "1", title: "第2章 缓存" },
+    { id: "2", title: "第1章 基础" },
+  ]);
+  assert.deepEqual(
+    sortedFolders.map((f) => f.title),
+    ["第1章 基础", "第2章 缓存", "第10章 分布式"],
+  );
+
+  const makeDeck = (
     id: string,
-    groupId: string | null,
-    position: number,
-    createdAt = "2026-03-01T00:00:00Z",
-  ): QuestionView => ({
+    parentId: string | null,
+    title: string,
+    isOwner = true,
+  ): DeckView => ({
     id,
-    deckId: "d1",
-    groupId,
-    position,
+    parentId,
+    title,
+    description: "",
+    groups: [],
+    color: "sand",
+    visibility: "private",
+    isOwner,
+    ownerName: isOwner ? "Alice" : "Bob",
+    publishedVersion: 0,
+    seenVersion: 0,
+    count: 0,
+    due: 0,
+    newCount: 0,
+    updatedAt: "2026-03-01T00:00:00Z",
+    releaseSummary: "",
+    sourceDeleted: false,
+  });
+
+  const deckFixtures: DeckView[] = [
+    makeDeck("d-root", null, "公司面经"),
+    makeDeck("d-bd", "d-root", "字节跳动"),
+    makeDeck("d-bd-1", "d-bd", "抖音一面"),
+    makeDeck("d-ali", "d-root", "阿里巴巴"),
+    makeDeck("d-sub", "d-root", "开源八股", false),
+  ];
+
+  const index = buildFolderIndex(deckFixtures);
+  assert.equal(index.depthOf(null), 0);
+  assert.equal(index.depthOf("d-root"), 1);
+  assert.equal(index.depthOf("d-bd-1"), 3);
+  assert.equal(index.subtreeHeightOf("d-root"), 3);
+  assert.equal(index.formatPath(null), ROOT_FOLDER_LABEL);
+  assert.equal(index.formatPath("d-bd-1"), "公司面经 / 字节跳动 / 抖音一面");
+  assert.equal(
+    index.formatRelativePath("d-root", "d-bd-1"),
+    "字节跳动 / 抖音一面",
+  );
+  assert.equal(
+    index.subscriptionsByFolder.get("d-root")?.[0]?.id,
+    "d-sub",
+  );
+
+  // Relative path extraction keeps questions in file's parent folder (no folder named after file)
+  assert.deepEqual(
+    extractRelativeFolderSegments("字节跳动/抖音后端一面.md"),
+    ["字节跳动"],
+  );
+  assert.deepEqual(
+    extractRelativeFolderSegments("面经\\阿里巴巴\\淘天一面.txt"),
+    ["面经", "阿里巴巴"],
+  );
+  assert.deepEqual(extractRelativeFolderSegments("美团一面.md"), []);
+  assert.equal(
+    detectCommonOuterFolder(["面经/字节/a.md", "面经/阿里/b.md"]),
+    "面经",
+  );
+
+  // Virtual import preview plans reuse vs create accurately
+  const plan = planFolderImport({
+    existingFolders: deckFixtures,
+    baseFolderId: "d-root",
+    sources: [
+      { batchId: "b1", sourceName: "公司面经/字节跳动/抖音一面/a.md", questionCount: 2 },
+      { batchId: "b2", sourceName: "公司面经/美团/核心本地商业/b.md", questionCount: 3 },
+    ],
+    structureMode: "preserve",
+    stripOuterFolder: true,
+  });
+  assert.equal(plan.commonOuterFolder, "公司面经");
+  assert.equal(plan.outerMatchesBase, true);
+  assert.equal(plan.foldersToReuse, 2); // 字节跳动 + 抖音一面
+  assert.equal(plan.foldersToCreate, 2); // 美团 + 核心本地商业
+  assert.equal(plan.depthErrors.length, 0);
+
+  // Question sorting + duplicate clustering
+  const makeQ = (id: string, title: string, answer: string, updatedAt: string): QuestionView => ({
+    id,
+    deckId: "d-bd-1",
+    groupId: null,
+    position: 0,
     parentId: null,
-    title: id,
-    answer: "ans",
+    title,
+    answer,
     tags: [],
     revision: 1,
     majorRevision: 0,
-    needsEditing: false,
+    needsEditing: !answer.trim(),
     archived: false,
-    createdAt,
-    updatedAt: createdAt,
+    createdAt: updatedAt,
+    updatedAt,
     isOwner: true,
-    deckTitle: "面经题库",
+    deckTitle: "抖音一面",
+    folderPath: "公司面经 / 字节跳动 / 抖音一面",
     note: "",
     noteVersion: 0,
     annotations: [],
@@ -167,132 +224,79 @@ test("pure grouping helpers compute canonical reading order, reader boundaries, 
     studyVersion: 0,
     reviewedRevision: 0,
   });
-
-  const qs = [
-    makeQ("q-ungrouped", null, 0),
-    makeQ("q-ali-1", "g-ali-1", 0),
-    makeQ("q-bd1-2", "g-bd-1", 1),
-    makeQ("q-bd1-1", "g-bd-1", 0),
-    makeQ("q-bd2-1", "g-bd-2", 0),
+  const qList = [
+    makeQ("q1", "第10题", "答案 A", "2026-03-01T00:00:00Z"),
+    makeQ("q2", "第2题", "答案 B", "2026-03-05T00:00:00Z"),
+    makeQ("q3", "第2题", "答案 B", "2026-03-02T00:00:00Z"),
   ];
-
-  // ByteDance appears first (pos 0), so both ByteDance rounds cluster before Alibaba, then ungrouped last.
-  assert.deepEqual(listDeckCategories(groups), ["字节跳动", "阿里巴巴"]);
-  const clustered = clusterDeckGroupsByCategory(groups);
-  assert.equal(clustered.hasCategories, true);
   assert.deepEqual(
-    clustered.orderedGroups.map((g) => g.id),
-    ["g-bd-1", "g-bd-2", "g-ali-1", "g-empty"],
+    sortQuestionsList(qList, "name").map((q) => q.id),
+    ["q2", "q3", "q1"],
   );
-
-  const ordered = computeDeckReadingOrder(qs, groups);
   assert.deepEqual(
-    ordered.map((q) => q.id),
-    ["q-bd1-1", "q-bd1-2", "q-bd2-1", "q-ali-1", "q-ungrouped"],
+    sortQuestionsList(qList, "updated").map((q) => q.id),
+    ["q2", "q3", "q1"],
   );
-
-  const bucketsFiltered = bucketQuestionsByGroup(qs, groups, {
-    includeEmptyGroups: false,
-  });
-  assert.equal(
-    bucketsFiltered.categoryBuckets.some((b) =>
-      b.sections.some((s) => s.group?.id === "g-empty"),
-    ),
-    false,
-  );
-
-  // Reader boundary detection at end of g-bd-1 (index 1 -> next is g-bd-2).
-  const ctx = computeReaderGroupContext(ordered, 1, groups);
-  assert.ok(ctx);
-  assert.equal(ctx.currentGroup?.id, "g-bd-1");
-  assert.equal(ctx.groupIndex, 1);
-  assert.equal(ctx.groupTotal, 2);
-  assert.equal(ctx.prevCrossesGroup, false);
-  assert.equal(ctx.nextCrossesGroup, true);
-  assert.equal(ctx.nextGroup?.id, "g-bd-2");
-  assert.equal(formatGroupLabel(ctx.nextGroup), "字节跳动 · 飞书一面");
-
-  // Deck-level bucketing.
-  const deckFixtures: Pick<DeckView, "id" | "groupName">[] = [
-    { id: "a", groupName: "面经" },
-    { id: "b", groupName: "" },
-    { id: "c", groupName: "八股" },
-    { id: "d", groupName: "面经" },
-  ];
-  assert.deepEqual(listDeckGroupNames(deckFixtures), ["面经", "八股"]);
-  const deckBuckets = groupDecksByName(deckFixtures);
-  assert.equal(deckBuckets.hasGroups, true);
-  assert.deepEqual(
-    deckBuckets.buckets.map((b) => [b.groupName, b.decks.map((d) => d.id)]),
-    [
-      ["面经", ["a", "d"]],
-      ["八股", ["c"]],
-      ["", ["b"]],
-    ],
-  );
-
-  // Folder / filename inference.
-  assert.deepEqual(inferGroupFromSourceName("字节跳动/抖音后端一面.md"), {
-    category: "字节跳动",
-    title: "抖音后端一面",
-  });
-  assert.deepEqual(inferGroupFromSourceName("面经\\阿里巴巴\\淘天一面.txt"), {
-    category: "阿里巴巴",
-    title: "淘天一面",
-  });
-  assert.deepEqual(inferGroupFromSourceName("美团一面.md"), {
-    category: "",
-    title: "美团一面",
-  });
+  const clusters = findExactDuplicateClusters(qList);
+  assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].questions.length, 2);
 });
 
-test("intra-deck groups support CRUD, cross-group dedup, batch folder import, move, publish, export, and AI tools", async () => {
-  // 1. Create a deck with deck-level groupName.
-  const createDeckRes = await decks.POST(
-    request(alice, "/api/decks", {
-      action: "create",
-      title: "后端面经题库",
-      description: "收录各公司后端真题",
-      groupName: "公司面经",
-      color: "blue",
-    }),
-  );
-  assert.equal(createDeckRes.status, 200);
-  const { deck: interviewDeck } = await createDeckRes.json();
+test("recursive folders support CRUD, local folder import, cross-folder move, AI subtree tools, publish, subscription placement, export v3, dissolve, and trash/restore", async () => {
+  // 1. Create a 3-level nested folder tree: 公司面经 / 字节跳动 / 抖音一面 & 抖音二面
+  const { deck: companyRoot } = await (
+    await decks.POST(
+      request(alice, "/api/decks", {
+        action: "create",
+        title: "公司面经",
+        description: "收录各公司后端真题",
+        color: "blue",
+      }),
+    )
+  ).json();
 
-  // 2. Create two groups in the same company + one in another company.
-  const g1Res = await deckGroupsRoute.POST(
-    request(alice, "/api/deck-groups", {
-      action: "create",
-      deckId: interviewDeck.id,
-      category: "字节跳动",
-      title: "抖音一面 · 2026.03",
-      description: "偏 Redis 与并发",
-    }),
-  );
-  assert.equal(g1Res.status, 200);
-  const { group: bd1 } = await g1Res.json();
+  const { deck: bdFolder } = await (
+    await decks.POST(
+      request(alice, "/api/decks", {
+        action: "create",
+        parentId: companyRoot.id,
+        title: "字节跳动",
+      }),
+    )
+  ).json();
 
-  const g2Res = await deckGroupsRoute.POST(
-    request(alice, "/api/deck-groups", {
-      action: "create",
-      deckId: interviewDeck.id,
-      category: "字节跳动",
-      title: "抖音二面 · 2026.03",
-      description: "系统设计",
-    }),
-  );
-  assert.equal(g2Res.status, 200);
-  const { group: bd2 } = await g2Res.json();
+  const { deck: bd1 } = await (
+    await decks.POST(
+      request(alice, "/api/decks", {
+        action: "create",
+        parentId: bdFolder.id,
+        title: "抖音一面 · 2026.03",
+        description: "偏 Redis 与并发",
+      }),
+    )
+  ).json();
 
-  // Isolation check: Bob cannot edit, delete, or create groups in Alice's deck.
+  const { deck: bd2 } = await (
+    await decks.POST(
+      request(alice, "/api/decks", {
+        action: "create",
+        parentId: bdFolder.id,
+        title: "抖音二面 · 2026.03",
+        description: "系统设计",
+      }),
+    )
+  ).json();
+
+  // Isolation check: Bob cannot edit or create subfolders inside Alice's folder.
   assert.equal(
     (
-      await deckGroupsRoute.POST(
-        request(bob, "/api/deck-groups", {
+      await decks.POST(
+        request(bob, "/api/decks", {
           action: "edit",
-          id: bd1.id,
+          deckId: bd1.id,
+          expected: { title: bd1.title, description: bd1.description },
           title: "恶意篡改",
+          description: "",
         }),
       )
     ).status,
@@ -300,34 +304,34 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
   );
   assert.equal(
     (
-      await deckGroupsRoute.POST(
-        request(bob, "/api/deck-groups", {
+      await decks.POST(
+        request(bob, "/api/decks", {
           action: "create",
-          deckId: interviewDeck.id,
-          title: "越权分组",
+          parentId: companyRoot.id,
+          title: "越权子文件夹",
         }),
       )
     ).status,
     404,
   );
 
-  // 3. Batch import two files with per-file group creation (same question asked in both ByteDance & Alibaba!).
+  // 2. Local folder import with relative paths: reuses existing 字节跳动/抖音一面 · 2026.03 and creates 阿里巴巴/淘天一面 atomically!
   const batchIdBd = randomUUID();
   const batchIdAli = randomUUID();
   const prevRes = await preview.POST(
     request(alice, "/api/import/preview", {
-      deckId: interviewDeck.id,
+      deckId: companyRoot.id,
       inputType: "questions",
       method: "rules",
       sources: [
         {
           batchId: batchIdBd,
-          sourceName: "字节跳动/抖音一面 · 2026.03.md",
+          sourceName: "字节跳动/抖音一面 · 2026.03/notes.md",
           raw: "1. Redis 持久化有哪些方式？\n2. Go GMP 调度模型？\n",
         },
         {
           batchId: batchIdAli,
-          sourceName: "阿里巴巴/淘天一面.md",
+          sourceName: "阿里巴巴/淘天一面/notes.md",
           raw: "1. Redis 持久化有哪些方式？\n2. MySQL MVCC 原理？\n",
         },
       ],
@@ -340,17 +344,14 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
     batches: [
       {
         batchId: batchIdBd,
-        group: { mode: "existing" as const, groupId: bd1.id },
+        targetFolderId: companyRoot.id,
+        relativeFolderPath: ["字节跳动", "抖音一面 · 2026.03"],
         questions: previews[0].questions,
       },
       {
         batchId: batchIdAli,
-        group: {
-          mode: "create" as const,
-          category: "阿里巴巴",
-          title: "淘天一面",
-          description: "2026-03",
-        },
+        targetFolderId: companyRoot.id,
+        relativeFolderPath: ["阿里巴巴", "淘天一面"],
         questions: previews[1].questions,
       },
     ],
@@ -360,24 +361,24 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
   );
   assert.equal(commitRes.status, 200, await commitRes.clone().text());
   const commitResult = await commitRes.json();
-  // Both interviews keep "Redis 持久化有哪些方式？" because they are in distinct groups!
+  // Blank-answer question stubs only dedup within the same folder, so both interviews keep "Redis 持久化有哪些方式？".
   assert.equal(commitResult.added, 4);
   assert.equal(commitResult.duplicates, 0);
 
-  // Idempotent retry returns same result.
+  // Idempotent retry returns the same result without creating duplicates.
   const retryRes = await commit.POST(
     request(alice, "/api/import/commit", commitPayload),
   );
   assert.equal(retryRes.status, 200);
   assert.deepEqual(await retryRes.json(), commitResult);
 
-  // Re-importing the SAME question into the SAME group STILL deduplicates!
+  // Re-importing the SAME question stub into the SAME folder deduplicates by default!
   const dupBatchId = randomUUID();
   const dupPrev = await (
     await preview.POST(
       request(alice, "/api/import/preview", {
         batchId: dupBatchId,
-        deckId: interviewDeck.id,
+        deckId: bd1.id,
         inputType: "questions",
         method: "rules",
         raw: "1. Redis 持久化有哪些方式？\n",
@@ -388,7 +389,7 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
     await commit.POST(
       request(alice, "/api/import/commit", {
         batchId: dupBatchId,
-        group: { mode: "existing", groupId: bd1.id },
+        targetFolderId: bd1.id,
         questions: dupPrev.questions,
       }),
     )
@@ -396,120 +397,105 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
   assert.equal(dupCommit.added, 0);
   assert.equal(dupCommit.duplicates, 1);
 
-  // 4. Verify workspace hydration, positions, and group metadata.
+  // 3. Verify workspace hydration, recursive counts, and full folderPath metadata.
   let ws = await state(alice);
-  const deckView = ws.decks.find((d) => d.id === interviewDeck.id)!;
-  assert.equal(deckView.groupName, "公司面经");
-  assert.equal(deckView.groups.length, 3);
-  const aliGroup = deckView.groups.find((g) => g.category === "阿里巴巴")!;
-  assert.equal(aliGroup.title, "淘天一面");
+  const rootView = ws.decks.find((d) => d.id === companyRoot.id)!;
+  assert.equal(rootView.count, 4);
+  assert.equal(rootView.directCount, 0);
+  const aliParent = ws.decks.find(
+    (d) => d.parentId === companyRoot.id && d.title === "阿里巴巴",
+  )!;
+  const aliLeaf = ws.decks.find(
+    (d) => d.parentId === aliParent.id && d.title === "淘天一面",
+  )!;
+  assert.ok(aliLeaf);
 
-  const bd1Qs = ws.questions.filter((q) => q.groupId === bd1.id);
+  const bd1Qs = ws.questions.filter((q) => q.deckId === bd1.id);
   assert.equal(bd1Qs.length, 2);
-  assert.equal(bd1Qs[0].title, "Redis 持久化有哪些方式？");
-  assert.equal(bd1Qs[0].position, 0);
-  assert.equal(bd1Qs[1].position, 1);
+  assert.equal(
+    bd1Qs[0].folderPath,
+    "公司面经 / 字节跳动 / 抖音一面 · 2026.03",
+  );
 
-  // 5. Move a question between groups in the same deck without bumping revision.
+  // 4. Move a question between sibling folders without bumping revision.
   const gmpQ = bd1Qs.find((q) => q.title.includes("GMP"))!;
   const moveRes = await questions.POST(
     request(alice, "/api/questions", {
       action: "move",
       id: gmpQ.id,
-      deckId: interviewDeck.id,
-      groupId: bd2.id,
+      deckId: bd2.id,
     }),
   );
   assert.equal(moveRes.status, 200);
   ws = await state(alice);
   const movedGmp = ws.questions.find((q) => q.id === gmpQ.id)!;
-  assert.equal(movedGmp.groupId, bd2.id);
+  assert.equal(movedGmp.deckId, bd2.id);
   assert.equal(movedGmp.revision, gmpQ.revision);
 
-  // 6. Batch move ungrouped question into bd2.
-  const createQRes = await questions.POST(
-    request(alice, "/api/questions", {
-      action: "create",
-      deckId: interviewDeck.id,
-      title: "分布式锁如何保证高可用？",
-      answer: "Redlock / etcd lease",
-      tags: ["分布式"],
-    }),
-  );
-  assert.equal(createQRes.status, 200);
-  const { id: ungroupedId } = await createQRes.json();
+  // 5. Batch move direct root question into bd2.
+  const { id: directId } = await (
+    await questions.POST(
+      request(alice, "/api/questions", {
+        action: "create",
+        deckId: companyRoot.id,
+        title: "分布式锁如何保证高可用？",
+        answer: "Redlock / etcd lease",
+        tags: ["分布式"],
+      }),
+    )
+  ).json();
   const batchMoveRes = await questions.POST(
     request(alice, "/api/questions", {
       action: "batch",
-      ids: [ungroupedId],
+      ids: [directId],
       operation: "move",
-      deckId: interviewDeck.id,
-      groupId: bd2.id,
+      deckId: bd2.id,
     }),
   );
   assert.equal(batchMoveRes.status, 200);
   assert.equal((await batchMoveRes.json()).updated, 1);
 
-  // 7. Reorder groups & rename category.
+  // 6. Rename folder 阿里巴巴 -> 阿里集团 and verify scoped AI tools see updated recursive paths & cross-folder duplicates.
   assert.equal(
     (
-      await deckGroupsRoute.POST(
-        request(alice, "/api/deck-groups", {
-          action: "reorder",
-          deckId: interviewDeck.id,
-          orderedIds: [aliGroup.id, bd2.id, bd1.id],
+      await decks.POST(
+        request(alice, "/api/decks", {
+          action: "edit",
+          deckId: aliParent.id,
+          expected: { title: aliParent.title, description: aliParent.description },
+          title: "阿里集团",
+          description: "",
         }),
       )
     ).status,
     200,
   );
-  assert.equal(
-    (
-      await deckGroupsRoute.POST(
-        request(alice, "/api/deck-groups", {
-          action: "renameCategory",
-          deckId: interviewDeck.id,
-          from: "阿里巴巴",
-          to: "阿里集团",
-        }),
-      )
-    ).status,
-    200,
-  );
-  ws = await state(alice);
-  const refreshedDeck = ws.decks.find((d) => d.id === interviewDeck.id)!;
-  assert.deepEqual(
-    refreshedDeck.groups.map((g) => g.id),
-    [aliGroup.id, bd2.id, bd1.id],
-  );
-  assert.equal(refreshedDeck.groups[0].category, "阿里集团");
 
-  // 8. Scoped AI tools see group metadata & detect cross-company duplicates.
   const searchTool = await executeWorkspaceTool(
     alice.id,
     "deck",
-    interviewDeck.id,
+    companyRoot.id,
     "search_questions",
     JSON.stringify({ query: "阿里集团 Redis" }),
   );
   const searchMatches = (
-    searchTool.output as { matches: { groupCategory?: string; title: string }[] }
+    searchTool.output as { matches: { folderPath: string; title: string }[] }
   ).matches;
   assert.equal(searchMatches.length, 1);
-  assert.equal(searchMatches[0].groupCategory, "阿里集团");
+  assert.equal(searchMatches[0].folderPath, "公司面经 / 阿里集团 / 淘天一面");
 
   const dupTool = await executeWorkspaceTool(
     alice.id,
     "deck",
-    interviewDeck.id,
+    companyRoot.id,
     "find_duplicate_questions",
     JSON.stringify({ limit: 5 }),
   );
   const dupCandidates = (
     dupTool.output as {
       candidates: {
-        a: { groupCategory?: string; title: string };
-        b: { groupCategory?: string; title: string };
+        a: { folderPath: string; title: string };
+        b: { folderPath: string; title: string };
       }[];
     }
   ).candidates;
@@ -518,159 +504,113 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
       (c) =>
         c.a.title === "Redis 持久化有哪些方式？" &&
         c.b.title === "Redis 持久化有哪些方式？" &&
-        c.a.groupCategory !== c.b.groupCategory,
+        c.a.folderPath !== c.b.folderPath,
     ),
   );
 
   const overviewTool = await executeWorkspaceTool(
     alice.id,
     "deck",
-    interviewDeck.id,
+    companyRoot.id,
     "list_workspace_overview",
     "{}",
   );
   const overviewDecks = (
     overviewTool.output as {
-      decks: { groupName?: string; groups?: { title: string }[] }[];
+      decks: { deckId: string | null; path: string }[];
     }
   ).decks;
-  assert.equal(overviewDecks[0].groupName, "公司面经");
-  assert.equal(overviewDecks[0].groups?.length, 3);
+  assert.ok(
+    overviewDecks.some((d) => d.path === "公司面经 / 阿里集团 / 淘天一面"),
+  );
 
-  // 9. Publish deck -> Bob subscribes -> Bob receives groups & sets personal subscription groupName.
+  // 7. Publish companyRoot -> Bob subscribes and places subscription in his personal folder "订阅面经".
   assert.equal(
     (
       await decks.POST(
         request(alice, "/api/decks", {
           action: "publish",
-          deckId: interviewDeck.id,
+          deckId: companyRoot.id,
           expectedVersion: 0,
           visibility: "public",
-          summary: "首发分组版面经",
+          summary: "首发多级目录面经",
         }),
       )
     ).status,
     200,
   );
+  const { deck: bobSubFolder } = await (
+    await decks.POST(
+      request(bob, "/api/decks", { action: "create", title: "订阅面经" }),
+    )
+  ).json();
   assert.equal(
     (
       await decks.POST(
         request(bob, "/api/decks", {
           action: "subscribe",
-          deckId: interviewDeck.id,
-        }),
-      )
-    ).status,
-    200,
-  );
-  assert.equal(
-    (
-      await decks.POST(
-        request(bob, "/api/decks", {
-          action: "setSubscriptionGroup",
-          deckId: interviewDeck.id,
-          groupName: "订阅面经",
+          deckId: companyRoot.id,
+          folderId: bobSubFolder.id,
         }),
       )
     ).status,
     200,
   );
   const bobWs = await state(bob);
-  const bobSubDeck = bobWs.decks.find((d) => d.id === interviewDeck.id)!;
-  assert.equal(bobSubDeck.groupName, "订阅面经");
-  assert.equal(bobSubDeck.groups.length, 3);
+  const bobSubDeck = bobWs.decks.find((d) => d.id === companyRoot.id)!;
+  assert.equal(bobSubDeck.parentId, bobSubFolder.id);
+  // Multi-level release groups preserve nested hierarchy (字节跳动 -> 抖音一面, 抖音二面; 阿里集团 -> 淘天一面)
+  assert.equal(bobSubDeck.groups.length, 5);
+  const bobAliLeaf = bobSubDeck.groups.find((g) => g.id === aliLeaf.id)!;
+  assert.equal(bobAliLeaf.parentId, aliParent.id);
   assert.ok(
     bobWs.questions.some(
-      (q) => q.deckId === interviewDeck.id && q.groupId === aliGroup.id,
+      (q) => q.deckId === companyRoot.id && q.groupId === aliLeaf.id,
     ),
   );
 
-  // Rename deck group for Alice does not affect Bob.
-  assert.equal(
-    (
-      await decks.POST(
-        request(alice, "/api/decks", {
-          action: "renameDeckGroup",
-          from: "公司面经",
-          to: "大厂真题",
-        }),
-      )
-    ).status,
-    200,
-  );
-  assert.equal(
-    (await state(alice)).decks.find((d) => d.id === interviewDeck.id)
-      ?.groupName,
-    "大厂真题",
-  );
-  assert.equal(
-    (await state(bob)).decks.find((d) => d.id === interviewDeck.id)?.groupName,
-    "订阅面经",
-  );
-
-  // Dissolving a deck group (to: "") clears groupName across both owned & subscribed decks without deleting decks.
+  // Dissolving Bob's personal folder lifts his placed subscription up to root without unsubscribing.
   assert.equal(
     (
       await decks.POST(
         request(bob, "/api/decks", {
-          action: "edit",
-          deckId: bob.deckId,
-          expected: {
-            title: (await state(bob)).decks.find((d) => d.id === bob.deckId)!
-              .title,
-            description: (await state(bob)).decks.find(
-              (d) => d.id === bob.deckId,
-            )!.description,
-            groupName: "",
-          },
-          title: (await state(bob)).decks.find((d) => d.id === bob.deckId)!
-            .title,
-          description: (await state(bob)).decks.find(
-            (d) => d.id === bob.deckId,
-          )!.description,
-          groupName: "订阅面经",
+          action: "dissolve",
+          folderId: bobSubFolder.id,
         }),
       )
     ).status,
     200,
   );
-  const dissolveRes = await decks.POST(
-    request(bob, "/api/decks", {
-      action: "renameDeckGroup",
-      from: "订阅面经",
-      to: "",
-    }),
-  );
-  assert.equal(dissolveRes.status, 200);
-  assert.equal((await dissolveRes.json()).updated, 2);
-  const bobAfterDissolve = await state(bob);
   assert.equal(
-    bobAfterDissolve.decks.find((d) => d.id === bob.deckId)?.groupName,
-    "",
-  );
-  assert.equal(
-    bobAfterDissolve.decks.find((d) => d.id === interviewDeck.id)?.groupName,
-    "",
+    (await state(bob)).decks.find((d) => d.id === companyRoot.id)?.parentId,
+    null,
   );
 
-  // 10. Export includes groupName, groups, groupId, position.
+  // 8. Export v3 includes parentId hierarchy cleanly.
   const expData = await (
     await exporter.GET(request(alice, "/api/export"))
   ).json();
-  const expDeck = expData.decks.find(
-    (d: DeckView) => d.id === interviewDeck.id,
+  assert.equal(expData.version, 3);
+  const expAliLeaf = expData.decks.find(
+    (d: { id: string }) => d.id === aliLeaf.id,
   );
-  assert.equal(expDeck.groupName, "大厂真题");
-  assert.equal(expDeck.groups.length, 3);
+  assert.equal(expAliLeaf.parentId, aliParent.id);
 
-  // 11. Deleting a group preserves ALL questions even when an identical contentHash exists in ungrouped!
-  // Put an ungrouped copy of "Redis 持久化有哪些方式？" in interviewDeck first, then delete bd1 & aliGroup.
+  // 9. Dissolving child folders lifts identical questions cleanly without unique-constraint failure.
   assert.equal(
     (
-      await deckGroupsRoute.POST(
-        request(alice, "/api/deck-groups", {
-          action: "delete",
-          id: bd1.id,
+      await decks.POST(
+        request(alice, "/api/decks", { action: "dissolve", folderId: bd1.id }),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await decks.POST(
+        request(alice, "/api/decks", {
+          action: "dissolve",
+          folderId: bdFolder.id,
         }),
       )
     ).status,
@@ -678,10 +618,21 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
   );
   assert.equal(
     (
-      await deckGroupsRoute.POST(
-        request(alice, "/api/deck-groups", {
-          action: "delete",
-          id: aliGroup.id,
+      await decks.POST(
+        request(alice, "/api/decks", {
+          action: "dissolve",
+          folderId: aliLeaf.id,
+        }),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await decks.POST(
+        request(alice, "/api/decks", {
+          action: "dissolve",
+          folderId: aliParent.id,
         }),
       )
     ).status,
@@ -691,49 +642,49 @@ test("intra-deck groups support CRUD, cross-group dedup, batch folder import, mo
   const redisCopies = ws.questions.filter(
     (q) => q.title === "Redis 持久化有哪些方式？",
   );
-  // Both copies survived without throwing a unique-index violation!
   assert.equal(redisCopies.length, 2);
-  assert.ok(redisCopies.every((q) => q.groupId === null));
+  assert.ok(redisCopies.every((q) => q.deckId === companyRoot.id));
 
-  // 12. Trash & restore: restore keeps groupId when group exists, clears groupId if group deleted.
+  // 10. Trash & restore keeps surviving folder, and dissolving folder lifts items to root.
   assert.equal(
     (
       await questions.POST(
-        request(alice, "/api/questions", {
-          action: "delete",
-          id: ungroupedId,
-        }),
+        request(alice, "/api/questions", { action: "delete", id: directId }),
       )
     ).status,
     200,
   );
   const restoreOk = await (
     await questions.POST(
-      request(alice, "/api/questions", {
-        action: "restore",
-        id: ungroupedId,
-      }),
+      request(alice, "/api/questions", { action: "restore", id: directId }),
     )
   ).json();
-  assert.equal(restoreOk.deckId, interviewDeck.id);
-  assert.equal(restoreOk.groupId, bd2.id);
+  assert.equal(restoreOk.deckId, bd2.id);
 
-  // Deleting deck detaches questions and clears groupId cleanly.
+  assert.equal(
+    (
+      await decks.POST(
+        request(alice, "/api/decks", { action: "dissolve", folderId: bd2.id }),
+      )
+    ).status,
+    200,
+  );
   assert.equal(
     (
       await decks.POST(
         request(alice, "/api/decks", {
-          action: "delete",
-          deckId: interviewDeck.id,
+          action: "dissolve",
+          folderId: companyRoot.id,
         }),
       )
     ).status,
     200,
   );
   ws = await state(alice);
-  const detached = ws.questions.find((q) => q.id === ungroupedId)!;
-  assert.equal(detached.deckId, null);
-  assert.equal(detached.groupId, null);
+  assert.equal(
+    ws.questions.find((q) => q.id === directId)?.deckId,
+    null,
+  );
 });
 
 after(async () => {

@@ -17,8 +17,9 @@ export type StoredCard = {
 export type DeckGroupView = {
   id: string;
   deckId: string;
+  parentId: string | null;
   title: string;
-  category: string;
+  category?: string;
   description: string;
   position: number;
   createdAt: string;
@@ -30,6 +31,31 @@ export type QuestionAnnotation = {
   quote: string;
   comment: string;
   color: QuestionAnnotationColor;
+  conceptId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type ConceptFolderView = {
+  id: string;
+  parentId: string | null;
+  title: string;
+  color: string;
+  count: number;
+  directCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+export type ConceptView = {
+  id: string;
+  term: string;
+  aliases: string[];
+  normalizedKey: string;
+  definition: string;
+  folderId: string | null;
+  folderPath: string;
+  groupName: string;
+  color: QuestionAnnotationColor;
+  sourceQuestionId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -51,6 +77,7 @@ export type QuestionView = {
   updatedAt: string;
   isOwner: boolean;
   deckTitle: string;
+  folderPath?: string;
   note: string;
   noteVersion: number;
   annotations: QuestionAnnotation[];
@@ -60,6 +87,20 @@ export type QuestionView = {
   studyVersion: number;
   reviewedRevision: number;
   validation?: ContentValidationView | null;
+};
+export type DuplicateHit = {
+  id: string;
+  title: string;
+  deckId: string | null;
+  path: string;
+  scope: "global" | "sameFolder" | "batch";
+};
+export type FolderConflictStrategy = "abort" | "merge" | "keepBoth";
+export type FolderConflictItem = {
+  sourceId: string;
+  existingId: string;
+  title: string;
+  targetParentId: string | null;
 };
 export type PublishStatus = "unpublished" | "changes" | "synced";
 export type PendingDeckUpdate = {
@@ -91,9 +132,9 @@ export type FollowedAuthorView = {
 };
 export type DeckView = {
   id: string;
+  parentId: string | null;
   title: string;
   description: string;
-  groupName: string;
   groups: DeckGroupView[];
   color: string;
   visibility: string;
@@ -107,6 +148,7 @@ export type DeckView = {
   pendingUpdate?: PendingDeckUpdate | null;
   publishStatus?: PublishStatus;
   unpublishedDiff?: UnpublishedDeckDiff | null;
+  directCount?: number;
   count: number;
   due: number;
   newCount: number;
@@ -162,10 +204,17 @@ export type RichCatalogResponse = {
   sharedDeck?: CatalogDeck | null;
   focusedAuthor?: CatalogAuthorView | null;
 };
+export type CatalogSubscriptionOverlap = {
+  deckId: string;
+  title: string;
+  relation: "ancestor" | "descendant" | "overlap";
+  overlapCount: number;
+};
 export type CatalogDeckPreview = {
   deck: CatalogDeck;
   groups: {
     id: string;
+    parentId: string | null;
     category: string;
     title: string;
     description: string;
@@ -180,12 +229,14 @@ export type CatalogDeckPreview = {
     hasAnswer: boolean;
   }[];
   totalQuestions: number;
+  overlaps?: CatalogSubscriptionOverlap[];
 };
 export type TrashedQuestion = {
   id: string;
   title: string;
   deckId: string | null;
   deckTitle: string;
+  folderPath?: string;
   deletedAt: string;
   expiresAt: string;
 };
@@ -193,6 +244,8 @@ export type Workspace = {
   user: { id: string; name: string; email: string };
   decks: DeckView[];
   questions: QuestionView[];
+  concepts: ConceptView[];
+  conceptFolders: ConceptFolderView[];
   followedAuthors?: FollowedAuthorView[];
   stats: {
     due: number;

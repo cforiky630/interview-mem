@@ -1,16 +1,21 @@
 import { z } from "zod";
+import { MAX_FOLDER_TITLE_LENGTH, validateFolderTitle } from "@/lib/folders";
+
+export const folderTitleSchema = z
+  .string()
+  .trim()
+  .min(1, "请输入文件夹名称。")
+  .max(MAX_FOLDER_TITLE_LENGTH, `文件夹名称最多 ${MAX_FOLDER_TITLE_LENGTH} 个字符。`)
+  .superRefine((value, ctx) => {
+    const err = validateFolderTitle(value);
+    if (err) {
+      ctx.addIssue({ code: "custom", message: err });
+    }
+  });
 
 export const deckFields = {
-  title: z.string().trim().min(1).max(80),
+  title: folderTitleSchema,
   description: z.string().max(500),
-};
-
-export const deckGroupNameSchema = z.string().trim().max(40);
-
-export const deckGroupFields = {
-  title: z.string().trim().min(1, "请输入分组名称。").max(80),
-  category: z.string().trim().max(40).default(""),
-  description: z.string().trim().max(300).default(""),
 };
 
 export const questionFields = {

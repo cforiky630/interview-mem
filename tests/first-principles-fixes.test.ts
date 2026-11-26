@@ -153,7 +153,11 @@ test("health readiness covers 0010, export retains sourceText while workspace om
       tags: ["#JS"],
     }),
   );
-  assert.equal(dupEditRes.status, 409);
+  assert.equal(dupEditRes.status, 200);
+  const dupEditBody = (await dupEditRes.json()) as {
+    duplicates?: Array<{ id: string }>;
+  };
+  assert.ok(dupEditBody.duplicates?.some((d) => d.id === q1Id));
 
   const normEditRes = await questionRoute.POST(
     makeRequest(alice, "/api/questions", {

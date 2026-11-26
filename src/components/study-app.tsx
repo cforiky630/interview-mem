@@ -9,6 +9,7 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import {
+  BookMarked,
   BookOpen,
   LayoutDashboard,
   Layers2,
@@ -18,7 +19,6 @@ import {
   Inbox,
   History,
   Search,
-  Plus,
   LogOut,
   Menu,
   Loader2,
@@ -32,6 +32,7 @@ import {
   ArrowLeft,
   Plug,
   Sparkles,
+  Folder,
 } from "lucide-react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
@@ -40,20 +41,17 @@ import {
   applyDeckUpdate,
   dismissDeckUpdate,
 } from "@/lib/client";
+import {
+  CONCEPT_ROOT_LABEL,
+  buildConceptFolderIndex,
+} from "@/lib/concepts";
 import { useDeviceProfile } from "@/lib/device-profile";
 import {
-  computeDeckReadingOrder,
-  computeReaderGroupContext,
-  groupDecksByName,
-  listDeckGroupNames,
-  OTHER_DECKS_LABEL,
-} from "@/lib/grouping";
-import type {
-  Workspace,
-  QuestionView,
-  DeckGroupView,
-  DeckView,
-} from "@/lib/types";
+  ROOT_FOLDER_LABEL,
+  buildFolderIndex,
+  recordRecentQuestionId,
+} from "@/lib/folders";
+import type { QuestionView, DeckView } from "@/lib/types";
 import { cn, createUuid } from "@/lib/utils";
 import { buildReviewQueue } from "@/lib/review-queue";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
@@ -63,7 +61,6 @@ import {
   initAppearance,
   setAppearancePalette,
   setAppearanceSession,
-  setAppearanceTheme,
   toggleAppearancePalette,
   toggleAppearanceTheme,
   useAppearance,
@@ -75,6 +72,7 @@ import {
   extractSubscribeParam,
   parseRouteFromSearch,
   type AppView,
+  type LibraryQuickView,
   type RouteState,
 } from "@/lib/navigation";
 import { Button } from "./ui/button";
@@ -111,15 +109,38 @@ const ReviewComplete = dynamic(() =>
 const HistoryView = dynamic(() =>
   import("./history").then((m) => m.HistoryView),
 );
+const ConceptsView = dynamic(
+  () => import("./concepts-view").then((m) => m.ConceptsView),
+  {
+    loading: () => (
+      <div className="view-loading">
+        <Loader2 className="spin" size={20} />
+      </div>
+    ),
+  },
+);
 const AiAnswerDialog = dynamic(() =>
   import("./ai-answer-dialog").then((m) => m.AiAnswerDialog),
 );
-const CreateDeckDialog = dynamic(() =>
-  import("./dialogs").then((m) => m.CreateDeckDialog),
+const CreateFolderDialog = dynamic(() =>
+  import("./folder-dialogs").then((m) => m.CreateFolderDialog),
 );
-const EditDeckDialog = dynamic(() =>
-  import("./dialogs").then((m) => m.EditDeckDialog),
+const EditFolderDialog = dynamic(() =>
+  import("./folder-dialogs").then((m) => m.EditFolderDialog),
 );
+const GroupIntoNewFolderDialog = dynamic(() =>
+  import("./folder-dialogs").then((m) => m.GroupIntoNewFolderDialog),
+);
+const DissolveFolderDialog = dynamic(() =>
+  import("./folder-dialogs").then((m) => m.DissolveFolderDialog),
+);
+const DeleteFolderTrashDialog = dynamic(() =>
+  import("./folder-dialogs").then((m) => m.DeleteFolderTrashDialog),
+);
+const FolderMoveDialog = dynamic(() =>
+  import("./folder-move-dialog").then((m) => m.FolderMoveDialog),
+);
+import type { MoveSelection } from "./folder-move-dialog";
 const CreateQuestionDialog = dynamic(() =>
   import("./dialogs").then((m) => m.CreateQuestionDialog),
 );
@@ -136,21 +157,8 @@ const SettingsCard = dynamic(() =>
   import("./settings-card").then((m) => m.SettingsCard),
 );
 import type { SettingsTab } from "./settings-card";
-const DeleteDeckDialog = dynamic(() =>
-  import("./deck-delete-dialog").then((m) => m.DeleteDeckDialog),
-);
-
 const QuestionActionDialog = dynamic(() =>
   import("./question-action-dialog").then((m) => m.QuestionActionDialog),
-);
-const DeckGroupDialog = dynamic(() =>
-  import("./deck-group-dialog").then((m) => m.DeckGroupDialog),
-);
-const SetDeckGroupDialog = dynamic(() =>
-  import("./deck-group-dialog").then((m) => m.SetDeckGroupDialog),
-);
-const ManageDeckGroupsDialog = dynamic(() =>
-  import("./deck-group-dialog").then((m) => m.ManageDeckGroupsDialog),
 );
 
 import type { ImportSeed } from "./import-dialog";
@@ -223,13 +231,14 @@ function TopbarAppearanceCluster() {
 }
 
 function SidebarMobileAppearance() {
-  const { theme: activeTheme, palette } = useAppearance();
+  const { palette } = useAppearance();
   return (
     <div className="sidebar-mobile-appearance">
       <div className="sidebar-appearance-group" role="group" aria-label="色系切换">
         <button
           type="button"
           className={palette === "forest" ? "is-active" : ""}
+          aria-pressed={palette === "forest"}
           onClick={() => setAppearancePalette("forest")}
         >
           <span className="appearance-swatch" style={{ background: "#1A6347" }} />
@@ -238,26 +247,11 @@ function SidebarMobileAppearance() {
         <button
           type="button"
           className={palette === "lavender" ? "is-active" : ""}
+          aria-pressed={palette === "lavender"}
           onClick={() => setAppearancePalette("lavender")}
         >
           <span className="appearance-swatch" style={{ background: "#5D4B99" }} />
           熏衣
-        </button>
-      </div>
-      <div className="sidebar-appearance-group" role="group" aria-label="明暗切换">
-        <button
-          type="button"
-          className={activeTheme === "light" ? "is-active" : ""}
-          onClick={() => setAppearanceTheme("light")}
-        >
-          <Sun size={14} /> 浅色
-        </button>
-        <button
-          type="button"
-          className={activeTheme === "dark" ? "is-active" : ""}
-          onClick={() => setAppearanceTheme("dark")}
-        >
-          <Moon size={14} /> 深色
         </button>
       </div>
     </div>
@@ -316,20 +310,32 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [isNavigating, startTransition] = useTransition();
   const [deckId, setDeckId] = useState<string | null | undefined>(
     initialRoute.current.view === "library"
-      ? initialRoute.current.deckId
+      ? (initialRoute.current.deckId ?? null)
       : initialRoute.current.originDeckId,
   );
-  const [libraryGroupFilter, setLibraryGroupFilter] = useState<{
-    groupId?: string | null;
-    category?: string | null;
-  }>(() =>
+  const [quickView, setQuickView] = useState<LibraryQuickView | null>(() =>
     initialRoute.current?.view === "library"
-      ? {
-          groupId: initialRoute.current.groupId,
-          category: initialRoute.current.category,
-        }
-      : {},
+      ? (initialRoute.current.quickView ?? null)
+      : null,
   );
+  const [subGroupId, setSubGroupId] = useState<string | null>(() =>
+    initialRoute.current?.view === "library"
+      ? (initialRoute.current.groupId ?? null)
+      : null,
+  );
+  const [conceptFolderId, setConceptFolderId] = useState<string | null>(() =>
+    initialRoute.current?.view === "concepts"
+      ? (initialRoute.current.conceptFolderId ?? null)
+      : (initialRoute.current?.originConceptFolderId ?? null),
+  );
+  const [focusConceptId, setFocusConceptId] = useState<string | null>(() =>
+    initialRoute.current?.view === "concepts"
+      ? (initialRoute.current.conceptId ?? null)
+      : null,
+  );
+  const [focusConceptNonce, setFocusConceptNonce] = useState(0);
+  const [recentVersion, setRecentVersion] = useState(0);
+  const [selectionResetToken, setSelectionResetToken] = useState(0);
   const [questionId, setQuestionId] = useState<string | null>(
     initialRoute.current.questionId ?? null,
   );
@@ -344,28 +350,33 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importSeed, setImportSeed] = useState<ImportSeed>();
-  const [importPreferredGroupId, setImportPreferredGroupId] = useState<
-    string | undefined
+  const [importTargetFolderId, setImportTargetFolderId] = useState<
+    string | null | undefined
   >(undefined);
   const importCommitted = useRef<(() => void) | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createDeckDefaultGroup, setCreateDeckDefaultGroup] = useState("");
-  const [manageDeckGroupsOpen, setManageDeckGroupsOpen] = useState(false);
-  const [editDeck, setEditDeck] = useState<Workspace["decks"][number] | null>(
-    null,
-  );
-  const [groupDialog, setGroupDialog] = useState<{
-    deck: DeckView;
-    group?: DeckGroupView;
-    defaultCategory?: string;
-  } | null>(null);
-  const [setDeckGroupTarget, setSetDeckGroupTarget] = useState<DeckView | null>(
-    null,
-  );
-  const [createQuestionOpen, setCreateQuestionOpen] = useState(false);
-  const [createQuestionGroupId, setCreateQuestionGroupId] = useState<
-    string | undefined
+  const [createFolderParentId, setCreateFolderParentId] = useState<
+    string | null | undefined
   >(undefined);
+  const [editFolderTarget, setEditFolderTarget] = useState<DeckView | null>(
+    null,
+  );
+  const [dissolveFolderTarget, setDissolveFolderTarget] =
+    useState<DeckView | null>(null);
+  const [deleteFolderTrashTarget, setDeleteFolderTrashTarget] =
+    useState<DeckView | null>(null);
+  const [moveSelection, setMoveSelection] = useState<MoveSelection | null>(
+    null,
+  );
+  const [groupIntoNewSelection, setGroupIntoNewSelection] = useState<{
+    parentId: string | null;
+    folderIds: string[];
+    questionIds: string[];
+    subscriptionDeckIds: string[];
+  } | null>(null);
+  const [createQuestionOpen, setCreateQuestionOpen] = useState(false);
+  const [createQuestionFolderId, setCreateQuestionFolderId] = useState<
+    string | null
+  >(null);
   const [settingsState, setSettingsState] = useState<{
     open: boolean;
     tab: SettingsTab;
@@ -401,9 +412,6 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         ? (initialRoute.current.authorId ?? null)
         : null),
   );
-  const [deleteDeck, setDeleteDeck] = useState<
-    Workspace["decks"][number] | null
-  >(null);
   const [questionAction, setQuestionAction] = useState<{
     question: QuestionView;
     action: "delete" | "move";
@@ -426,10 +434,21 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     action: () => void | Promise<void>;
   } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
-  const origin = useRef<{ view: View; deckId?: string | null }>({
+  const origin = useRef<{
+    view: View;
+    deckId?: string | null;
+    quickView?: LibraryQuickView | null;
+    conceptFolderId?: string | null;
+  }>({
     view: initialRoute.current.originView ?? "library",
     ...(initialRoute.current.originDeckId !== undefined
       ? { deckId: initialRoute.current.originDeckId }
+      : {}),
+    ...(initialRoute.current.originQuickView
+      ? { quickView: initialRoute.current.originQuickView }
+      : {}),
+    ...(initialRoute.current.originConceptFolderId
+      ? { conceptFolderId: initialRoute.current.originConceptFolderId }
       : {}),
   });
   const reviewOrigin = useRef<{
@@ -459,9 +478,34 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           ? `review:${reviewIndex}:${queue[reviewIndex]?.id ?? "done"}`
           : "review:hub"
         : view === "library"
-          ? `library:${deckId === null ? "unfiled" : (deckId ?? "all")}`
-          : view;
+          ? `library:${quickView ? `quick:${quickView}` : deckId ? `folder:${deckId}${subGroupId ? `:group:${subGroupId}` : ""}` : "root"}`
+          : view === "concepts"
+            ? `concepts:${conceptFolderId ?? "root"}`
+            : view;
   const rememberScroll = usePageScroll(pageKey, !!data);
+
+  // Legacy URL compatibility: if ?group=<gid> points to a migrated owned subfolder, open it directly as folderId.
+  useEffect(() => {
+    if (!data || !subGroupId) return;
+    const migratedOwned = data.decks.find(
+      (d) => d.id === subGroupId && d.isOwner,
+    );
+    if (migratedOwned) {
+      setDeckId(migratedOwned.id);
+      setSubGroupId(null);
+      if (typeof window !== "undefined") {
+        const nextSearch = buildSearchFromRoute({
+          view: "library",
+          deckId: migratedOwned.id,
+        });
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${nextSearch}`,
+        );
+      }
+    }
+  }, [data, subGroupId]);
   useEffect(() => {
     if (!data) return;
     const connection = (
@@ -632,17 +676,24 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           setCatalogAuthorId(null);
         }
         if (next.view === "library") {
-          setDeckId(next.deckId);
-          setLibraryGroupFilter({
-            groupId: next.groupId,
-            category: next.category,
-          });
+          setDeckId(next.deckId ?? null);
+          setQuickView(next.quickView ?? null);
+          setSubGroupId(next.groupId ?? null);
+        } else if (next.view === "concepts") {
+          setConceptFolderId(next.conceptFolderId ?? null);
+          setFocusConceptId(next.conceptId ?? null);
+          if (next.conceptId) {
+            setFocusConceptNonce((n) => n + 1);
+          }
         } else if (next.view === "question") {
           origin.current = {
             view: next.originView ?? "library",
             deckId: next.originDeckId,
+            quickView: next.originQuickView ?? null,
+            conceptFolderId: next.originConceptFolderId ?? null,
           };
           setDeckId(next.originDeckId);
+          setQuickView(next.originQuickView ?? null);
           setQuestionId(next.questionId ?? null);
         }
         setView(next.view);
@@ -683,6 +734,14 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         (
           document.querySelector(
             "input[aria-label='搜索题目']",
+          ) as HTMLInputElement | null
+        )?.focus();
+        return;
+      }
+      if (viaSlash && viewRef.current === "concepts") {
+        (
+          document.querySelector(
+            "input[aria-label='搜索概念']",
           ) as HTMLInputElement | null
         )?.focus();
         return;
@@ -741,12 +800,23 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setAiUnread(false);
     }
   }, [aiMode, aiHiddenInReview]);
+  const viewedQuestionId =
+    view === "question" &&
+    questionId &&
+    data?.questions.some((q) => q.id === questionId)
+      ? questionId
+      : null;
+  useEffect(() => {
+    if (!viewedQuestionId) return;
+    recordRecentQuestionId(sessionId, viewedQuestionId);
+    setRecentVersion((n) => n + 1);
+  }, [sessionId, viewedQuestionId]);
   const answerDraft = useAiAnswerDraft(data, mutate, () =>
     openSettings("ai"),
   );
-  function openImport() {
+  function openImport(targetFolderId?: string | null) {
     setImportSeed(undefined);
-    setImportPreferredGroupId(undefined);
+    setImportTargetFolderId(targetFolderId);
     importCommitted.current = null;
     setImportOpen(true);
   }
@@ -763,9 +833,21 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       next,
       () => {
         setReviewSessionActive(false);
-        if (next === "library" || next === "today" || next === "history") {
-          setDeckId(undefined);
-          setLibraryGroupFilter({});
+        if (
+          next === "library" ||
+          next === "favorites" ||
+          next === "inbox" ||
+          next === "archived" ||
+          next === "today" ||
+          next === "history"
+        ) {
+          setDeckId(null);
+          setQuickView(null);
+          setSubGroupId(null);
+        }
+        if (next === "concepts") {
+          setConceptFolderId(null);
+          setFocusConceptId(null);
         }
         if (next === "catalog") {
           setSharedDeckId(null);
@@ -776,6 +858,45 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         }
       },
       { route: { view: next } },
+    );
+    setSidebarOpen(false);
+  }
+  function openConceptFolder(fid: string | null) {
+    const normalized = fid ?? null;
+    changePage(
+      "concepts",
+      () => {
+        setReviewSessionActive(false);
+        setConceptFolderId(normalized);
+        setFocusConceptId(null);
+      },
+      {
+        route: {
+          view: "concepts",
+          ...(normalized ? { conceptFolderId: normalized } : {}),
+        },
+      },
+    );
+    setSidebarOpen(false);
+  }
+  function openConcept(conceptId: string) {
+    const targetFolderId =
+      data?.concepts?.find((c) => c.id === conceptId)?.folderId ?? null;
+    setReviewSessionActive(false);
+    setFocusConceptId(conceptId);
+    setFocusConceptNonce((n) => n + 1);
+    changePage(
+      "concepts",
+      () => {
+        setConceptFolderId(targetFolderId);
+      },
+      {
+        route: {
+          view: "concepts",
+          ...(targetFolderId ? { conceptFolderId: targetFolderId } : {}),
+          conceptId,
+        },
+      },
     );
     setSidebarOpen(false);
   }
@@ -795,29 +916,58 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setView(next);
     });
   }
-  function openDeck(
-    id?: string | null,
-    groupFilter?: { groupId?: string; category?: string },
-  ) {
-    const nextFilter =
-      typeof id === "string" && groupFilter ? groupFilter : {};
+  function openDeck(id?: string | null, nextSubGroupId?: string | null) {
+    const normalized = id ?? null;
+    const normalizedSub = normalized && nextSubGroupId ? nextSubGroupId : null;
     changePage(
       "library",
       () => {
         setReviewSessionActive(false);
-        setDeckId(id);
-        setLibraryGroupFilter(nextFilter);
+        setDeckId(normalized);
+        setQuickView(null);
+        setSubGroupId(normalizedSub);
       },
       {
         route: {
           view: "library",
-          deckId: id,
-          ...(typeof id === "string" && nextFilter.groupId
-            ? { groupId: nextFilter.groupId }
-            : {}),
-          ...(typeof id === "string" && nextFilter.category
-            ? { category: nextFilter.category }
-            : {}),
+          ...(normalized ? { deckId: normalized } : {}),
+          ...(normalizedSub ? { groupId: normalizedSub } : {}),
+        },
+      },
+    );
+    setSidebarOpen(false);
+  }
+  function openSubGroup(nextSubGroupId: string | null) {
+    const normalizedDeck = deckId ?? null;
+    const normalizedSub = normalizedDeck && nextSubGroupId ? nextSubGroupId : null;
+    changePage(
+      "library",
+      () => {
+        setReviewSessionActive(false);
+        setSubGroupId(normalizedSub);
+      },
+      {
+        route: {
+          view: "library",
+          ...(normalizedDeck ? { deckId: normalizedDeck } : {}),
+          ...(normalizedSub ? { groupId: normalizedSub } : {}),
+        },
+      },
+    );
+  }
+  function selectLibraryQuickView(nextQuick: LibraryQuickView | null) {
+    changePage(
+      "library",
+      () => {
+        setReviewSessionActive(false);
+        setQuickView(nextQuick);
+        setDeckId(null);
+        setSubGroupId(null);
+      },
+      {
+        route: {
+          view: "library",
+          ...(nextQuick ? { quickView: nextQuick } : {}),
         },
       },
     );
@@ -828,7 +978,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     orderedIds?: string[],
     historyMode: "push" | "replace" = "push",
   ) {
-    if (view !== "question") origin.current = { view, deckId };
+    if (view !== "question") {
+      origin.current = { view, deckId, quickView, conceptFolderId };
+    }
     if (orderedIds !== undefined) {
       setReadingIds(orderedIds);
     } else if (view !== "question") {
@@ -847,6 +999,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           questionId: question.id,
           originView: origin.current.view,
           originDeckId: origin.current.deckId,
+          ...(origin.current.quickView
+            ? { originQuickView: origin.current.quickView }
+            : {}),
+          ...(origin.current.view === "concepts" &&
+          origin.current.conceptFolderId
+            ? { originConceptFolderId: origin.current.conceptFolderId }
+            : {}),
         },
       },
     );
@@ -869,10 +1028,26 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (view !== "review" || !reviewSessionActive) {
       reviewOrigin.current = { view, deckId, questionId };
     }
+    let subtreeDeckIds: Set<string> | undefined;
+    if (targetDeck) {
+      const folderIndex = buildFolderIndex(data.decks);
+      const target = folderIndex.byId.get(targetDeck);
+      if (target && target.isOwner) {
+        const owned = folderIndex.subtreeOwnedIds(targetDeck);
+        subtreeDeckIds = new Set<string>(owned);
+        for (const fid of owned) {
+          for (const sub of folderIndex.subscriptionsByFolder.get(fid) ?? []) {
+            subtreeDeckIds.add(sub.id);
+          }
+        }
+      } else {
+        subtreeDeckIds = new Set<string>([targetDeck]);
+      }
+    }
     const { queue: builtQueue } = buildReviewQueue(data.questions, {
       dailyNewLimit: data.settings.dailyNewLimit,
       newLearnedToday: data.stats.newLearnedToday,
-      deckId: targetDeck,
+      ...(subtreeDeckIds ? { deckIds: subtreeDeckIds } : {}),
     });
     setReviewRevealed(false);
     setReviewMode("fsrs");
@@ -1063,50 +1238,26 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         ["library", "favorites", "inbox", "archived"].includes(
           origin.current.view,
         )
-      ? (() => {
-          const matched = data.questions.filter((q) => {
-            if (origin.current.view === "archived") return q.archived;
-            if (q.archived) return false;
-            if (origin.current.view === "favorites") return q.favorite;
-            if (origin.current.view === "inbox") return q.needsEditing;
-            if (origin.current.deckId === null)
-              return q.isOwner && q.deckId === null;
-            if (origin.current.deckId !== undefined)
-              return q.deckId === origin.current.deckId;
-            return true;
-          });
-          if (
-            origin.current.view === "library" &&
-            typeof origin.current.deckId === "string"
-          ) {
-            const originDeck = data.decks.find(
-              (d) => d.id === origin.current.deckId,
-            );
-            if (originDeck && originDeck.groups.length > 0) {
-              return computeDeckReadingOrder(matched, originDeck.groups);
-            }
-          }
-          return matched;
-        })()
+      ? data.questions.filter((q) => {
+          if (origin.current.view === "archived") return q.archived;
+          if (q.archived) return false;
+          if (origin.current.view === "favorites") return q.favorite;
+          if (origin.current.view === "inbox") return q.needsEditing;
+          if (origin.current.deckId === null)
+            return q.isOwner && q.deckId === null;
+          if (origin.current.deckId !== undefined)
+            return q.deckId === origin.current.deckId;
+          return true;
+        })
       : [];
   const readingIndex = currentQuestion
     ? readingList.findIndex((q) => q.id === currentQuestion.id)
     : -1;
-  const currentQuestionDeck = currentQuestion?.deckId
-    ? data.decks.find((d) => d.id === currentQuestion.deckId)
-    : undefined;
-  const readerGroupContext =
-    view === "question" &&
-    currentQuestion &&
-    currentQuestionDeck?.groups.length
-      ? computeReaderGroupContext(
-          readingList.length ? readingList : [currentQuestion],
-          readingIndex !== -1 ? readingIndex : 0,
-          currentQuestionDeck.groups,
-        )
-      : null;
-  const existingDeckGroups = listDeckGroupNames(data.decks);
-  const sidebarDeckGroups = groupDecksByName(data.decks);
+  const folderIndex = buildFolderIndex(data.decks);
+  const topLevelSidebarFolders = [
+    ...(folderIndex.ownedChildren.get(null) ?? []),
+    ...(folderIndex.subscriptionsByFolder.get(null) ?? []),
+  ];
   const weakQuestions = Array.from(
     new Map(
       reviewResults
@@ -1121,22 +1272,48 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const libraryView = view === "question" ? origin.current.view : view;
   const activeNavView = view === "question" ? origin.current.view : view;
   const activeDeckId = view === "question" ? origin.current.deckId : deckId;
+  const activeFolderObj =
+    typeof activeDeckId === "string"
+      ? (folderIndex.byId.get(activeDeckId) ?? null)
+      : null;
+  const conceptFolderIndex = buildConceptFolderIndex(data.conceptFolders ?? []);
+  const activeConceptFolderObj = conceptFolderId
+    ? (conceptFolderIndex.byId.get(conceptFolderId) ?? null)
+    : null;
+  const effectiveQuickView: LibraryQuickView | null =
+    libraryView === "favorites"
+      ? "favorites"
+      : libraryView === "inbox"
+        ? "inbox"
+        : libraryView === "archived"
+          ? "archived"
+          : quickView;
   const displayedView = isNavigating ? navigationTarget : view;
   const isImmersiveMobile = isReaderView;
   const hasMobileDeckBack =
     device.isMobileShell &&
-    displayedView === "library" &&
-    activeDeckId !== undefined;
+    ((["library", "favorites", "inbox", "archived"].includes(displayedView) &&
+      (Boolean(activeFolderObj) || Boolean(effectiveQuickView))) ||
+      (displayedView === "concepts" && Boolean(activeConceptFolderObj)));
   const mobileView = ["question", "favorites", "inbox", "archived"].includes(
     navigationTarget,
   )
-    ? "library"
+    ? navigationTarget === "question" && origin.current.view === "concepts"
+      ? "concepts"
+      : "library"
     : navigationTarget === "history"
       ? "review"
       : navigationTarget;
   const nav = [
     { id: "today" as const, label: "今日", mobileLabel: "今日", icon: LayoutDashboard },
-    { id: "library" as const, label: "我的题库", mobileLabel: "题库", icon: Layers2 },
+    { id: "library" as const, label: ROOT_FOLDER_LABEL, mobileLabel: "资料", icon: Layers2 },
+    {
+      id: "concepts" as const,
+      label: "概念",
+      mobileLabel: "概念",
+      icon: BookMarked,
+      count: data.concepts?.length ?? 0,
+    },
     {
       id: "review" as const,
       label: "复习中心",
@@ -1144,7 +1321,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       icon: RotateCcw,
       count: data.stats.due,
     },
-    { id: "catalog" as const, label: "发现题库", mobileLabel: "发现", icon: Rss },
+    { id: "catalog" as const, label: "发现资料", mobileLabel: "发现", icon: Rss },
   ];
   return (
     <div
@@ -1166,8 +1343,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       <button
         type="button"
         className={cn("sidebar-backdrop", sidebarOpen && "is-open")}
-        aria-label="关闭导航"
-        aria-hidden={!sidebarOpen}
+        aria-hidden="true"
+        tabIndex={-1}
         inert={!sidebarOpen}
         style={
           drawerDragX < 0
@@ -1290,80 +1467,35 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           ))}
         </nav>
         <div className="sidebar-decks">
-          <div className="nav-section-label">
-            题库
+          <div className="nav-section-label">文件夹</div>
+          {topLevelSidebarFolders.slice(0, 8).map((d) => (
             <button
-              className="icon-button"
-              aria-label="新建题库"
-              onClick={() => {
-                setCreateDeckDefaultGroup("");
-                setCreateOpen(true);
-              }}
+              className={cn(
+                "sidebar-deck",
+                activeNavView === "library" &&
+                  !effectiveQuickView &&
+                  activeDeckId === d.id &&
+                  "selected",
+              )}
+              onClick={() => openDeck(d.id)}
+              key={d.id}
             >
-              <Plus size={14} />
+              {d.isOwner ? (
+                <Folder size={13} className={`deck-dot-icon color-${d.color}`} />
+              ) : (
+                <Rss size={12} className="deck-dot-icon" />
+              )}
+              <span>{d.title}</span>
+              <small>{d.count}</small>
             </button>
-          </div>
-          {sidebarDeckGroups.hasGroups ? (
-            (() => {
-              let remaining = 8;
-              return sidebarDeckGroups.buckets.map((bucket) => {
-                if (remaining <= 0) return null;
-                const slice = bucket.decks.slice(0, remaining);
-                remaining -= slice.length;
-                if (!slice.length) return null;
-                return (
-                  <div
-                    className="sidebar-deck-group"
-                    key={bucket.groupName || "__other__"}
-                  >
-                    <div className="sidebar-deck-group-label">
-                      {bucket.groupName || OTHER_DECKS_LABEL}
-                    </div>
-                    {slice.map((d) => (
-                      <button
-                        className={cn(
-                          "sidebar-deck",
-                          activeNavView === "library" &&
-                            activeDeckId === d.id &&
-                            "selected",
-                        )}
-                        onClick={() => openDeck(d.id)}
-                        key={d.id}
-                      >
-                        <span className={`deck-dot color-${d.color}`} />
-                        <span>{d.title}</span>
-                        <small>{d.count}</small>
-                      </button>
-                    ))}
-                  </div>
-                );
-              });
-            })()
-          ) : (
-            data.decks.slice(0, 5).map((d) => (
-              <button
-                className={cn(
-                  "sidebar-deck",
-                  activeNavView === "library" &&
-                    activeDeckId === d.id &&
-                    "selected",
-                )}
-                onClick={() => openDeck(d.id)}
-                key={d.id}
-              >
-                <span className={`deck-dot color-${d.color}`} />
-                <span>{d.title}</span>
-                <small>{d.count}</small>
-              </button>
-            ))
-          )}
-          {data.decks.length > (sidebarDeckGroups.hasGroups ? 8 : 5) && (
+          ))}
+          {topLevelSidebarFolders.length > 8 && (
             <button
               className="sidebar-deck"
               onClick={() => navigate("library")}
             >
               <Layers2 size={13} />
-              <span>查看全部（{data.decks.length}）</span>
+              <span>查看全部（{topLevelSidebarFolders.length}）</span>
             </button>
           )}
         </div>
@@ -1429,8 +1561,27 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               <button
                 type="button"
                 className="icon-button mobile-back-btn"
-                aria-label="返回我的题库"
-                onClick={() => openDeck()}
+                aria-label="返回上一级"
+                onClick={() => {
+                  if (displayedView === "concepts" && activeConceptFolderObj) {
+                    openConceptFolder(activeConceptFolderObj.parentId ?? null);
+                  } else if (effectiveQuickView) {
+                    selectLibraryQuickView(null);
+                  } else if (
+                    activeFolderObj &&
+                    !activeFolderObj.isOwner &&
+                    subGroupId
+                  ) {
+                    const currentGrp = activeFolderObj.groups.find(
+                      (g) => g.id === subGroupId,
+                    );
+                    openSubGroup(currentGrp?.parentId ?? null);
+                  } else if (activeFolderObj?.parentId) {
+                    openDeck(activeFolderObj.parentId);
+                  } else {
+                    openDeck(null);
+                  }
+                }}
               >
                 <ArrowLeft size={20} />
               </button>
@@ -1447,23 +1598,65 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             <span className="topbar-breadcrumb">
               {displayedView === "today" ? (
                 <strong>今日</strong>
-              ) : displayedView === "library" && activeDeckId !== undefined ? (
+              ) : displayedView === "concepts" && activeConceptFolderObj ? (
                 <>
                   <button
                     type="button"
                     className="topbar-crumb-link"
-                    onClick={() => openDeck()}
+                    onClick={() => openConceptFolder(null)}
                   >
-                    我的题库
+                    {CONCEPT_ROOT_LABEL}
+                  </button>
+                  <span className="topbar-crumb-sep" aria-hidden="true">
+                    /
+                  </span>
+                  <strong>{activeConceptFolderObj.title}</strong>
+                </>
+              ) : displayedView === "concepts" ? (
+                <strong>概念</strong>
+              ) : displayedView === "library" && effectiveQuickView ? (
+                <>
+                  <button
+                    type="button"
+                    className="topbar-crumb-link"
+                    onClick={() => openDeck(null)}
+                  >
+                    {ROOT_FOLDER_LABEL}
                   </button>
                   <span className="topbar-crumb-sep" aria-hidden="true">
                     /
                   </span>
                   <strong>
-                    {activeDeckId === null
-                      ? "未分类"
-                      : (data.decks.find((d) => d.id === activeDeckId)?.title ??
-                        "题库")}
+                    {
+                      {
+                        recent: "最近打开",
+                        favorites: "收藏",
+                        inbox: "待补答案",
+                        duplicates: "重复内容",
+                        archived: "已归档",
+                        trash: "回收站",
+                      }[effectiveQuickView]
+                    }
+                  </strong>
+                </>
+              ) : displayedView === "library" && activeFolderObj ? (
+                <>
+                  <button
+                    type="button"
+                    className="topbar-crumb-link"
+                    onClick={() => openDeck(null)}
+                  >
+                    {ROOT_FOLDER_LABEL}
+                  </button>
+                  <span className="topbar-crumb-sep" aria-hidden="true">
+                    /
+                  </span>
+                  <strong>
+                    {(!activeFolderObj.isOwner &&
+                      subGroupId &&
+                      activeFolderObj.groups.find((g) => g.id === subGroupId)
+                        ?.title) ||
+                      activeFolderObj.title}
                   </strong>
                 </>
               ) : displayedView === "question" ? (
@@ -1474,14 +1667,30 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     onClick={() =>
                       changePage(
                         origin.current.view,
-                        () => setDeckId(origin.current.deckId),
+                        () => {
+                          setDeckId(origin.current.deckId);
+                          setQuickView(origin.current.quickView ?? null);
+                          if (origin.current.view === "concepts") {
+                            setConceptFolderId(
+                              origin.current.conceptFolderId ?? null,
+                            );
+                          }
+                        },
                         {
                           route: {
                             view: origin.current.view,
-                            deckId:
-                              origin.current.view === "library"
-                                ? origin.current.deckId
-                                : undefined,
+                            ...(origin.current.view === "library" &&
+                            origin.current.quickView
+                              ? { quickView: origin.current.quickView }
+                              : origin.current.view === "library"
+                                ? { deckId: origin.current.deckId }
+                                : origin.current.view === "concepts" &&
+                                    origin.current.conceptFolderId
+                                  ? {
+                                      conceptFolderId:
+                                        origin.current.conceptFolderId,
+                                    }
+                                  : {}),
                           },
                         },
                       )
@@ -1490,24 +1699,25 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                     {
                       {
                         today: "今日",
-                        library: "我的题库",
+                        library: ROOT_FOLDER_LABEL,
+                        concepts: "概念",
                         favorites: "我的收藏",
-                        inbox: "待整理",
+                        inbox: "待补答案",
                         archived: "已归档",
                         history: "回顾记录",
                         review: "答题",
-                        catalog: "发现题库",
-                        question: "我的题库",
+                        catalog: "发现资料",
+                        question: ROOT_FOLDER_LABEL,
                       }[origin.current.view]
                     }
                   </button>
                   <span className="topbar-crumb-sep" aria-hidden="true">
                     /
                   </span>
-                  <strong>{currentQuestion?.deckTitle ?? "学习卡"}</strong>
+                  <strong>{currentQuestion?.folderPath ?? "学习卡"}</strong>
                 </>
               ) : displayedView === "library" ? (
-                <strong>我的题库</strong>
+                <strong>{ROOT_FOLDER_LABEL}</strong>
               ) : (
                 <>
                   <button
@@ -1563,13 +1773,20 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             >
               <Search size={18} />
             </button>
-            {displayedView !== "today" && displayedView !== "library" && (
+            {![
+              "today",
+              "library",
+              "concepts",
+              "favorites",
+              "inbox",
+              "archived",
+            ].includes(displayedView) && (
               <button
                 type="button"
                 className="icon-button topbar-import-btn"
                 aria-label="导入题目"
                 title="导入题目"
-                onClick={openImport}
+                onClick={() => openImport()}
               >
                 <Upload size={16} />
               </button>
@@ -1659,7 +1876,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 }
               }}
               onDeck={openDeck}
-              onImport={openImport}
+              onImport={() => openImport(null)}
               onCatalog={() => navigate("catalog")}
               onLibrary={() => navigate("library")}
               onInbox={() => navigate("inbox")}
@@ -1680,65 +1897,43 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
             (view === libraryView || view === "question") && (
               <div hidden={view === "question"}>
                 <Library
-                  key={`${libraryView}:${deckId === null ? "unfiled" : (deckId ?? "all")}`}
                   data={data}
-                  deckId={libraryView === "library" ? deckId : undefined}
-                  filter={libraryView === "library" ? undefined : libraryView}
+                  folderId={
+                    libraryView === "library" && !effectiveQuickView
+                      ? (deckId ?? null)
+                      : null
+                  }
+                  quickView={effectiveQuickView}
+                  subGroupId={subGroupId}
+                  recentVersion={recentVersion}
+                  selectionResetToken={selectionResetToken}
                   searchToken={searchToken}
-                  initialGroupId={
-                    libraryView === "library"
-                      ? libraryGroupFilter.groupId
-                      : undefined
-                  }
-                  initialCategory={
-                    libraryView === "library"
-                      ? libraryGroupFilter.category
-                      : undefined
-                  }
                   mutate={mutate}
-                  onDelete={setDeleteDeck}
-                  onEditDeck={setEditDeck}
+                  onSelectFolder={(fid, gid) => openDeck(fid, gid)}
+                  onSelectSubGroup={(gid) => openSubGroup(gid)}
+                  onSelectQuickView={(q) => selectLibraryQuickView(q)}
+                  onOpenQuestion={openQuestion}
+                  onPractice={(question) => startReview(undefined, question)}
+                  onReviewFolder={(fid) => startReview(fid)}
+                  onCram={startCram}
+                  onCreateFolder={(parentId) => setCreateFolderParentId(parentId)}
+                  onEditFolder={(folder) => setEditFolderTarget(folder)}
+                  onDissolveFolder={(folder) => setDissolveFolderTarget(folder)}
+                  onDeleteFolderTrash={(folder) =>
+                    setDeleteFolderTrashTarget(folder)
+                  }
+                  onOpenMoveDialog={(sel) => setMoveSelection(sel)}
+                  onOpenGroupIntoNew={(sel) => setGroupIntoNewSelection(sel)}
+                  onPublishFolder={(fid) => setPublishId(fid)}
+                  onBatchPublish={() => setBatchPublishOpen(true)}
+                  onCreateQuestion={(fid) => {
+                    setCreateQuestionFolderId(fid);
+                    setCreateQuestionOpen(true);
+                  }}
+                  onImport={(fid) => openImport(fid)}
                   onDeleteQuestion={(q) =>
                     setQuestionAction({ question: q, action: "delete" })
                   }
-                  onMoveQuestion={(q) =>
-                    setQuestionAction({ question: q, action: "move" })
-                  }
-                  onQuestion={openQuestion}
-                  onPractice={(question) => startReview(undefined, question)}
-                  onCram={startCram}
-                  onDeck={openDeck}
-                  onImport={openImport}
-                  onImportToGroup={(gid) => {
-                    setImportSeed(undefined);
-                    importCommitted.current = null;
-                    setImportPreferredGroupId(gid);
-                    setImportOpen(true);
-                  }}
-                  onCreateQuestion={() => {
-                    setCreateQuestionGroupId(undefined);
-                    setCreateQuestionOpen(true);
-                  }}
-                  onCreateQuestionInGroup={(gid) => {
-                    setCreateQuestionGroupId(gid);
-                    setCreateQuestionOpen(true);
-                  }}
-                  onCreate={() => {
-                    setCreateDeckDefaultGroup("");
-                    setCreateOpen(true);
-                  }}
-                  onManageDeckGroups={() => setManageDeckGroupsOpen(true)}
-                  onCreateDeckInGroup={(groupName) => {
-                    setCreateDeckDefaultGroup(groupName);
-                    setCreateOpen(true);
-                  }}
-                  onOpenGroupDialog={(deck, group, defaultCategory) =>
-                    setGroupDialog({ deck, group, defaultCategory })
-                  }
-                  onSetDeckGroup={(deck) => setSetDeckGroupTarget(deck)}
-                  onReview={startReview}
-                  onPublish={setPublishId}
-                  onBatchPublish={() => setBatchPublishOpen(true)}
                   onFavorite={(q) => void favorite(q)}
                   onGenerateAnswer={answerDraft.open}
                   onApplyUpdate={async (id, targetVersion) => {
@@ -1748,16 +1943,10 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   onDismissUpdate={async (id, version) => {
                     await dismissDeckUpdate(mutate, id, version);
                   }}
-                  onApplyAllUpdates={async (deckIds) => {
-                    const res = await applyAllDeckUpdates(mutate, deckIds);
-                    if (res) {
-                      toast.success(`已更新 ${Number(res.updated ?? 0)} 个订阅题库。`);
-                    }
-                  }}
                   onUnsubscribe={(id) => {
                     setConfirmState({
                       open: true,
-                      title: "取消订阅题库",
+                      title: "取消订阅资料",
                       description:
                         "取消订阅后不再接收更新，已有的个人笔记和复习记录仍会保留。",
                       confirmLabel: "取消订阅",
@@ -1767,13 +1956,51 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                           action: "unsubscribe",
                           deckId: id,
                         });
-                        if (result) openDeck();
+                        if (result) openDeck(null);
                       },
+                    });
+                  }}
+                  onOpenAiDedup={() => {
+                    askAi({
+                      quote: "",
+                      prompt:
+                        "请扫描我资料库中语义相近或内容高度重叠的题目，列出对比并给出合并建议。",
                     });
                   }}
                 />
               </div>
             )}
+          {view === "concepts" && (
+            <ConceptsView
+              data={data}
+              mutate={mutate}
+              folderId={conceptFolderId}
+              focusConceptId={focusConceptId}
+              focusNonce={focusConceptNonce}
+              onSelectFolder={openConceptFolder}
+              onClearFocusConcept={() => {
+                setFocusConceptId(null);
+                if (
+                  typeof window !== "undefined" &&
+                  viewRef.current === "concepts"
+                ) {
+                  const params = new URLSearchParams(window.location.search);
+                  if (params.has("concept")) {
+                    params.delete("concept");
+                    const nextSearch = params.toString()
+                      ? `?${params.toString()}`
+                      : "";
+                    window.history.replaceState(
+                      null,
+                      "",
+                      `${window.location.pathname}${nextSearch}`,
+                    );
+                  }
+                }
+              }}
+              onOpenQuestion={(q) => openQuestion(q, [])}
+            />
+          )}
           {view === "question" && currentQuestion && (
             <QuestionReader
               key={currentQuestion.id}
@@ -1782,28 +2009,46 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               onBack={() => {
                 changePage(
                   origin.current.view,
-                  () => setDeckId(origin.current.deckId),
+                  () => {
+                    setDeckId(origin.current.deckId);
+                    setQuickView(origin.current.quickView ?? null);
+                    if (origin.current.view === "concepts") {
+                      setConceptFolderId(
+                        origin.current.conceptFolderId ?? null,
+                      );
+                    }
+                  },
                   {
                     route: {
                       view: origin.current.view,
-                      deckId:
-                        origin.current.view === "library"
-                          ? origin.current.deckId
-                          : undefined,
+                      ...(origin.current.view === "library" &&
+                      origin.current.quickView
+                        ? { quickView: origin.current.quickView }
+                        : origin.current.view === "library"
+                          ? { deckId: origin.current.deckId }
+                          : origin.current.view === "concepts" &&
+                              origin.current.conceptFolderId
+                            ? {
+                                conceptFolderId:
+                                  origin.current.conceptFolderId,
+                              }
+                            : {}),
                     },
                   },
                 );
               }}
               backLabel={
-                origin.current.view === "history"
-                  ? "返回记录"
-                  : origin.current.view === "inbox"
-                    ? "返回待整理"
-                    : origin.current.view === "favorites"
-                      ? "返回收藏"
-                      : origin.current.view === "today"
-                        ? "返回今日"
-                        : "返回题库"
+                origin.current.view === "concepts"
+                  ? "返回概念"
+                  : origin.current.view === "history"
+                    ? "返回记录"
+                    : origin.current.view === "inbox"
+                      ? "返回待整理"
+                      : origin.current.view === "favorites"
+                        ? "返回收藏"
+                        : origin.current.view === "today"
+                          ? "返回今日"
+                          : "返回题库"
               }
               prevNext={
                 readingIndex !== -1 && readingList.length > 1
@@ -1827,7 +2072,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               }
               onBatchImport={(seed, onCommitted) => {
                 setImportSeed(seed);
-                setImportPreferredGroupId(undefined);
+                setImportTargetFolderId(seed.deckId ?? null);
                 importCommitted.current = onCommitted;
                 setImportOpen(true);
               }}
@@ -1851,12 +2096,12 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               onBeforeOpenAnnotations={() => {
                 if (aiMode === "docked") setAiMode("collapsed");
               }}
-              groupContext={readerGroupContext}
               readingList={readingList}
               onJumpQuestion={(target) =>
                 openQuestion(target, undefined, "replace")
               }
-              onOpenGroup={(targetDeckId, opts) => openDeck(targetDeckId, opts)}
+              onOpenFolder={(fid) => openDeck(fid)}
+              onOpenConcept={openConcept}
             />
           )}
           {view === "question" && !currentQuestion && (
@@ -1876,7 +2121,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               onOpenDeck={(targetDeck) => openDeck(targetDeck)}
               onOpenHistory={() => navigate("history")}
               onOpenInbox={() => navigate("inbox")}
-              onImport={openImport}
+              onImport={() => openImport(null)}
             />
           )}
           {view === "review" &&
@@ -1941,6 +2186,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   if (aiMode === "docked") setAiMode("collapsed");
                 }}
                 onRevealedChange={setReviewRevealed}
+                onOpenConcept={openConcept}
               />
             ) : (
               <ReviewComplete
@@ -1967,7 +2213,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               initialAuthorId={catalogAuthorId}
               initialSharedDeckId={sharedDeckId}
               onOpenDeck={(id) => openDeck(id)}
-              onSetDeckGroup={(deck) => setSetDeckGroupTarget(deck)}
+              onMoveSubscription={(deck) =>
+                setMoveSelection({
+                  subscriptionDeckIds: [deck.id],
+                  label: deck.title,
+                  initialTargetId: deck.parentId,
+                })
+              }
               onClearDeepLink={() => {
                 setSharedDeckId(null);
                 pushRouteUrl(
@@ -2021,7 +2273,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           onClose={() => {
             setImportOpen(false);
             setImportSeed(undefined);
-            setImportPreferredGroupId(undefined);
+            setImportTargetFolderId(undefined);
             importCommitted.current = null;
           }}
           data={data}
@@ -2033,97 +2285,109 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           preferredDeck={
             importSeed?.deckId !== undefined
               ? importSeed.deckId
-              : deckId === null
-                ? null
+              : importTargetFolderId !== undefined
+                ? importTargetFolderId
                 : deckId && data.decks.find((d) => d.id === deckId)?.isOwner
                   ? deckId
-                  : undefined
+                  : null
           }
-          preferredGroupId={importPreferredGroupId}
           mutate={mutate}
-          onView={openDeck}
-          onInbox={() => navigate("inbox")}
+          onView={(fid) => openDeck(fid)}
+          onInbox={() => selectLibraryQuickView("inbox")}
           onSettings={() => {
             setImportOpen(false);
             openSettings("ai");
           }}
         />
       )}
-      {createOpen && (
-        <CreateDeckDialog
-          open={createOpen}
-          existingGroups={existingDeckGroups}
-          defaultGroupName={createDeckDefaultGroup}
-          onClose={() => {
-            setCreateOpen(false);
-            setCreateDeckDefaultGroup("");
-          }}
-          mutate={mutate}
-          onCreated={openDeck}
-        />
-      )}
-      {editDeck && (
-        <EditDeckDialog
-          deck={editDeck}
-          existingGroups={existingDeckGroups}
-          onClose={() => setEditDeck(null)}
-          mutate={mutate}
-        />
-      )}
-      {groupDialog && (
-        <DeckGroupDialog
+      {createFolderParentId !== undefined && (
+        <CreateFolderDialog
           open
-          deck={
-            data.decks.find((d) => d.id === groupDialog.deck.id) ??
-            groupDialog.deck
-          }
-          group={groupDialog.group ?? null}
-          defaultCategory={groupDialog.defaultCategory ?? ""}
+          parentId={createFolderParentId}
+          decks={data.decks}
+          onClose={() => setCreateFolderParentId(undefined)}
           mutate={mutate}
-          onClose={() => setGroupDialog(null)}
+          onCreated={(id) => openDeck(id)}
         />
       )}
-      {setDeckGroupTarget && (
-        <SetDeckGroupDialog
-          deck={
-            data.decks.find((d) => d.id === setDeckGroupTarget.id) ??
-            setDeckGroupTarget
+      {editFolderTarget && (
+        <EditFolderDialog
+          folder={
+            data.decks.find((d) => d.id === editFolderTarget.id) ??
+            editFolderTarget
           }
-          existingGroups={existingDeckGroups}
+          onClose={() => setEditFolderTarget(null)}
           mutate={mutate}
-          onClose={() => setSetDeckGroupTarget(null)}
         />
       )}
-      {manageDeckGroupsOpen && (
-        <ManageDeckGroupsDialog
-          open={manageDeckGroupsOpen}
+      {moveSelection && (
+        <FolderMoveDialog
+          selection={moveSelection}
           decks={data.decks}
           mutate={mutate}
-          onClose={() => setManageDeckGroupsOpen(false)}
-          onCreateDeckInGroup={(groupName) => {
-            setManageDeckGroupsOpen(false);
-            setCreateDeckDefaultGroup(groupName);
-            setCreateOpen(true);
+          onClose={() => setMoveSelection(null)}
+          onDone={() => setSelectionResetToken((n) => n + 1)}
+        />
+      )}
+      {groupIntoNewSelection && (
+        <GroupIntoNewFolderDialog
+          open
+          parentId={groupIntoNewSelection.parentId}
+          decks={data.decks}
+          folderIds={groupIntoNewSelection.folderIds}
+          questionIds={groupIntoNewSelection.questionIds}
+          subscriptionDeckIds={groupIntoNewSelection.subscriptionDeckIds}
+          mutate={mutate}
+          onClose={() => setGroupIntoNewSelection(null)}
+          onDone={(createdId) => {
+            setSelectionResetToken((n) => n + 1);
+            openDeck(createdId);
+          }}
+        />
+      )}
+      {dissolveFolderTarget && (
+        <DissolveFolderDialog
+          folder={
+            data.decks.find((d) => d.id === dissolveFolderTarget.id) ??
+            dissolveFolderTarget
+          }
+          decks={data.decks}
+          mutate={mutate}
+          onClose={() => setDissolveFolderTarget(null)}
+          onDone={(parentId) => {
+            if (deckId === dissolveFolderTarget.id) openDeck(parentId);
+          }}
+        />
+      )}
+      {deleteFolderTrashTarget && (
+        <DeleteFolderTrashDialog
+          folder={
+            data.decks.find((d) => d.id === deleteFolderTrashTarget.id) ??
+            deleteFolderTrashTarget
+          }
+          decks={data.decks}
+          mutate={mutate}
+          onClose={() => setDeleteFolderTrashTarget(null)}
+          onSwitchToDissolve={(folder) => setDissolveFolderTarget(folder)}
+          onDone={(parentId) => {
+            if (deckId === deleteFolderTrashTarget.id) openDeck(parentId);
           }}
         />
       )}
       {createQuestionOpen && (
         <CreateQuestionDialog
           open={createQuestionOpen}
-          defaultDeckId={
-            libraryView === "library" && typeof deckId === "string"
-              ? deckId
-              : null
-          }
-          defaultGroupId={createQuestionGroupId}
+          defaultDeckId={createQuestionFolderId}
           data={data}
           mutate={mutate}
           onClose={() => {
             setCreateQuestionOpen(false);
-            setCreateQuestionGroupId(undefined);
+            setCreateQuestionFolderId(null);
           }}
           onCreated={(id) => {
-            if (view !== "question") origin.current = { view, deckId };
+            if (view !== "question") {
+              origin.current = { view, deckId, quickView, conceptFolderId };
+            }
             setReadingIds([]);
             changePage(
               "question",
@@ -2136,6 +2400,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   questionId: id,
                   originView: origin.current.view,
                   originDeckId: origin.current.deckId,
+                  ...(origin.current.quickView
+                    ? { originQuickView: origin.current.quickView }
+                    : {}),
+                  ...(origin.current.view === "concepts" &&
+                  origin.current.conceptFolderId
+                    ? { originConceptFolderId: origin.current.conceptFolderId }
+                    : {}),
                 },
               },
             );
@@ -2164,6 +2435,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       {publishId && (
         <PublishDialog
           deck={data.decks.find((d) => d.id === publishId) ?? null}
+          decks={data.decks}
           onClose={() => setPublishId(null)}
           mutate={mutate}
         />
@@ -2195,28 +2467,29 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 () => {
                   setQuestionId(null);
                   setDeckId(origin.current.deckId);
+                  setQuickView(origin.current.quickView ?? null);
+                  if (origin.current.view === "concepts") {
+                    setConceptFolderId(origin.current.conceptFolderId ?? null);
+                  }
                 },
                 {
                   route: {
                     view: origin.current.view,
-                    deckId:
-                      origin.current.view === "library"
-                        ? origin.current.deckId
-                        : undefined,
+                    ...(origin.current.view === "library" &&
+                    origin.current.quickView
+                      ? { quickView: origin.current.quickView }
+                      : origin.current.view === "library"
+                        ? { deckId: origin.current.deckId }
+                        : origin.current.view === "concepts" &&
+                            origin.current.conceptFolderId
+                          ? {
+                              conceptFolderId: origin.current.conceptFolderId,
+                            }
+                          : {}),
                   },
                 },
               );
             }
-          }}
-        />
-      )}
-      {deleteDeck && (
-        <DeleteDeckDialog
-          deck={deleteDeck}
-          mutate={mutate}
-          onClose={() => setDeleteDeck(null)}
-          onDeleted={() => {
-            openDeck(null);
           }}
         />
       )}

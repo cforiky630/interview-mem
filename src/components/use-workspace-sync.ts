@@ -1,17 +1,20 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, RequestError } from "@/lib/client";
+import { api, RequestError, type WorkspaceMutate } from "@/lib/client";
+import { recomputeConceptFolderState } from "@/lib/concepts";
+import { ROOT_FOLDER_LABEL, buildFolderIndex } from "@/lib/folders";
 import { isQuestionDue } from "@/lib/review-queue";
 import { dateKey } from "@/lib/utils";
 import type {
+  ConceptFolderView,
+  ConceptView,
   DeckView,
   QuestionAnnotation,
   QuestionView,
   StoredCard,
   Workspace,
 } from "@/lib/types";
-import type { Mutate } from "./dialogs";
 
 const FOCUS_STALE_MS = 25_000;
 const POLL_INTERVAL_MS = 60_000;
@@ -54,11 +57,37 @@ function recomputeDeckCounts(
       else grouped.set(q.deckId, [q]);
     }
   }
+  const folderIndex = buildFolderIndex(decks);
   const nextDecks = decks.map((deck) => {
+    if (deck.isOwner) {
+      const subtreeIds = folderIndex.subtreeOwnedIds(deck.id);
+      const directActive = grouped.get(deck.id) ?? [];
+      let count = 0;
+      let folderDue = 0;
+      let folderNew = 0;
+      for (const fid of subtreeIds) {
+        const list = grouped.get(fid);
+        if (!list) continue;
+        for (const q of list) {
+          count += 1;
+          if (!q.answer.trim()) continue;
+          if (isQuestionDue(q, now)) folderDue += 1;
+          else if (!q.fsrs) folderNew += 1;
+        }
+      }
+      return {
+        ...deck,
+        directCount: directActive.length,
+        count,
+        due: folderDue,
+        newCount: folderNew,
+      };
+    }
     const active = grouped.get(deck.id) ?? [];
     const eligible = active.filter((q) => q.answer.trim());
     return {
       ...deck,
+      directCount: active.length,
       count: active.length,
       due: eligible.filter((q) => isQuestionDue(q, now)).length,
       newCount: eligible.filter((q) => !q.fsrs).length,
@@ -67,7 +96,161 @@ function recomputeDeckCounts(
   return { decks: nextDecks, total, due, newCount };
 }
 
-function applyLocalWorkspacePatch(
+function refreshQuestionPaths(
+  decks: DeckView[],
+  questions: QuestionView[],
+): QuestionView[] {
+  const folderIndex = buildFolderIndex(decks);
+  let anyChanged = false;
+  const next = questions.map((q) => {
+    if (q.isOwner) {
+      const folder = q.deckId ? folderIndex.ownedById.get(q.deckId) : undefined;
+      const deckTitle = folder ? folder.title : ROOT_FOLDER_LABEL;
+      const folderPath = folderIndex.formatPath(q.deckId, null);
+      if (q.deckTitle === deckTitle && q.folderPath === folderPath) return q;
+      anyChanged = true;
+      return { ...q, deckTitle, folderPath };
+    }
+    const folderPath = folderIndex.formatPath(q.deckId, q.groupId);
+    if (q.folderPath === folderPath) return q;
+    anyChanged = true;
+    return { ...q, folderPath };
+  });
+  return anyChanged ? next : questions;
+}
+
+function upsertById<T extends { id: string }>(
+  list: readonly T[],
+  item: T,
+): T[] {
+  const idx = list.findIndex((entry) => entry.id === item.id);
+  if (idx === -1) return [...list, item];
+  const next = [...list];
+  next[idx] = item;
+  return next;
+}
+
+function syncAnnotationsForConcept(
+  questions: QuestionView[],
+  conceptId: string,
+  patch: {
+    comment?: string;
+    color?: QuestionAnnotation["color"];
+    unlink?: boolean;
+    updatedAt?: string;
+  },
+  excludeQuestionId?: string,
+): QuestionView[] {
+  const nowIso = patch.updatedAt ?? new Date().toISOString();
+  const nextComment =
+    patch.comment !== undefined ? patch.comment.slice(0, 2000) : undefined;
+  let anyChanged = false;
+  const nextQuestions = questions.map((q) => {
+    if (excludeQuestionId && q.id === excludeQuestionId) return q;
+    if (!q.annotations.length) return q;
+    let qChanged = false;
+    const nextAnns = q.annotations.map((ann) => {
+      if (ann.conceptId !== conceptId) return ann;
+      qChanged = true;
+      if (patch.unlink) {
+        return { ...ann, conceptId: null, updatedAt: nowIso };
+      }
+      return {
+        ...ann,
+        ...(nextComment !== undefined ? { comment: nextComment } : {}),
+        ...(patch.color !== undefined ? { color: patch.color } : {}),
+        updatedAt: nowIso,
+      };
+    });
+    if (!qChanged) return q;
+    anyChanged = true;
+    return {
+      ...q,
+      annotations: nextAnns,
+      annotationsVersion: q.annotationsVersion + 1,
+    };
+  });
+  return anyChanged ? nextQuestions : questions;
+}
+
+function unlinkAnnotationsForConcepts(
+  questions: QuestionView[],
+  conceptIds: ReadonlySet<string>,
+): QuestionView[] {
+  if (!conceptIds.size) return questions;
+  const nowIso = new Date().toISOString();
+  let anyChanged = false;
+  const nextQuestions = questions.map((q) => {
+    if (!q.annotations.length) return q;
+    let qChanged = false;
+    const nextAnns = q.annotations.map((ann) => {
+      if (!ann.conceptId || !conceptIds.has(ann.conceptId)) return ann;
+      qChanged = true;
+      return { ...ann, conceptId: null, updatedAt: nowIso };
+    });
+    if (!qChanged) return q;
+    anyChanged = true;
+    return {
+      ...q,
+      annotations: nextAnns,
+      annotationsVersion: q.annotationsVersion + 1,
+    };
+  });
+  return anyChanged ? nextQuestions : questions;
+}
+
+function buildCreatedQuestionView(
+  prev: Workspace,
+  raw: Record<string, unknown>,
+): QuestionView | null {
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.title !== "string" ||
+    typeof raw.answer !== "string"
+  ) {
+    return null;
+  }
+  const deckId = typeof raw.deckId === "string" ? raw.deckId : null;
+  const folderIndex = buildFolderIndex(prev.decks);
+  const folder = deckId ? folderIndex.ownedById.get(deckId) : undefined;
+  const nowIso = new Date().toISOString();
+  return {
+    id: raw.id,
+    deckId,
+    groupId: null,
+    position: typeof raw.position === "number" ? raw.position : 0,
+    parentId: typeof raw.parentId === "string" ? raw.parentId : null,
+    title: raw.title,
+    answer: raw.answer,
+    tags: Array.isArray(raw.tags)
+      ? raw.tags.filter((t): t is string => typeof t === "string")
+      : [],
+    revision: typeof raw.revision === "number" ? raw.revision : 1,
+    majorRevision:
+      typeof raw.majorRevision === "number" ? raw.majorRevision : 0,
+    needsEditing:
+      typeof raw.needsEditing === "boolean"
+        ? raw.needsEditing
+        : !raw.answer.trim(),
+    archived: typeof raw.archived === "boolean" ? raw.archived : false,
+    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : nowIso,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : nowIso,
+    isOwner: true,
+    deckTitle: folder ? folder.title : ROOT_FOLDER_LABEL,
+    folderPath: folderIndex.formatPath(deckId, null),
+    note: "",
+    noteVersion: 0,
+    annotations: [],
+    annotationsVersion: 0,
+    favorite: false,
+    fsrs: null,
+    studyVersion: 0,
+    reviewedRevision: 0,
+    validation: null,
+  };
+}
+
+export function applyLocalWorkspacePatch(
   prev: Workspace | null,
   url: string,
   payload: unknown,
@@ -92,8 +275,10 @@ function applyLocalWorkspacePatch(
       return null;
     }
     const prevQ = prev.questions.find((q) => q.id === questionId);
+    const shouldKeepExistingCard =
+      Boolean(prevQ) && studyVersion < prevQ!.studyVersion;
     const nextQuestions = prev.questions.map((q) =>
-      q.id === questionId
+      q.id === questionId && !shouldKeepExistingCard
         ? {
             ...q,
             fsrs: card,
@@ -186,9 +371,540 @@ function applyLocalWorkspacePatch(
     };
   }
 
+  if (url === "/api/concepts") {
+    const prevFolders = prev.conceptFolders ?? [];
+    const prevConcepts = prev.concepts ?? [];
+
+    if (
+      (action === "moveFolder" ||
+        action === "groupIntoNewFolder" ||
+        action === "dissolveFolder" ||
+        action === "renameGroup" ||
+        action === "moveGroup") &&
+      Array.isArray(result.conceptFolders) &&
+      Array.isArray(result.concepts)
+    ) {
+      return {
+        ...prev,
+        conceptFolders: result.conceptFolders as ConceptFolderView[],
+        concepts: result.concepts as ConceptView[],
+      };
+    }
+
+    if (
+      action === "deleteFolder" &&
+      Array.isArray(result.conceptFolders) &&
+      Array.isArray(result.concepts)
+    ) {
+      const deletedIds = new Set(
+        Array.isArray(result.deletedConceptIds)
+          ? (result.deletedConceptIds as unknown[]).filter(
+              (id): id is string => typeof id === "string",
+            )
+          : [],
+      );
+      return {
+        ...prev,
+        conceptFolders: result.conceptFolders as ConceptFolderView[],
+        concepts: result.concepts as ConceptView[],
+        questions: unlinkAnnotationsForConcepts(prev.questions, deletedIds),
+      };
+    }
+
+    if (
+      action === "importFromAnnotations" &&
+      Array.isArray(result.conceptFolders) &&
+      Array.isArray(result.allConcepts)
+    ) {
+      let nextQuestions = prev.questions;
+      if (Array.isArray(result.updatedCards) && result.updatedCards.length) {
+        const cardMap = new Map<
+          string,
+          { annotations: QuestionAnnotation[]; version: number }
+        >();
+        for (const entry of result.updatedCards) {
+          if (!entry || typeof entry !== "object") continue;
+          const item = entry as Record<string, unknown>;
+          if (
+            typeof item.questionId === "string" &&
+            Array.isArray(item.annotations) &&
+            typeof item.version === "number"
+          ) {
+            cardMap.set(item.questionId, {
+              annotations: item.annotations as QuestionAnnotation[],
+              version: item.version,
+            });
+          }
+        }
+        if (cardMap.size) {
+          nextQuestions = prev.questions.map((q) => {
+            const card = cardMap.get(q.id);
+            return card
+              ? {
+                  ...q,
+                  annotations: card.annotations,
+                  annotationsVersion: card.version,
+                }
+              : q;
+          });
+        }
+      }
+      return {
+        ...prev,
+        conceptFolders: result.conceptFolders as ConceptFolderView[],
+        concepts: result.allConcepts as ConceptView[],
+        questions: nextQuestions,
+      };
+    }
+
+    if (
+      action === "create" &&
+      result.concept &&
+      typeof result.concept === "object"
+    ) {
+      const created = result.concept as ConceptView;
+      const nextFolders =
+        result.folder && typeof result.folder === "object"
+          ? upsertById(prevFolders, result.folder as ConceptFolderView)
+          : prevFolders;
+      const nextConcepts = upsertById(prevConcepts, created);
+      const recomputed = recomputeConceptFolderState(nextFolders, nextConcepts);
+      return {
+        ...prev,
+        ...recomputed,
+      };
+    }
+
+    if (
+      action === "edit" &&
+      result.concept &&
+      typeof result.concept === "object"
+    ) {
+      const updated = result.concept as ConceptView;
+      const nextFolders =
+        result.folder && typeof result.folder === "object"
+          ? upsertById(prevFolders, result.folder as ConceptFolderView)
+          : prevFolders;
+      const nextConcepts = upsertById(prevConcepts, updated);
+      const recomputed = recomputeConceptFolderState(nextFolders, nextConcepts);
+      const nextQuestions = syncAnnotationsForConcept(
+        prev.questions,
+        updated.id,
+        {
+          comment: updated.definition,
+          color: updated.color,
+          updatedAt: updated.updatedAt,
+        },
+      );
+      return {
+        ...prev,
+        ...recomputed,
+        questions: nextQuestions,
+      };
+    }
+
+    if (action === "delete" && typeof body.id === "string") {
+      const deletedId = body.id;
+      const nextConcepts = prevConcepts.filter((c) => c.id !== deletedId);
+      const recomputed = recomputeConceptFolderState(prevFolders, nextConcepts);
+      const nextQuestions = syncAnnotationsForConcept(
+        prev.questions,
+        deletedId,
+        { unlink: true },
+      );
+      return {
+        ...prev,
+        ...recomputed,
+        questions: nextQuestions,
+      };
+    }
+
+    if (action === "moveConcepts" && Array.isArray(body.ids)) {
+      const idSet = new Set(
+        body.ids.filter((id): id is string => typeof id === "string"),
+      );
+      const folderId = typeof body.folderId === "string" ? body.folderId : null;
+      const nowIso = new Date().toISOString();
+      const nextConcepts = prevConcepts.map((c) =>
+        idSet.has(c.id) ? { ...c, folderId, updatedAt: nowIso } : c,
+      );
+      const recomputed = recomputeConceptFolderState(prevFolders, nextConcepts);
+      return {
+        ...prev,
+        ...recomputed,
+      };
+    }
+
+    if (
+      action === "createFolder" &&
+      result.folder &&
+      typeof result.folder === "object"
+    ) {
+      const folder = result.folder as ConceptFolderView;
+      const nextFolders = upsertById(prevFolders, folder);
+      const recomputed = recomputeConceptFolderState(nextFolders, prevConcepts);
+      return {
+        ...prev,
+        ...recomputed,
+      };
+    }
+
+    if (
+      action === "editFolder" &&
+      result.folder &&
+      typeof result.folder === "object"
+    ) {
+      const folder = result.folder as ConceptFolderView;
+      const nextFolders = upsertById(prevFolders, folder);
+      const recomputed = recomputeConceptFolderState(nextFolders, prevConcepts);
+      return {
+        ...prev,
+        ...recomputed,
+      };
+    }
+  }
+
+  if (url === "/api/decks") {
+    if (
+      action === "create" &&
+      result.deck &&
+      typeof result.deck === "object"
+    ) {
+      const raw = result.deck as Record<string, unknown>;
+      if (typeof raw.id === "string" && typeof raw.title === "string") {
+        const nowIso = new Date().toISOString();
+        const newDeck: DeckView = {
+          id: raw.id,
+          parentId: typeof raw.parentId === "string" ? raw.parentId : null,
+          title: raw.title,
+          description:
+            typeof raw.description === "string" ? raw.description : "",
+          groups: [],
+          color: typeof raw.color === "string" ? raw.color : "sage",
+          visibility:
+            typeof raw.visibility === "string" ? raw.visibility : "private",
+          isOwner: true,
+          ownerId: prev.user.id,
+          ownerName: prev.user.name,
+          publishedVersion:
+            typeof raw.publishedVersion === "number" ? raw.publishedVersion : 0,
+          seenVersion: 0,
+          syncedVersion: 0,
+          dismissedVersion: 0,
+          pendingUpdate: null,
+          publishStatus: "unpublished",
+          unpublishedDiff: null,
+          directCount: 0,
+          count: 0,
+          due: 0,
+          newCount: 0,
+          updatedAt:
+            typeof raw.updatedAt === "string" ? raw.updatedAt : nowIso,
+          releaseSummary: "",
+          sourceDeleted: false,
+        };
+        return {
+          ...prev,
+          decks: upsertById(prev.decks, newDeck),
+        };
+      }
+    }
+
+    if (
+      action === "edit" &&
+      typeof body.deckId === "string" &&
+      typeof body.title === "string" &&
+      typeof body.description === "string"
+    ) {
+      const deckId = body.deckId;
+      const updatedAt =
+        typeof result.updatedAt === "string"
+          ? result.updatedAt
+          : new Date().toISOString();
+      const nextDecks = prev.decks.map((d) => {
+        if (d.id !== deckId) return d;
+        const metaChanged =
+          d.publishedVersion > 0 &&
+          (d.title !== body.title || d.description !== body.description);
+        return {
+          ...d,
+          title: body.title as string,
+          description: body.description as string,
+          ...(typeof body.color === "string" ? { color: body.color } : {}),
+          updatedAt,
+          ...(metaChanged
+            ? {
+                publishStatus: "changes" as const,
+                unpublishedDiff: {
+                  ...(d.unpublishedDiff ?? {
+                    added: 0,
+                    updated: 0,
+                    removed: 0,
+                    groupsChanged: false,
+                  }),
+                  metaChanged: true,
+                },
+              }
+            : {}),
+        };
+      });
+      const nextQuestions = refreshQuestionPaths(nextDecks, prev.questions);
+      return {
+        ...prev,
+        decks: nextDecks,
+        questions: nextQuestions,
+      };
+    }
+
+    if (
+      action === "moveFolder" &&
+      typeof body.folderId === "string" &&
+      !result.mergedIntoId
+    ) {
+      const folderId = body.folderId;
+      const targetParentId =
+        typeof body.targetParentId === "string" ? body.targetParentId : null;
+      const renamedTitle =
+        typeof result.renamedTitle === "string"
+          ? result.renamedTitle
+          : undefined;
+      const nowIso = new Date().toISOString();
+      const updatedDecks = prev.decks.map((d) =>
+        d.id === folderId
+          ? {
+              ...d,
+              parentId: targetParentId,
+              ...(renamedTitle ? { title: renamedTitle } : {}),
+              updatedAt: nowIso,
+            }
+          : d,
+      );
+      const nextQuestions = refreshQuestionPaths(updatedDecks, prev.questions);
+      const { decks, total, due, newCount } = recomputeDeckCounts(
+        updatedDecks,
+        nextQuestions,
+        Date.now(),
+      );
+      return {
+        ...prev,
+        decks,
+        questions: nextQuestions,
+        stats: {
+          ...prev.stats,
+          total,
+          due,
+          new: newCount,
+        },
+      };
+    }
+
+    if (action === "placeSubscription" && typeof body.deckId === "string") {
+      const deckId = body.deckId;
+      const folderId = typeof body.folderId === "string" ? body.folderId : null;
+      const nextDecks = prev.decks.map((d) =>
+        d.id === deckId ? { ...d, parentId: folderId } : d,
+      );
+      const nextQuestions = refreshQuestionPaths(nextDecks, prev.questions);
+      return {
+        ...prev,
+        decks: nextDecks,
+        questions: nextQuestions,
+      };
+    }
+
+    if (action === "unpublish" && typeof body.deckId === "string") {
+      const deckId = body.deckId;
+      const nowIso = new Date().toISOString();
+      return {
+        ...prev,
+        decks: prev.decks.map((d) =>
+          d.id === deckId
+            ? { ...d, visibility: "private", updatedAt: nowIso }
+            : d,
+        ),
+      };
+    }
+  }
+
   if (url === "/api/questions") {
+    if (
+      (action === "create" || action === "copy") &&
+      result.question &&
+      typeof result.question === "object"
+    ) {
+      const created = buildCreatedQuestionView(
+        prev,
+        result.question as Record<string, unknown>,
+      );
+      if (created) {
+        const nextQuestions = upsertById(prev.questions, created);
+        const { decks, total, due, newCount } = recomputeDeckCounts(
+          prev.decks,
+          nextQuestions,
+          Date.now(),
+        );
+        return {
+          ...prev,
+          decks,
+          questions: nextQuestions,
+          stats: {
+            ...prev.stats,
+            total,
+            due,
+            new: newCount,
+          },
+        };
+      }
+    }
+
+    if (action === "batch" && Array.isArray(body.ids)) {
+      const op = body.operation;
+      const ids = body.ids.filter((x): x is string => typeof x === "string");
+      if (!ids.length) return prev;
+
+      if (op === "delete") {
+        const idSet = new Set(ids);
+        const nextQuestions = prev.questions.filter((q) => !idSet.has(q.id));
+        const { decks, total, due, newCount } = recomputeDeckCounts(
+          prev.decks,
+          nextQuestions,
+          Date.now(),
+        );
+        return {
+          ...prev,
+          decks,
+          questions: nextQuestions,
+          stats: { ...prev.stats, total, due, new: newCount },
+        };
+      }
+
+      if (op === "archive" || op === "unarchive") {
+        const idSet = new Set(ids);
+        const archived = op === "archive";
+        const nowIso = new Date().toISOString();
+        const nextQuestions = prev.questions.map((q) =>
+          idSet.has(q.id) ? { ...q, archived, updatedAt: nowIso } : q,
+        );
+        const { decks, total, due, newCount } = recomputeDeckCounts(
+          prev.decks,
+          nextQuestions,
+          Date.now(),
+        );
+        return {
+          ...prev,
+          decks,
+          questions: nextQuestions,
+          stats: { ...prev.stats, total, due, new: newCount },
+        };
+      }
+
+      if (op === "move") {
+        const movedIds = Array.isArray(result.movedIds)
+          ? (result.movedIds as unknown[]).filter(
+              (x): x is string => typeof x === "string",
+            )
+          : result.updated === 0
+            ? []
+            : ids;
+        if (!movedIds.length) return prev;
+        const movedSet = new Set(movedIds);
+        const targetDeckId =
+          typeof body.deckId === "string" ? body.deckId : null;
+        const updatedAt =
+          typeof result.updatedAt === "string"
+            ? result.updatedAt
+            : new Date().toISOString();
+        const folderIndex = buildFolderIndex(prev.decks);
+        const folder = targetDeckId
+          ? folderIndex.ownedById.get(targetDeckId)
+          : undefined;
+        const deckTitle = folder ? folder.title : ROOT_FOLDER_LABEL;
+        const folderPath = folderIndex.formatPath(targetDeckId, null);
+        const nextQuestions = prev.questions.map((q) =>
+          movedSet.has(q.id)
+            ? { ...q, deckId: targetDeckId, deckTitle, folderPath, updatedAt }
+            : q,
+        );
+        const { decks, total, due, newCount } = recomputeDeckCounts(
+          prev.decks,
+          nextQuestions,
+          Date.now(),
+        );
+        return {
+          ...prev,
+          decks,
+          questions: nextQuestions,
+          stats: { ...prev.stats, total, due, new: newCount },
+        };
+      }
+    }
+
     const id = typeof body.id === "string" ? body.id : "";
     if (!id) return null;
+    if (action === "delete") {
+      const nextQuestions = prev.questions.filter((q) => q.id !== id);
+      const { decks, total, due, newCount } = recomputeDeckCounts(
+        prev.decks,
+        nextQuestions,
+        Date.now(),
+      );
+      return {
+        ...prev,
+        decks,
+        questions: nextQuestions,
+        stats: {
+          ...prev.stats,
+          total,
+          due,
+          new: newCount,
+        },
+      };
+    }
+    if (action === "move") {
+      if (result.updated === 0) return prev;
+      const targetDeckId =
+        typeof body.deckId === "string" ? body.deckId : null;
+      const updatedAt =
+        typeof result.updatedAt === "string"
+          ? result.updatedAt
+          : new Date().toISOString();
+      const folderIndex = buildFolderIndex(prev.decks);
+      const folder = targetDeckId
+        ? folderIndex.ownedById.get(targetDeckId)
+        : undefined;
+      const deckTitle = folder ? folder.title : ROOT_FOLDER_LABEL;
+      const folderPath = folderIndex.formatPath(targetDeckId, null);
+      const nextQuestions = prev.questions.map((q) =>
+        q.id === id
+          ? {
+              ...q,
+              deckId: targetDeckId,
+              deckTitle,
+              folderPath,
+              ...(typeof result.position === "number"
+                ? { position: result.position }
+                : {}),
+              updatedAt,
+            }
+          : q,
+      );
+      const { decks, total, due, newCount } = recomputeDeckCounts(
+        prev.decks,
+        nextQuestions,
+        Date.now(),
+      );
+      return {
+        ...prev,
+        decks,
+        questions: nextQuestions,
+        stats: {
+          ...prev.stats,
+          total,
+          due,
+          new: newCount,
+        },
+      };
+    }
     if (action === "favorite" && typeof body.favorite === "boolean") {
       return {
         ...prev,
@@ -224,17 +940,52 @@ function applyLocalWorkspacePatch(
       typeof result.version === "number" &&
       Number.isFinite(result.version)
     ) {
+      let nextQuestions = prev.questions.map((q) =>
+        q.id === id
+          ? {
+              ...q,
+              annotations: result.annotations as QuestionAnnotation[],
+              annotationsVersion: result.version as number,
+            }
+          : q,
+      );
+      let nextConcepts = prev.concepts ?? [];
+      let nextConceptFolders = prev.conceptFolders ?? [];
+      if (result.concept && typeof result.concept === "object") {
+        const savedConcept = result.concept as ConceptView;
+        if (result.conceptFolder && typeof result.conceptFolder === "object") {
+          nextConceptFolders = upsertById(
+            nextConceptFolders,
+            result.conceptFolder as ConceptFolderView,
+          );
+        }
+        const recomputed = recomputeConceptFolderState(
+          nextConceptFolders,
+          upsertById(nextConcepts, savedConcept),
+        );
+        nextConceptFolders = recomputed.conceptFolders;
+        nextConcepts = recomputed.concepts;
+        if (
+          action === "editAnnotation" ||
+          (action === "addAnnotation" && body.updateExistingConcept === true)
+        ) {
+          nextQuestions = syncAnnotationsForConcept(
+            nextQuestions,
+            savedConcept.id,
+            {
+              comment: savedConcept.definition,
+              color: savedConcept.color,
+              updatedAt: savedConcept.updatedAt,
+            },
+            id,
+          );
+        }
+      }
       return {
         ...prev,
-        questions: prev.questions.map((q) =>
-          q.id === id
-            ? {
-                ...q,
-                annotations: result.annotations as QuestionAnnotation[],
-                annotationsVersion: result.version as number,
-              }
-            : q,
-        ),
+        questions: nextQuestions,
+        concepts: nextConcepts,
+        conceptFolders: nextConceptFolders,
       };
     }
     if (
@@ -502,8 +1253,8 @@ export function useWorkspaceSync(sessionId: string) {
     };
   }, [sessionId, refresh]);
 
-  const mutate: Mutate = useCallback(
-    async (url, payload) => {
+  const mutate: WorkspaceMutate = useCallback(
+    async (url, payload, options) => {
       const signal = lifetime.current?.signal;
       if (!signal || signal.aborted) return null;
       pendingCount.current += 1;
@@ -543,6 +1294,13 @@ export function useWorkspaceSync(sessionId: string) {
         if (e instanceof RequestError && e.code === "ACCOUNT_CHANGED") {
           window.location.reload();
           return null;
+        }
+        if (
+          e instanceof RequestError &&
+          e.code &&
+          options?.throwOnCodes?.includes(e.code)
+        ) {
+          throw e;
         }
         toast.error(e instanceof Error ? e.message : "操作失败，请重试。");
         if (e instanceof RequestError && e.status === 409) await refresh(true);
