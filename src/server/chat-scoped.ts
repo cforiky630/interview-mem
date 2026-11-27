@@ -136,7 +136,7 @@ export async function handleScopedChat(
       )}`
     : "";
   const systemPrompt = `你是「拾忆」的 AI 面试学习与资料整理助手（FSRS 间隔复习系统）。当前作用域为${scopeLabel}。
-你可以调用提供的只读检索与去重工具查询用户资料库中的真实题目、文件夹结构、待复习到期情况（due）与待完善题目（needsEditing）。
+你可以调用提供的只读检索与去重工具查询用户资料库中的真实题目、文件夹结构、待复习到期情况（due）与待完善题目（needsEditing）。解释或比较用户资料库中的概念时，先用 search_concepts 查询概念及其来源题。
 核心原则：
 1. 禁止臆测未检索到的题目或数量；若需要查重、梳理知识结构、查找相关题或规划今天复习，请先调用工具再总结。
 2. 规划复习时优先关注到期待复习（due）、遗忘/困难题目及标记为待完善的卡片；排查重复题时对比两题差异并给出合并或保留建议。
@@ -150,6 +150,15 @@ export async function handleScopedChat(
       let fallbackToStreamedSummary = false;
       const signal = AbortSignal.any([request.signal, abort.signal]);
       const collectedRefs = new Map<string, ToolQuestionRef>();
+      function addReferences(refs: ToolQuestionRef[]) {
+        const previousSize = collectedRefs.size;
+        for (const ref of refs) {
+          if (!collectedRefs.has(ref.id)) collectedRefs.set(ref.id, ref);
+        }
+        if (collectedRefs.size !== previousSize) {
+          send("references", { refs: [...collectedRefs.values()] });
+        }
+      }
       let poolPromise: Promise<ScopedPool> | undefined;
       const getCachedPool = () =>
         (poolPromise ??= loadScopedPool(user.id, scope, targetDeckId));
@@ -269,20 +278,7 @@ export async function handleScopedChat(
             const step = { name: toolName, label: result.label };
             toolSteps.push(step);
             send("tool", step);
-            if (result.refs.length) {
-              let changed = false;
-              for (const ref of result.refs) {
-                if (!collectedRefs.has(ref.id)) {
-                  collectedRefs.set(ref.id, ref);
-                  changed = true;
-                }
-              }
-              if (changed) {
-                send("references", {
-                  refs: Array.from(collectedRefs.values()),
-                });
-              }
-            }
+            addReferences(result.refs);
             convo.push({
               role: "tool",
               tool_call_id: tc.id,
@@ -293,12 +289,14 @@ export async function handleScopedChat(
         }
 
         if (fallbackToStreamedSummary) {
-          const summary = await buildFallbackScopeSummary(
+          const { summary, refs } = await buildFallbackScopeSummary(
             user.id,
             scope,
             targetDeckId,
             getCachedPool(),
+            data.message,
           );
+          addReferences(refs);
           const fallbackMessages: ProviderMessage[] = [
             {
               role: "system",

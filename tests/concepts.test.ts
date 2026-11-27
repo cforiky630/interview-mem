@@ -20,15 +20,14 @@ import {
   applyConceptLinks,
   buildConceptFolderIndex,
   buildConceptMatcherPattern,
+  buildConceptSources,
   findConceptMatchesInText,
   findMatchingConcept,
   groupConceptsByName,
   normalizeConceptAliases,
   normalizeConceptKey,
   parseConceptAliasesInput,
-  readConceptLinksPref,
   recomputeConceptFolderState,
-  writeConceptLinksPref,
 } from "../src/lib/concepts";
 import {
   addQuestionAnnotation,
@@ -67,6 +66,7 @@ const questionsRoute = await import("../src/app/api/questions/route");
 const conceptsRoute = await import("../src/app/api/concepts/route");
 const exportRoute = await import("../src/app/api/export/route");
 const restoreRoute = await import("../src/app/api/backup/restore/route");
+const { executeWorkspaceTool, buildFallbackScopeSummary } = await import("../src/server/ai-tools");
 
 type Account = { id: string; cookie: string; deckId: string };
 let alice: Account;
@@ -573,10 +573,34 @@ test("concept key normalization, flexible matching, strict ASCII boundaries, CJK
     groupConceptsByName([makeConcept({ id: "2", term: "B", groupName: "RAG" })]).length,
     1,
   );
+});
 
-  // SSR-safe prefs default false
-  assert.equal(readConceptLinksPref("u1"), false);
-  writeConceptLinksPref("u1", true); // no-op in Node SSR
+test("shared regex prefixes preserve literal punctuation, boundaries, and longest matches", () => {
+  const concepts = [
+    makeConcept({ id: "tier-1", term: "Cache Tier 1" }),
+    makeConcept({ id: "tier-2", term: "Cache Tier 2" }),
+    makeConcept({ id: "cache", term: "Cache" }),
+    makeConcept({ id: "debug", term: "Stage+X debug" }),
+    makeConcept({ id: "plan", term: "Stage+X plan" }),
+    makeConcept({ id: "short", term: "任务多" }),
+    makeConcept({ id: "long", term: "任务多阶段" }),
+    makeConcept({ id: "overlap", term: "多阶段错误" }),
+  ];
+  const text =
+    "CACHE Tier–2，cache tier_1，Cache。xCache Tier 2，Stage+X debug，STAGE+X plan，任务多阶段错误";
+  const matcher = buildConceptMatcherPattern(concepts);
+  const matches = findConceptMatchesInText(text, concepts, matcher);
+  assert.deepEqual(
+    matches.map(({ text, concept }) => [text, concept.id]),
+    [
+      ["CACHE Tier–2", "tier-2"],
+      ["cache tier_1", "tier-1"],
+      ["Cache", "cache"],
+      ["Stage+X debug", "debug"],
+      ["STAGE+X plan", "plan"],
+      ["任务多阶段", "long"],
+    ],
+  );
 });
 
 test("applyConceptLinks skips code/pre/katex/a/annotations, stamps attributes, and cleans up reversibly", () => {
@@ -1188,6 +1212,54 @@ test("unified annotation <-> concept creation, reuse/update, bidirectional sync,
   assert.ok(!wsAliceCheck.concepts.some((c) => c.normalizedKey === "热key"));
   const wsBobCheck = await getWs(bob);
   assert.ok(wsBobCheck.concepts.some((c) => c.normalizedKey === "热key"));
+});
+
+test("concept sources and AI search use every accessible linked question", async () => {
+  const owner = await register("concept-sources-owner");
+  const reader = await register("concept-sources-other");
+  const term = "ScopedLinkRank";
+  const definition = "账号私有的排序定义。";
+  async function createAndLink(title: string, deckId: string | null) {
+    const created = await questionsRoute.POST(req(owner, "/api/questions", {
+      action: "create", deckId, title, answer: `解释 ${term}。`,
+    }));
+    assert.equal(created.status, 200);
+    const { id } = await created.json();
+    const linked = await questionsRoute.POST(req(owner, "/api/questions", {
+      action: "addAnnotation", id, quote: term,
+      comment: definition, saveAsConcept: true, aliases: ["范围排序"],
+    }));
+    assert.equal(linked.status, 200);
+    const { concept } = await linked.json();
+    return { id, concept: concept as ConceptView };
+  }
+  const first = await createAndLink("首次整理", owner.deckId);
+  const second = await createAndLink("第二处应用", null);
+  assert.equal(first.concept.id, second.concept.id);
+
+  const searchArgs = JSON.stringify({ query: "范围排序" });
+  const inFolder = await executeWorkspaceTool(owner.id, "deck", owner.deckId, "search_concepts", searchArgs);
+  assert.deepEqual(inFolder.refs.map((ref) => ref.id), [first.id]);
+  assert.match(JSON.stringify(inFolder.output), new RegExp(definition));
+
+  const deleted = await questionsRoute.POST(req(owner, "/api/questions", { action: "delete", id: first.id }));
+  assert.equal(deleted.status, 200);
+  const workspace = await getWs(owner);
+  const sources = buildConceptSources(workspace.concepts ?? [], workspace.questions,
+    workspace.questions.map((question) => ({ questionId: question.id, annotations: question.annotations })));
+  assert.deepEqual([...sources.get(first.concept.id)!.keys()], [second.id]);
+
+  const global = await executeWorkspaceTool(owner.id, "workspace", null, "search_concepts", searchArgs);
+  assert.deepEqual(global.refs.map((ref) => ref.id), [second.id]);
+  assert.match(JSON.stringify(global.output), new RegExp(definition));
+  const outside = await executeWorkspaceTool(owner.id, "deck", owner.deckId, "search_concepts", searchArgs);
+  assert.deepEqual(outside.output, { matches: [] });
+  const anotherAccount = await executeWorkspaceTool(reader.id, "workspace", null, "search_concepts", searchArgs);
+  assert.deepEqual(anotherAccount.output, { matches: [] });
+
+  const fallback = await buildFallbackScopeSummary(owner.id, "workspace", null, undefined, `请解释 ${term} 的用途`);
+  assert.match(fallback.summary, new RegExp(definition));
+  assert.deepEqual(fallback.refs.map((ref) => ref.id), [second.id]);
 });
 
 test("export & backup restore preserves concepts, remaps IDs/sourceQuestionId/annotations.conceptId idempotently, and supports legacy backups", async () => {

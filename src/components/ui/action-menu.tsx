@@ -216,9 +216,13 @@ function ActionMenuPanel({
 
 export function ActionMenu({
   label = "更多操作",
+  triggerContent,
+  triggerClassName = "icon-button",
   children,
 }: {
   label?: string;
+  triggerContent?: ReactNode;
+  triggerClassName?: string;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -272,7 +276,7 @@ export function ActionMenu({
     <details ref={ref} open={open || closing} className="reader-more action-menu">
       <summary
         ref={trigger}
-        className="icon-button"
+        className={triggerClassName}
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -303,7 +307,7 @@ export function ActionMenu({
           }
         }}
       >
-        <MoreHorizontal size={19} />
+        {triggerContent ?? <MoreHorizontal size={19} />}
       </summary>
       {(open || closing) && (
         <ActionMenuPanel

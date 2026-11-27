@@ -3,7 +3,21 @@ import { useEffect, useId, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Check, Loader2, PencilLine, PenLine } from "lucide-react";
 import { toast } from "sonner";
+import {
+  NOTE_DRAFT_CHANGE_EVENT,
+  clearNoteDraft,
+  isNoteDraftKey,
+  noteDraftKey,
+  pendingNoteDrafts,
+  readNoteDrafts,
+  saveNoteDraft,
+  selectNoteDraft,
+  selectedNoteDraft,
+  type NoteDraft,
+  type NoteUpdated,
+} from "@/lib/drafts";
 import type { QuestionView } from "@/lib/types";
+import { createUuid } from "@/lib/utils";
 import type { Mutate } from "./dialogs";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
@@ -23,11 +37,11 @@ export function QuestionNotePanel({
   question: QuestionView;
   userId: string;
   mutate: Mutate;
-  onSwitchToNotes: () => void;
+  onSwitchToNotes?: () => void;
   onEditingChange?: (editing: boolean) => void;
 }) {
   const noteInputId = useId();
-  const draftKey = `shiyi:note:${userId}:${question.id}`;
+  const draftKey = noteDraftKey(userId, question.id);
   const [note, setNote] = useState(question.note);
   const [noteBase, setNoteBase] = useState(question.noteVersion);
   const [noteDirty, setNoteDirty] = useState(false);
@@ -35,6 +49,9 @@ export function QuestionNotePanel({
   const [editing, setEditing] = useState(false);
   const [noteView, setNoteView] = useState<"rich" | "source">("rich");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [drafts, setDrafts] = useState<NoteDraft[]>([]);
+  const activeDraft = useRef<NoteDraft | null>(null);
+  const writerKey = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -49,87 +66,72 @@ export function QuestionNotePanel({
 
   useEffect(() => {
     function onNoteUpdated(event: Event) {
-      const detail = (
-        event as CustomEvent<{
-          questionId: string;
-          note: string;
-          version: number;
-          switchToNotes?: boolean;
-        }>
-      ).detail;
+      const detail = (event as CustomEvent<NoteUpdated>).detail;
       if (!detail || detail.questionId !== question.id) return;
-      try {
-        localStorage.removeItem(draftKey);
-      } catch {
-        /* Ignore storage restrictions. */
+      const consumed = detail.consumedDraft;
+      const currentDraft = activeDraft.current;
+      if (
+        noteDirty &&
+        note !== detail.note &&
+        (!consumed ||
+          !currentDraft ||
+          consumed.key !== currentDraft.key ||
+          consumed.stored !== currentDraft.stored ||
+          consumed.content !== note)
+      ) {
+        return;
       }
+      activeDraft.current = null;
+      writerKey.current = null;
       setNote(detail.note);
       setNoteBase(detail.version);
       setNoteDirty(false);
       setEditing(false);
       setNoteView("rich");
       setConfirmDiscard(false);
-      if (detail.switchToNotes) onSwitchToNotes();
+      if (detail.switchToNotes) onSwitchToNotes?.();
     }
     window.addEventListener("shiyi:note-updated", onNoteUpdated);
     return () => window.removeEventListener("shiyi:note-updated", onNoteUpdated);
-  }, [question.id, draftKey, onSwitchToNotes]);
+  }, [question.id, note, noteDirty, onSwitchToNotes]);
 
   useEffect(() => {
-    let draft: string | null = null;
-    try {
-      draft = localStorage.getItem(draftKey);
-    } catch {
-      draft = null;
-    }
-    if (draft === null) {
-      setNote(question.note);
-      setNoteBase(question.noteVersion);
-      setNoteDirty(false);
-      setEditing(false);
-      setNoteView("rich");
-      return;
-    }
-    try {
-      const saved = JSON.parse(draft);
-      if (typeof saved.content !== "string" || !Number.isInteger(saved.version))
-        throw new Error();
-      if (saved.content === question.note) {
-        try {
-          localStorage.removeItem(draftKey);
-        } catch {
-          /* Ignore storage restrictions. */
-        }
-        setNote(question.note);
-        setNoteBase(question.noteVersion);
-        setNoteDirty(false);
-        setEditing(false);
-        return;
+    function onStorage(event: StorageEvent) {
+      if (!event.key || isNoteDraftKey(draftKey, event.key)) {
+        setDrafts(readNoteDrafts(draftKey));
       }
-      setNote(saved.content);
-      setNoteBase(saved.version);
-      setNoteDirty(true);
-      setEditing(true);
-    } catch {
-      setNote(draft);
-      setNoteBase(0);
-      setNoteDirty(draft !== question.note);
-      setEditing(draft !== question.note);
     }
+    function onDraftChanged(event: Event) {
+      if (isNoteDraftKey(draftKey, (event as CustomEvent<string>).detail)) {
+        setDrafts(readNoteDrafts(draftKey));
+      }
+    }
+    const available = readNoteDrafts(draftKey);
+    setDrafts(available);
+    const unsaved = available.filter((draft) => draft.content !== question.note);
+    const selected = selectedNoteDraft(draftKey, unsaved);
+    const draft = selected === undefined ? unsaved[0] : selected;
+    activeDraft.current = draft ?? null;
+    writerKey.current = null;
+    setNote(draft?.content ?? question.note);
+    setNoteBase(draft?.version ?? question.noteVersion);
+    setNoteDirty(Boolean(draft));
+    setEditing(Boolean(draft));
+    setNoteView("rich");
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(NOTE_DRAFT_CHANGE_EVENT, onDraftChanged);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(NOTE_DRAFT_CHANGE_EVENT, onDraftChanged);
+    };
   }, [draftKey]);
 
   useEffect(() => {
-    let hasDraft = false;
-    try {
-      hasDraft = localStorage.getItem(draftKey) !== null;
-    } catch {
-      hasDraft = false;
-    }
-    if (!noteDirty && !hasDraft) {
+    if (!noteDirty && !activeDraft.current) {
       setNote(question.note);
       setNoteBase(question.noteVersion);
     }
-  }, [question.note, question.noteVersion, noteDirty, draftKey]);
+  }, [question.note, question.noteVersion, noteDirty]);
 
   function enterEdit() {
     setNoteView("rich");
@@ -137,12 +139,29 @@ export function QuestionNotePanel({
     setEditing(true);
   }
 
-  function discardAndClose() {
-    try {
-      localStorage.removeItem(draftKey);
-    } catch {
-      /* Ignore storage restrictions. */
+  function openDraft(draft: NoteDraft) {
+    if (noteDirty && activeDraft.current?.content !== note) {
+      toast.warning("当前修改还未保存到本地，请先保存笔记。");
+      return;
     }
+    activeDraft.current = draft;
+    writerKey.current = null;
+    selectNoteDraft(draftKey, draft.key);
+    setNote(draft.content);
+    setNoteBase(draft.version);
+    setNoteDirty(true);
+    setConfirmDiscard(false);
+    setEditing(true);
+  }
+
+  function clearActiveDraft() {
+    clearNoteDraft(draftKey, activeDraft.current);
+    activeDraft.current = null;
+    writerKey.current = null;
+  }
+
+  function discardAndClose() {
+    clearActiveDraft();
     setNote(question.note);
     setNoteBase(question.noteVersion);
     setNoteDirty(false);
@@ -156,28 +175,23 @@ export function QuestionNotePanel({
     setConfirmDiscard(false);
     if (nextVal === question.note) {
       setNoteDirty(false);
-      try {
-        localStorage.removeItem(draftKey);
-      } catch {
-        /* Ignore storage restrictions. */
-      }
+      clearActiveDraft();
     } else {
       setNoteDirty(true);
-      try {
-        localStorage.setItem(
-          draftKey,
-          JSON.stringify({
-            content: nextVal,
-            version: noteBase,
-          }),
-        );
-      } catch {
-        /* Ignore storage restrictions. */
+      // Every editor writes its own record, including when continuing a saved draft.
+      writerKey.current ??= `${draftKey}:draft:${createUuid()}`;
+      const saved = saveNoteDraft(
+        draftKey, writerKey.current, nextVal, noteBase, activeDraft.current,
+      );
+      if (saved) activeDraft.current = saved;
+      else {
+        toast.warning("本地草稿无法保存，当前内容仍可提交到云端。", { id: draftKey });
       }
     }
   }
 
   async function saveNote(value = note, version = noteBase) {
+    const draft = activeDraft.current;
     setNoteBusy(true);
     try {
       const result = await mutate("/api/questions", {
@@ -187,11 +201,11 @@ export function QuestionNotePanel({
         expectedVersion: version,
       });
       if (result) {
-        try {
-          localStorage.removeItem(draftKey);
-        } catch {
-          /* Ignore storage restrictions. */
+        if (draft?.content === value) {
+          clearNoteDraft(draftKey, draft);
         }
+        activeDraft.current = null;
+        writerKey.current = null;
         setNoteBase(Number(result.version));
         setNoteDirty(false);
         setConfirmDiscard(false);
@@ -204,6 +218,26 @@ export function QuestionNotePanel({
     }
   }
 
+  const draftOptions = pendingNoteDrafts(drafts).filter((draft) =>
+    draft.key !== activeDraft.current?.key &&
+    draft.content !== note &&
+    draft.content !== question.note,
+  );
+  const otherDrafts = draftOptions.length > 0 ? (
+    <div className="note-conflict">
+      <details>
+        <summary>其他本地草稿（{draftOptions.length}）</summary>
+        {draftOptions.map((draft) => (
+          <div key={draft.key}>
+            <p>{draft.content.slice(0, 100) || "空笔记"}</p>
+            <Button variant="outline" size="sm" disabled={noteBusy} onClick={() => openDraft(draft)}>
+              加载此草稿
+            </Button>
+          </div>
+        ))}
+      </details>
+    </div>
+  ) : null;
   if (!editing) {
     return (
       <section className="personal-notes">
@@ -221,6 +255,7 @@ export function QuestionNotePanel({
             </button>
           )}
         </div>
+        {otherDrafts}
         {note.trim() ? (
           <div
             className="note-markdown-view"
@@ -257,7 +292,13 @@ export function QuestionNotePanel({
   const isModified = note !== question.note;
 
   return (
-    <section className="personal-notes personal-notes-editing">
+    <section
+      className="personal-notes personal-notes-editing"
+      onFocusCapture={() => {
+        const draft = activeDraft.current;
+        if (draft) selectNoteDraft(draftKey, draft.key);
+      }}
+    >
       <div className="personal-notes-head">
         <div className="personal-notes-head-left">
           <h2>我的笔记</h2>
@@ -313,6 +354,7 @@ export function QuestionNotePanel({
         </div>
       </div>
 
+      {otherDrafts}
       {noteDirty && noteBase !== question.noteVersion && (
         <div className="note-conflict">
           <strong>云端笔记已有更新</strong>

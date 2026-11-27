@@ -125,7 +125,9 @@ export function ChatEditCard({
         ) : (
           <small className="muted" role="status">
             {state === "stale"
-              ? "原题已改动，请重新让 AI 生成"
+              ? edit.target === "note"
+                ? "笔记已改动，请重新让 AI 生成"
+                : "原题已改动，请重新让 AI 生成"
               : "仅自有文件夹支持直接应用"}
           </small>
         )}

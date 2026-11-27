@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import {
+  authorSubscriptions,
   conceptFolders,
   concepts,
   conversations,
@@ -39,6 +40,7 @@ import type {
   QuestionAnnotationColor,
 } from "@/lib/types";
 import type { ContentValidation } from "@/lib/content-validation";
+import { findFollowableAuthorIds } from "./authors";
 import { contentHash } from "./crypto";
 import { AppError } from "./errors";
 import {
@@ -48,6 +50,7 @@ import {
   lockUserTree,
   sanitizeLegacyFolderTitle,
 } from "./folders";
+import { authorIdSchema } from "./resource-ids";
 
 const uuidOrString = z.string().min(1).max(120);
 
@@ -401,6 +404,15 @@ export const backupRestoreSchema = z
       .max(500)
       .optional()
       .default([]),
+    followedAuthors: z
+      .array(
+        z.object({
+          authorId: authorIdSchema,
+          autoSubscribeNew: z.boolean().default(false),
+          createdAt: z.string().optional(),
+        }),
+      )
+      .default([]),
     conceptFolders: z
       .array(conceptFolderBackupSchema)
       .max(500)
@@ -432,6 +444,15 @@ export type BackupPayload = z.infer<typeof backupRestoreSchema>;
 
 const VALID_COLORS = new Set(["sage", "blue", "sand", "rose"]);
 const VALID_VISIBILITIES = new Set(["private", "public", "unlisted"]);
+
+function hasEmbeddedStudyState(question: z.infer<typeof questionBackupSchema>) {
+  return Boolean(
+    question.fsrs ||
+    question.note?.trim() ||
+    question.annotations?.length ||
+    question.favorite,
+  );
+}
 
 function safeDate(value: string | undefined, fallback = new Date()): Date {
   if (!value) return fallback;
@@ -686,6 +707,11 @@ export async function restorePersonalBackup(
       }
     }
 
+    const subscriptionRecoveryFolderKey = deterministicRemapId(
+      userId,
+      "backup-folder",
+      "old-subscribed-questions",
+    );
     const allDeckIds = [
       ...new Set([
         ...withRemapped(
@@ -698,6 +724,7 @@ export async function restorePersonalBackup(
         ),
         ...syntheticGroupNameIds,
         ...syntheticCategoryIds,
+        subscriptionRecoveryFolderKey,
       ]),
     ];
     const allImportIds = withRemapped(
@@ -1449,6 +1476,42 @@ export async function restorePersonalBackup(
     let skippedQuestions = 0;
     const seenQuestions = new Set<string>();
     const pendingQuestions: (typeof questions.$inferInsert)[] = [];
+    const personalQuestionIds = new Set([
+      ...data.personalStudyState.map((card) => card.questionId),
+      ...data.reviews.map((review) => review.questionId),
+    ]);
+    let subscriptionRecoveryFolderId: string | undefined;
+    const subscriptionBackupQuestionIds = new Set<string>();
+    let restoredSubscriptionBackupQuestions = 0;
+
+    async function ensureSubscriptionRecoveryFolder() {
+      const folder = tree.byId.get(subscriptionRecoveryFolderKey);
+      if (
+        folder?.visibility === "private" &&
+        !folder.parentId &&
+        folder.publishedVersion === 0
+      ) {
+        return folder.id;
+      }
+      const title = resolveUniqueSiblingTitle(
+        "备份中的旧版订阅题",
+        siblingLowerNames(null),
+      );
+      const [inserted] = await tx
+        .insert(decks)
+        .values({
+          id: existingDeckById.has(subscriptionRecoveryFolderKey) || folder
+            ? crypto.randomUUID()
+            : subscriptionRecoveryFolderKey,
+          ownerId: userId,
+          title,
+          visibility: "private",
+        })
+        .returning();
+      registerTreeFolder(inserted);
+      restoredDecks += 1;
+      return inserted.id;
+    }
 
     for (const q of allQuestionCandidates) {
       if (seenQuestions.has(q.id)) continue;
@@ -1459,6 +1522,7 @@ export async function restorePersonalBackup(
         q.deckId !== null &&
         accessibleSubDeckIds.has(q.deckId);
       const existing = existingQuestionById.get(q.id);
+      let recoverSubscriptionQuestion = false;
 
       if (isSubAccessible) {
         const allowedInRelease = subAllowedQuestionIdsByDeck
@@ -1467,12 +1531,23 @@ export async function restorePersonalBackup(
         if (allowedInRelease && existing && !existing.purgedAt) {
           questionMap.set(q.id, q.id);
           validQuestionIds.add(q.id);
+          skippedQuestions += 1;
+          continue;
         }
-        skippedQuestions += 1;
-        continue;
+        // Keep personal history from the file even if its old release can't be reattached.
+        recoverSubscriptionQuestion =
+          personalQuestionIds.has(q.id) || hasEmbeddedStudyState(q);
+        if (!recoverSubscriptionQuestion) {
+          skippedQuestions += 1;
+          continue;
+        }
       }
 
-      if (existing && existing.ownerId === userId && !existing.purgedAt) {
+      if (
+        !recoverSubscriptionQuestion &&
+        existing?.ownerId === userId &&
+        !existing.purgedAt
+      ) {
         questionMap.set(q.id, q.id);
         validQuestionIds.add(q.id);
         skippedQuestions += 1;
@@ -1480,7 +1555,7 @@ export async function restorePersonalBackup(
       }
 
       let resolvedCollisionId: string | null = null;
-      if (existing) {
+      if (existing || recoverSubscriptionQuestion) {
         const remappedId = deterministicRemapId(userId, "question", q.id);
         const existingRemapped = existingQuestionById.get(remappedId);
         if (
@@ -1500,7 +1575,10 @@ export async function restorePersonalBackup(
 
       // Resolve target folder: for v1/v2 backups with groupId, map directly to the migrated subfolder!
       let targetDeckId: string | null = null;
-      if (q.groupId && groupMap.has(q.groupId)) {
+      if (recoverSubscriptionQuestion) {
+        subscriptionRecoveryFolderId ??= await ensureSubscriptionRecoveryFolder();
+        targetDeckId = subscriptionRecoveryFolderId;
+      } else if (q.groupId && groupMap.has(q.groupId)) {
         const mappedGrp = groupMap.get(q.groupId)!;
         if (validOwnedDeckIds.has(mappedGrp)) targetDeckId = mappedGrp;
       }
@@ -1524,7 +1602,7 @@ export async function restorePersonalBackup(
       const hash = contentHash(q.title, answer);
       const isTrashed = Boolean(q.deletedAt);
 
-      if (!isTrashed) {
+      if (!isTrashed && !recoverSubscriptionQuestion) {
         const dupId = ownedHashLookup.get(`${targetDeckId ?? ""}\0${hash}`);
         if (dupId) {
           questionMap.set(q.id, dupId);
@@ -1537,6 +1615,9 @@ export async function restorePersonalBackup(
       const targetQuestionId = resolvedCollisionId ?? q.id;
       questionMap.set(q.id, targetQuestionId);
       validQuestionIds.add(targetQuestionId);
+      if (recoverSubscriptionQuestion) {
+        subscriptionBackupQuestionIds.add(targetQuestionId);
+      }
       pendingQuestions.push({
         id: targetQuestionId,
         ownerId: userId,
@@ -1569,6 +1650,9 @@ export async function restorePersonalBackup(
         .onConflictDoNothing()
         .returning({ id: questions.id });
       restoredQuestions += inserted.length;
+      restoredSubscriptionBackupQuestions += inserted.filter((row) =>
+        subscriptionBackupQuestionIds.has(row.id),
+      ).length;
       skippedQuestions += chunk.length - inserted.length;
     }
 
@@ -2006,12 +2090,7 @@ export async function restorePersonalBackup(
     }
     for (const q of data.questions) {
       if (studyCardInputs.has(q.id)) continue;
-      if (
-        q.fsrs ||
-        q.note?.trim() ||
-        (q.annotations && q.annotations.length > 0) ||
-        q.favorite
-      ) {
+      if (hasEmbeddedStudyState(q)) {
         studyCardInputs.set(q.id, {
           questionId: q.id,
           fsrs: q.fsrs ?? null,
@@ -2229,18 +2308,49 @@ export async function restorePersonalBackup(
         .onConflictDoNothing();
     }
 
+    const followById = new Map(
+      data.followedAuthors.map((follow) => [follow.authorId, follow]),
+    );
+    followById.delete(userId);
+    const followableIds = await queryInChunks([...followById.keys()], (ids) =>
+      findFollowableAuthorIds(tx, ids),
+    );
+    let restoredFollows = 0;
+    followableIds.sort();
+    for (let i = 0; i < followableIds.length; i += RESTORE_BATCH_SIZE) {
+      const followRows = followableIds
+        .slice(i, i + RESTORE_BATCH_SIZE)
+        .map((authorId) => {
+          const follow = followById.get(authorId)!;
+          return {
+            followerId: userId,
+            authorId,
+            autoSubscribeNew: follow.autoSubscribeNew,
+            createdAt: safeDate(follow.createdAt),
+          };
+        });
+      const inserted = await tx
+        .insert(authorSubscriptions)
+        .values(followRows)
+        .onConflictDoNothing()
+        .returning({ authorId: authorSubscriptions.authorId });
+      restoredFollows += inserted.length;
+    }
+
     return {
       ok: true,
       restored: {
         decks: restoredDecks,
         groups: restoredGroups,
         questions: restoredQuestions,
+        subscriptionBackupQuestions: restoredSubscriptionBackupQuestions,
         releases: restoredReleases,
         conceptFolders: restoredConceptFolders,
         concepts: restoredConcepts,
         studyCards: restoredStudyCards,
         reviews: restoredReviews,
         conversations: restoredConversations,
+        followedAuthors: restoredFollows,
         preferencesRestored,
       },
       skipped: {
@@ -2251,6 +2361,7 @@ export async function restorePersonalBackup(
         studyCards: skippedStudyCards,
         reviews: skippedReviews,
         conversations: skippedConversations,
+        followedAuthors: data.followedAuthors.length - restoredFollows,
       },
     };
     });

@@ -195,9 +195,14 @@ function findAnnotationSlices(
   return null;
 }
 
+export type AnnotationHighlight = Pick<
+  QuestionAnnotation,
+  "id" | "quote" | "color" | "conceptId"
+>;
+
 export function applyAnnotationHighlights(
   container: HTMLElement,
-  annotations: readonly QuestionAnnotation[],
+  annotations: readonly AnnotationHighlight[],
   activeId: string | null,
 ): { matchedIds: Set<string>; cleanup: () => void } {
   const matchedIds = new Set<string>();
@@ -211,7 +216,7 @@ export function applyAnnotationHighlights(
   const occupiedByNode = new Map<Text, Array<{ start: number; end: number }>>();
   const plannedByNode = new Map<
     Text,
-    Array<{ annotation: QuestionAnnotation; start: number; end: number }>
+    Array<{ annotation: AnnotationHighlight; start: number; end: number }>
   >();
   const wrappedIds = new Set<string>();
 

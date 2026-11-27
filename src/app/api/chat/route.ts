@@ -96,7 +96,8 @@ export const GET = route(async (request, user) => {
 });
 
 export const POST = route(async (request, user) => {
-  const data = await body(request, chatBodySchema, 40_000);
+  // Leave room for the permitted attempt, message and quote including JSON escapes.
+  const data = await body(request, chatBodySchema, 192 * 1024);
   if (data.scope === "question") {
     return await handleQuestionChat(request, user, data);
   }

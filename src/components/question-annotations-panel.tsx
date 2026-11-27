@@ -69,7 +69,6 @@ export function QuestionAnnotationsPanel({
   onClose,
   onEditingChange,
   onSwitchToNotes,
-  onConceptLinked,
   onOpenConcept,
 }: {
   question: QuestionView;
@@ -86,7 +85,6 @@ export function QuestionAnnotationsPanel({
   onClose: () => void;
   onEditingChange?: (editing: boolean) => void;
   onSwitchToNotes?: () => void;
-  onConceptLinked?: () => void;
   onOpenConcept?: (conceptId: string) => void;
 }) {
   const composerId = useId();
@@ -282,7 +280,6 @@ export function QuestionAnnotationsPanel({
         onClearPendingQuote();
         if (created?.id) onSelectAnnotation(created.id);
         if (shouldSaveConcept || result.concept) {
-          onConceptLinked?.();
           toast.success(
             matchedConcept && !updateExistingConcept
               ? "批注已添加，并关联到已有概念。"
@@ -349,7 +346,6 @@ export function QuestionAnnotationsPanel({
         items: [{ questionId: question.id, annotationId: item.id }],
       });
       if (result) {
-        onConceptLinked?.();
         toast.success("已存入概念库。");
       }
     } finally {

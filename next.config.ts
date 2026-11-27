@@ -15,13 +15,14 @@ const nextConfig: NextConfig = {
   compress: process.env.DISABLE_NEXT_COMPRESS === "true" ? false : true,
   poweredByHeader: false,
   async headers() {
+    const isDev = process.env.NODE_ENV !== "production";
     const csp = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://challenges.cloudflare.com`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
-      "connect-src 'self' https://challenges.cloudflare.com",
+      `connect-src 'self' https://challenges.cloudflare.com${isDev ? " ws: wss:" : ""}`,
       "frame-src https://challenges.cloudflare.com",
       "object-src 'none'",
       "base-uri 'self'",

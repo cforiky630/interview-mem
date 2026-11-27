@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { deckIdSchema } from "@/server/resource-ids";
 import type { ProviderToolCall } from "@/server/ai";
+import { MAX_REVIEW_ANSWER_LENGTH } from "@/lib/review-queue";
 import type { ChatMessageMeta, ChatToolStep } from "@/lib/types";
 import type { ToolQuestionRef } from "@/server/ai-tools";
 
@@ -17,11 +18,12 @@ export const chatScopeParamSchema = z.enum(["question", "deck", "workspace"]);
 export const chatBodySchema = z.object({
   scope: chatScopeParamSchema.default("question"),
   questionId: z.string().uuid().optional(),
+  questionRevision: z.number().int().positive().optional(),
   deckId: deckIdSchema.optional(),
   conversationId: z.string().uuid().optional(),
   message: z.string().trim().min(1).max(4000),
   quote: z.string().max(5000).default(""),
-  attempt: z.string().max(12_000).default(""),
+  attempt: z.string().max(MAX_REVIEW_ANSWER_LENGTH).default(""),
 });
 
 export type ChatBody = z.infer<typeof chatBodySchema>;

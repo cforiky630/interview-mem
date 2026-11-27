@@ -659,8 +659,6 @@ html[data-input="touch"] :where(
   .oral-scratchpad-toggle,
   .compare-layout-toggle,
   .reader-annotations-toggle,
-  .reader-concepts-toggle,
-  .reader-mobile-concepts-btn,
   .concept-popover-action,
   .concept-popover-more-btn,
   .annotation-concept-more-btn,
@@ -1007,16 +1005,14 @@ html[data-shell="mobile"] {
   /* 去掉顶栏/阅读器 AI 图标的桌面式底色块，改用清晰主色图标 + 微小状态点 */
   & .topbar-ai-trigger.is-active,
   & .topbar-actions > .icon-button.topbar-ai-trigger.is-active,
-  & .reader-mobile-ai-btn.is-active,
-  & .reader-mobile-concepts-btn.is-active {
+  & .reader-mobile-ai-btn.is-active {
     background: transparent;
     border-color: transparent;
     box-shadow: none;
     color: var(--accent);
   }
   & .topbar-ai-trigger.is-active::after,
-  & .reader-mobile-ai-btn.is-active::after,
-  & .reader-mobile-concepts-btn.is-active::after {
+  & .reader-mobile-ai-btn.is-active::after {
     content: "";
     position: absolute;
     bottom: 6px;
@@ -1857,22 +1853,11 @@ html[data-shell="mobile"] {
     display: none;
   }
   & .reader-mobile-theme-btn,
-  & .reader-mobile-ai-btn,
-  & .reader-mobile-concepts-btn {
+  & .reader-mobile-ai-btn {
     position: relative;
     display: inline-flex;
     width: 40px;
     height: 40px;
-  }
-  & .reader-mobile-concepts-dot {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 0 1.5px var(--surface);
   }
   & .reader-tools {
     gap: 2px;

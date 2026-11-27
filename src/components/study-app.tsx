@@ -54,9 +54,13 @@ import {
 } from "@/lib/folders";
 import type { QuestionView, DeckView } from "@/lib/types";
 import { cn, createUuid } from "@/lib/utils";
-import { buildReviewQueue } from "@/lib/review-queue";
+import { buildReviewQueue, isQuestionReviewable } from "@/lib/review-queue";
 import { extractNoteAliases, normalizedNoteTitle } from "@/lib/markdown-source";
-import { practiceDraftKey, savePracticeDraft } from "@/lib/drafts";
+import {
+  practiceDraftKey,
+  readPracticeDraft,
+  savePracticeDraft,
+} from "@/lib/drafts";
 import {
   hydrateServerTheme,
   initAppearance,
@@ -199,21 +203,21 @@ export type { Palette };
 function clearCardPracticeDrafts(
   userId: string,
   questionId: string,
-  revisions: number[],
+  revision: number,
+  answer: string,
 ) {
-  for (const rev of new Set(revisions)) {
-    savePracticeDraft(practiceDraftKey(userId, questionId, rev), "");
-    const paraPrefix = practiceDraftKey(userId, questionId, rev, "paragraph");
-    try {
-      const toRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith(paraPrefix)) toRemove.push(k);
-      }
-      for (const k of toRemove) localStorage.removeItem(k);
-    } catch {
-      /* Ignore storage access failures. */
+  const key = practiceDraftKey(userId, questionId, revision);
+  if (readPracticeDraft(key) === answer) savePracticeDraft(key, "");
+  const paraPrefix = practiceDraftKey(userId, questionId, revision, "paragraph");
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(paraPrefix)) toRemove.push(k);
     }
+    for (const k of toRemove) localStorage.removeItem(k);
+  } catch {
+    /* Ignore storage access failures. */
   }
 }
 
@@ -487,13 +491,19 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     deckId?: string | null;
     questionId?: string | null;
   }>({ view: "today" });
-  const [queue, setQueue] = useState<QuestionView[]>([]);
+  const [queue, setQueue] = useState<Pick<QuestionView, "id" | "studyVersion">[]>(
+    [],
+  );
   const queueLength = useRef(0);
   queueLength.current = queue.length;
   const [reviewSessionActive, setReviewSessionActive] = useState(false);
   const [reviewMode, setReviewMode] = useState<"fsrs" | "cram">("fsrs");
   const [cramLabel, setCramLabel] = useState("");
   const [reviewIndex, setReviewIndex] = useState(0);
+  const [activeReview, setActiveReview] = useState<{
+    index: number;
+    question: QuestionView;
+  }>();
   const [ratings, setRatings] = useState<number[]>([]);
   const [reviewResults, setReviewResults] = useState<
     { question: QuestionView; rating: number }[]
@@ -807,7 +817,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     });
   }, []);
   const askAi = useCallback(
-    (request: { quote: string; prompt: string; attempt?: string }) => {
+    (request: Omit<AiTrigger, "nonce">) => {
       setAiTrigger({ ...request, nonce: ++triggerSeq.current });
       setAiMode((current) =>
         current === "collapsed" ? preferredAiOpenMode.current : current,
@@ -1123,7 +1133,13 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       "review",
       () => {
         setReviewSessionActive(true);
-        setQueue(single ? [single] : builtQueue);
+        setQueue(
+          (single ? [single] : builtQueue).map(({ id, studyVersion }) => ({
+            id,
+            studyVersion,
+          })),
+        );
+        setActiveReview(undefined);
         setReviewIndex(0);
         setRatings([]);
       },
@@ -1138,7 +1154,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     if (view !== "review" || !reviewSessionActive) {
       reviewOrigin.current = { view, deckId, questionId };
     }
-    const cramList = items.filter((q) => !q.archived && q.answer.trim());
+    const cramList = items.filter(isQuestionReviewable);
     setReviewRevealed(false);
     setReviewMode("cram");
     setCramLabel(label);
@@ -1147,7 +1163,8 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       "review",
       () => {
         setReviewSessionActive(true);
-        setQueue(cramList);
+        setQueue(cramList.map(({ id, studyVersion }) => ({ id, studyVersion })));
+        setActiveReview(undefined);
         setReviewIndex(0);
         setRatings([]);
       },
@@ -1164,53 +1181,107 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       favorite: !question.favorite,
     });
   }
+  const queueQuestion = queue[reviewIndex];
+  const latestReview = data?.questions.find(
+    (question) => question.id === queueQuestion?.id,
+  );
+  const heldReview =
+    activeReview?.index === reviewIndex &&
+    activeReview.question.id === queueQuestion?.id
+      ? activeReview.question
+      : undefined;
+  const canStartReview =
+    latestReview &&
+    isQuestionReviewable(latestReview) &&
+    (reviewMode === "cram" ||
+      latestReview.studyVersion === queueQuestion?.studyVersion);
+  const reviewSnapshot = heldReview ?? (canStartReview ? latestReview : undefined);
+  if (view === "review" && reviewSessionActive && !heldReview && reviewSnapshot) {
+    // Capture the card when it first renders as the active attempt.
+    setActiveReview({ index: reviewIndex, question: reviewSnapshot });
+  }
+
+  function confirmReviewRevision(nextAction: "提交评分" | "使用 AI 点评") {
+    const pendingEventId = eventId.current;
+    setConfirmState({
+      open: true,
+      title: "题目已有更新",
+      description: `本次作答已保留。请切换到新版并重新对照参考答案，再${nextAction}。`,
+      confirmLabel: "切换到新版",
+      action: () => {
+        if (viewRef.current !== "review" || eventId.current !== pendingEventId) {
+          return;
+        }
+        setActiveReview(undefined);
+        setReviewRevealed(false);
+        eventId.current = createUuid();
+      },
+    });
+  }
+
+  function askAiDuringReview(request: Omit<AiTrigger, "nonce">) {
+    if (
+      request.attempt &&
+      latestReview &&
+      request.attempt.questionRevision !== latestReview.revision
+    ) {
+      confirmReviewRevision("使用 AI 点评");
+      return;
+    }
+    askAi(request);
+  }
+
   async function grade(rating: number, answer = "") {
     if (grading.current || isNavigating) return;
-    const q = queue[reviewIndex];
+    const q = reviewSnapshot;
     if (!q) return;
-    const latest = data?.questions.find((item) => item.id === q.id);
+    const latest = latestReview;
     if (reviewMode === "cram") {
       if (data) {
-        clearCardPracticeDrafts(data.user.id, q.id, [
-          q.revision,
-          latest?.revision ?? q.revision,
-        ]);
+        clearCardPracticeDrafts(data.user.id, q.id, q.revision, answer);
       }
       setRatings((previous) => [...previous, rating]);
       setReviewResults((previous) => [
         ...previous,
-        { question: latest ?? q, rating },
+        { question: q, rating },
       ]);
       setReviewIndex((n) => n + 1);
       rememberScroll();
       return;
     }
-    if (!latest || latest.studyVersion !== q.studyVersion || latest.archived) {
+    if (
+      !latest ||
+      latest.studyVersion !== q.studyVersion ||
+      !isQuestionReviewable(latest)
+    ) {
       toast.info(
-        "这道题的复习进度已在其他页面更新或被归档，已跳过。",
+        "这道题的复习进度已在其他页面更新，或题目已不可复习。本次已跳过。",
       );
       setReviewIndex((n) => n + 1);
       eventId.current = createUuid();
       return;
     }
+    if (latest.revision !== q.revision) {
+      confirmReviewRevision("提交评分");
+      return;
+    }
+    const submissionId = eventId.current;
     grading.current = true;
     setReviewBusy(true);
     try {
       const result = await mutate("/api/reviews", {
         questionId: q.id,
-        eventId: eventId.current,
+        eventId: submissionId,
         expectedVersion: q.studyVersion,
-        questionRevision: latest.revision,
+        questionRevision: q.revision,
         rating,
         answer,
       });
       if (result) {
         if (data) {
-          clearCardPracticeDrafts(data.user.id, q.id, [
-            q.revision,
-            latest.revision,
-          ]);
+          clearCardPracticeDrafts(data.user.id, q.id, q.revision, answer);
         }
+        if (eventId.current !== submissionId) return;
         setRatings((previous) => [...previous, rating]);
         setReviewResults((previous) => [
           ...previous,
@@ -1226,24 +1297,54 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
     }
   }
   const currentQuestion = data?.questions.find((q) => q.id === questionId);
-  const queueQuestion = queue[reviewIndex];
-  const currentReview = data?.questions.find((q) => q.id === queueQuestion?.id);
+  const currentReview =
+    latestReview && reviewSnapshot
+      ? latestReview.revision === reviewSnapshot.revision
+        ? latestReview
+        : {
+            ...latestReview,
+            title: reviewSnapshot.title,
+            answer: reviewSnapshot.answer,
+            tags: reviewSnapshot.tags,
+            revision: reviewSnapshot.revision,
+            majorRevision: reviewSnapshot.majorRevision,
+            validation: reviewSnapshot.validation,
+          }
+      : undefined;
   useEffect(() => {
     if (
       !data ||
       view !== "review" ||
+      !reviewSessionActive ||
       !queueQuestion ||
       currentReview ||
-      grading.current
+      reviewBusy
     )
       return;
     const nextAlive = queue.findIndex(
       (item, idx) =>
-        idx > reviewIndex && data.questions.some((q) => q.id === item.id),
+        idx > reviewIndex &&
+        data.questions.some(
+          (question) =>
+            question.id === item.id &&
+            isQuestionReviewable(question) &&
+            (reviewMode === "cram" ||
+              question.studyVersion === item.studyVersion),
+        ),
     );
     setReviewIndex(nextAlive >= 0 ? nextAlive : queue.length);
     eventId.current = createUuid();
-  }, [data, view, queue, reviewIndex, queueQuestion, currentReview]);
+  }, [
+    data,
+    view,
+    reviewSessionActive,
+    queue,
+    reviewIndex,
+    queueQuestion,
+    currentReview,
+    reviewBusy,
+    reviewMode,
+  ]);
   if (!data)
     return (
       <div className="app-loading">
@@ -2228,7 +2329,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 aiOpen={aiMode !== "collapsed"}
                 aiDocked={aiMode === "docked" && !aiHiddenInReview}
                 onToggleAi={toggleAi}
-                onAskAi={askAi}
+                onAskAi={askAiDuringReview}
                 onBeforeOpenAnnotations={() => {
                   if (aiMode === "docked") setAiMode("collapsed");
                 }}

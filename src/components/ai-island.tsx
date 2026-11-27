@@ -47,6 +47,14 @@ import {
   suggestCardTitle,
   type AiScope,
 } from "@/lib/ai-stream";
+import {
+  clearMatchingNoteDraft,
+  clearNoteDraft,
+  noteDraftKey,
+  pendingNoteDrafts,
+  readNoteDrafts,
+  type NoteUpdated,
+} from "@/lib/drafts";
 import type {
   ChatEdit,
   ChatMessage,
@@ -73,7 +81,7 @@ export type AiIslandMode = "collapsed" | "floating" | "docked";
 export type AiTrigger = {
   quote: string;
   prompt: string;
-  attempt?: string;
+  attempt?: { text: string; questionId: string; questionRevision: number };
   nonce: number;
 };
 
@@ -167,7 +175,7 @@ export function AiIsland({
   const [items, setItems] = useState<ChatMessage[]>([]);
   const [quote, setQuote] = useState("");
   const [quoteExpanded, setQuoteExpanded] = useState(false);
-  const [attempt, setAttempt] = useState("");
+  const [attempt, setAttempt] = useState<AiTrigger["attempt"]>();
   const [attemptExpanded, setAttemptExpanded] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -390,7 +398,7 @@ export function AiIsland({
       setItems([]);
       setQuote("");
       setQuoteExpanded(false);
-      setAttempt("");
+      setAttempt(undefined);
       setAttemptExpanded(false);
       setError("");
       return;
@@ -405,7 +413,7 @@ export function AiIsland({
     setItems([]);
     setQuote("");
     setQuoteExpanded(false);
-    setAttempt("");
+    setAttempt(undefined);
     setAttemptExpanded(false);
     setError("");
     const controller = new AbortController();
@@ -473,6 +481,10 @@ export function AiIsland({
   useEffect(() => {
     if (!trigger || trigger.nonce === lastTrigger.current) return;
     if (!question) return;
+    if (trigger.attempt && trigger.attempt.questionId !== question.id) {
+      lastTrigger.current = trigger.nonce;
+      return;
+    }
     if (inFlight.current) {
       lastTrigger.current = trigger.nonce;
       toast.info("当前回答还未结束，请稍候或先停止");
@@ -493,7 +505,7 @@ export function AiIsland({
     if (!data.settings.hasKey) {
       return;
     }
-    const nextAttempt = trigger.attempt ?? "";
+    const nextAttempt = trigger.attempt;
     setQuote(trigger.quote);
     setQuoteExpanded(false);
     setAttempt(nextAttempt);
@@ -523,7 +535,7 @@ export function AiIsland({
     setHistoryOpen(false);
     setQuote(thread?.quote ?? "");
     setQuoteExpanded(false);
-    setAttempt("");
+    setAttempt(undefined);
     setAttemptExpanded(false);
     setItems(thread?.messages ?? []);
     setError("");
@@ -617,8 +629,12 @@ export function AiIsland({
           quote: targetScope === "question" ? selectedQuote : "",
           ...(targetScope === "question" &&
           !conversationId &&
-          submittedAttempt.trim()
-            ? { attempt: submittedAttempt.trim() }
+          submittedAttempt?.questionId === targetQuestionId &&
+          submittedAttempt?.text.trim()
+            ? {
+                attempt: submittedAttempt.text.trim(),
+                questionRevision: submittedAttempt.questionRevision,
+              }
             : {}),
         }),
         signal: controller.signal,
@@ -802,7 +818,7 @@ export function AiIsland({
         const current = rows.find((t) => t.id === resolvedId);
         if (current) {
           setItems(current.messages);
-          setAttempt("");
+          setAttempt(undefined);
         }
       }
       if (abort.current === controller) {
@@ -899,7 +915,7 @@ export function AiIsland({
   const ownedDeck = displayQuestion
     ? data.decks.find((d) => d.id === displayQuestion.deckId && d.isOwner)
     : undefined;
-  const visibleAttempt = (active ? active.attempt : attempt).trim();
+  const visibleAttempt = (active ? active.attempt : attempt?.text ?? "").trim();
   const resolvedReaderTarget: AiReaderTarget | null =
     readerTarget?.kind === "edit"
       ? displayQuestion && displayQuestion.id === readerTarget.question.id
@@ -915,6 +931,14 @@ export function AiIsland({
       chatEditState(edit, displayQuestion, ownedDeck) !== "ready"
     )
       return;
+    const draftKey = noteDraftKey(data.user.id, displayQuestion.id);
+    const drafts = edit.target === "note" ? readNoteDrafts(draftKey) : [];
+    if (pendingNoteDrafts(drafts).some((draft) => draft.content !== displayQuestion.note)) {
+      toast.warning(
+        "这道题有未保存的笔记，请先保存或放弃草稿，再应用 AI 建议。",
+      );
+      return;
+    }
     editInFlight.current = true;
     setApplying(key);
     try {
@@ -937,13 +961,11 @@ export function AiIsland({
           expectedVersion: edit.expectedVersion,
         });
         if (result) {
-          try {
-            localStorage.removeItem(`shiyi:note:${data.user.id}:${edit.id}`);
-          } catch {
-            /* Ignore storage restrictions. */
+          for (const draft of drafts) {
+            clearMatchingNoteDraft(draft.key, draft.stored);
           }
           window.dispatchEvent(
-            new CustomEvent("shiyi:note-updated", {
+            new CustomEvent<NoteUpdated>("shiyi:note-updated", {
               detail: {
                 questionId: edit.id,
                 note: edit.fields.note,
@@ -977,12 +999,17 @@ export function AiIsland({
     editInFlight.current = true;
     setNoteSaveBusy(true);
     try {
-      const { nextNote, expectedVersion } = appendToStoredNote(
+      const appended = appendToStoredNote(
         data.user.id,
         displayQuestion,
         content,
         heading,
       );
+      if (!appended) {
+        toast.warning("这道题有多份本地草稿，请先在笔记中选择一份再追加。");
+        return false;
+      }
+      const { nextNote, expectedVersion, draft } = appended;
       const result = await mutate("/api/questions", {
         action: "note",
         id: displayQuestion.id,
@@ -990,19 +1017,14 @@ export function AiIsland({
         expectedVersion,
       });
       if (result) {
-        try {
-          localStorage.removeItem(
-            `shiyi:note:${data.user.id}:${displayQuestion.id}`,
-          );
-        } catch {
-          /* Ignore storage restrictions. */
-        }
+        clearNoteDraft(noteDraftKey(data.user.id, displayQuestion.id), draft);
         window.dispatchEvent(
-          new CustomEvent("shiyi:note-updated", {
+          new CustomEvent<NoteUpdated>("shiyi:note-updated", {
             detail: {
               questionId: displayQuestion.id,
               note: nextNote,
               version: Number(result.version),
+              ...(draft ? { consumedDraft: draft } : {}),
               switchToNotes: true,
             },
           }),
@@ -1263,7 +1285,7 @@ export function AiIsland({
                     setHistoryOpen(false);
                     setQuote("");
                     setQuoteExpanded(false);
-                    setAttempt("");
+                    setAttempt(undefined);
                     setAttemptExpanded(false);
                     setItems([]);
                     setInput("");
@@ -1353,7 +1375,7 @@ export function AiIsland({
                   setHistoryOpen(false);
                   setQuote("");
                   setQuoteExpanded(false);
-                  setAttempt("");
+                  setAttempt(undefined);
                   setAttemptExpanded(false);
                   setItems([]);
                   setInput("");
@@ -1607,7 +1629,7 @@ export function AiIsland({
                       title="移除默写作答"
                       className="icon-button"
                       onClick={() => {
-                        setAttempt("");
+                        setAttempt(undefined);
                         setAttemptExpanded(false);
                       }}
                     >

@@ -373,7 +373,18 @@ test("multi-scope workspace & deck AI tools, user isolation, and 400 tool fallba
       const reqBody = JSON.parse(String(init?.body ?? "{}"));
       toolRound += 1;
       if (toolRound === 1) {
-        assert.ok(Array.isArray(reqBody.tools) && reqBody.tools.length === 4);
+        assert.deepEqual(
+          reqBody.tools
+            .map((tool: { function: { name: string } }) => tool.function.name)
+            .sort(),
+          [
+            "find_duplicate_questions",
+            "get_question_detail",
+            "list_workspace_overview",
+            "search_concepts",
+            "search_questions",
+          ],
+        );
         return Response.json({
           choices: [
             {

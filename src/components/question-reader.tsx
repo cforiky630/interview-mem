@@ -45,19 +45,21 @@ import {
 import { toast } from "sonner";
 import type { DuplicateHit, QuestionView, Workspace } from "@/lib/types";
 import { api } from "@/lib/client";
+import type { NoteUpdated } from "@/lib/drafts";
+import { MAX_REVIEW_ANSWER_LENGTH } from "@/lib/review-queue";
 import {
   applyAnnotationHighlights,
   readAnnotationSidebarPref,
   readReviewCompareLayoutPref,
   writeAnnotationSidebarPref,
   writeReviewCompareLayoutPref,
+  type AnnotationHighlight,
 } from "@/lib/annotations";
 import {
   MAX_CONCEPT_TERM_LENGTH,
   applyConceptLinks,
-  findConceptMatchesInText,
-  readConceptLinksPref,
-  writeConceptLinksPref,
+  buildConceptMatcherPattern,
+  type ConceptLinkInput,
 } from "@/lib/concepts";
 import { getDeviceProfile, useDeviceProfile } from "@/lib/device-profile";
 import { toggleAppearanceTheme, useAppearance } from "@/lib/theme";
@@ -79,6 +81,7 @@ import { ContentValidationPanel } from "./content-validation";
 import { QuestionAnnotationsPanel } from "./question-annotations-panel";
 import { ConceptPopover, type ConceptAnchorRect } from "./concept-popover";
 import { QuestionNotePanel } from "./question-note-panel";
+import type { AiTrigger } from "./ai-island";
 import {
   InlineAnswerEditor,
   type InlineQuestionDraft,
@@ -223,11 +226,7 @@ export function QuestionReader({
   aiOpen?: boolean;
   aiDocked?: boolean;
   onToggleAi?: (open?: boolean) => void;
-  onAskAi?: (request: {
-    quote: string;
-    prompt: string;
-    attempt?: string;
-  }) => void;
+  onAskAi?: (request: Omit<AiTrigger, "nonce">) => void;
   onBeforeOpenAnnotations?: () => void;
   onRevealedChange?: (revealed: boolean) => void;
   readingList?: QuestionView[];
@@ -258,12 +257,6 @@ export function QuestionReader({
     () => new Set(),
   );
   const [annotationEditing, setAnnotationEditing] = useState(false);
-  const [conceptLinksOn, setConceptLinksOn] = useState<boolean>(() =>
-    readConceptLinksPref(data.user.id),
-  );
-  const [domMatchedConceptCount, setDomMatchedConceptCount] = useState<
-    number | null
-  >(null);
   const [activeConceptAnchor, setActiveConceptAnchor] = useState<{
     conceptId: string;
     el: HTMLElement | null;
@@ -271,6 +264,11 @@ export function QuestionReader({
   } | null>(null);
   const [conceptPopoverEditing, setConceptPopoverEditing] = useState(false);
   const answerProseRef = useRef<HTMLDivElement>(null);
+  const refreshAnswerBlock = useRef<((block: HTMLElement) => void) | null>(null);
+  const onReferenceChange = useCallback(
+    (block: HTMLElement) => refreshAnswerBlock.current?.(block),
+    [],
+  );
   const restoreAnnotationsAfterAiRef = useRef(false);
   const prevAiDockedRef = useRef(Boolean(aiDocked));
   const pulseTimerRef = useRef<number | null>(null);
@@ -500,11 +498,19 @@ export function QuestionReader({
       return;
     }
     if (answerStateRef.current.trim()) {
-      savePracticeDraft(answerKey, answerStateRef.current);
+      if (!readPracticeDraft(answerKey)) {
+        savePracticeDraft(answerKey, answerStateRef.current);
+      }
     } else {
       setAnswer(readPracticeDraft(answerKey));
     }
   }, [answerKey, question.id]);
+  useEffect(() => {
+    if (!review) return;
+    setRevealed(false);
+    setOralRunning(false);
+    setTab("answer");
+  }, [question.revision, review]);
   useEffect(() => {
     // 普通阅读与突击模式不抢发曲线请求；仅正常 FSRS 答题或打开“记忆”时读取。
     if ((!review || cram) && tab !== "memory") return;
@@ -754,7 +760,19 @@ export function QuestionReader({
     return () => window.removeEventListener("keydown", keys);
   }, [review, revealed, busy, aiOpen, onGrade, answer, inputMode]);
   function ask(prompt: string, quote = selection?.text ?? "", attemptText?: string) {
-    onAskAi?.({ quote, prompt, attempt: attemptText });
+    onAskAi?.({
+      quote,
+      prompt,
+      ...(attemptText
+        ? {
+            attempt: {
+              text: attemptText,
+              questionId: question.id,
+              questionRevision: question.revision,
+            },
+          }
+        : {}),
+    });
     setSelection(null);
     window.getSelection()?.removeAllRanges();
   }
@@ -1042,11 +1060,63 @@ export function QuestionReader({
     };
   }, [canInlineEdit, editingTitle, editingAnswer, question.title]);
   const switchToNotesTab = useCallback(() => setTab("notes"), []);
+  useEffect(() => {
+    function onNoteUpdated(event: Event) {
+      const detail = (event as CustomEvent<NoteUpdated>).detail;
+      if (detail?.switchToNotes && detail.questionId === question.id) {
+        switchToNotesTab();
+      }
+    }
+    window.addEventListener("shiyi:note-updated", onNoteUpdated);
+    return () => window.removeEventListener("shiyi:note-updated", onNoteUpdated);
+  }, [question.id, switchToNotesTab]);
   const annotations = useMemo(
     () => question.annotations ?? [],
     [question.annotations],
   );
   const concepts = useMemo(() => data.concepts ?? [], [data.concepts]);
+  // Full workspace responses clone these arrays. Key markup on the fields it renders.
+  const conceptInputsKey = useMemo(
+    () =>
+      JSON.stringify(
+        concepts.map(({ id, term, aliases, color }) => ({
+          id,
+          term,
+          aliases,
+          color,
+        })),
+      ),
+    [concepts],
+  );
+  const conceptInputs = useMemo(
+    () => JSON.parse(conceptInputsKey) as ConceptLinkInput[],
+    [conceptInputsKey],
+  );
+  const conceptMatcher = useMemo(
+    () => (revealed ? buildConceptMatcherPattern(conceptInputs) : null),
+    [conceptInputs, revealed],
+  );
+  const annotationHighlightsKey = useMemo(
+    () =>
+      annotationsOpen && !review && annotations.length
+        ? JSON.stringify(
+            annotations.map(({ id, quote, color, conceptId }) => ({
+              id,
+              quote,
+              color,
+              conceptId,
+            })),
+          )
+        : null,
+    [annotations, annotationsOpen, review],
+  );
+  const visibleAnnotationHighlights = useMemo(
+    () =>
+      annotationHighlightsKey === null
+        ? null
+        : (JSON.parse(annotationHighlightsKey) as AnnotationHighlight[]),
+    [annotationHighlightsKey],
+  );
   const conceptFolders = useMemo(
     () => data.conceptFolders ?? [],
     [data.conceptFolders],
@@ -1063,26 +1133,6 @@ export function QuestionReader({
   activeAnnotationIdRef.current = activeAnnotationId;
   const activeConceptIdRef = useRef(activeConceptId);
   activeConceptIdRef.current = activeConceptId;
-
-  useEffect(() => {
-    setConceptLinksOn(readConceptLinksPref(data.user.id));
-  }, [data.user.id]);
-
-  const setConceptLinksVisible = useCallback(
-    (nextOn: boolean) => {
-      setConceptLinksOn(nextOn);
-      writeConceptLinksPref(data.user.id, nextOn);
-      if (!nextOn) setActiveConceptAnchor(null);
-    },
-    [data.user.id],
-  );
-
-  const ensureConceptLinksOn = useCallback(() => {
-    setConceptLinksOn((prev) => {
-      if (!prev) writeConceptLinksPref(data.user.id, true);
-      return true;
-    });
-  }, [data.user.id]);
 
   const openConceptFromElement = useCallback(
     (el: HTMLElement, conceptId: string) => {
@@ -1112,23 +1162,6 @@ export function QuestionReader({
     },
     [conceptById],
   );
-
-  const estimatedConceptCount = useMemo(() => {
-    if (!revealed || !concepts.length || !documentView.blocks.length) return 0;
-    const proseText = documentView.blocks
-      .map((block) => block.markdown)
-      .join("\n")
-      .replace(/```[\s\S]*?```/g, " ")
-      .replace(/`[^`]*`/g, " ");
-    const matches = findConceptMatchesInText(proseText, concepts);
-    if (!matches.length) return 0;
-    return new Set(matches.map((m) => m.concept.id)).size;
-  }, [revealed, concepts, documentView.blocks]);
-
-  const displayedConceptCount =
-    conceptLinksOn && domMatchedConceptCount !== null
-      ? domMatchedConceptCount
-      : estimatedConceptCount;
 
   const annotationBadgeCount = annotations.length;
   const setAnnotationsVisible = useCallback(
@@ -1256,13 +1289,9 @@ export function QuestionReader({
         )
       )
         return;
-      const lowerKey = event.key.toLowerCase();
-      if (lowerKey === "n" && !review) {
+      if (event.key.toLowerCase() === "n" && !review) {
         event.preventDefault();
         setAnnotationsVisible(!annotationsOpen);
-      } else if (lowerKey === "g" && (!review || revealed)) {
-        event.preventDefault();
-        setConceptLinksVisible(!conceptLinksOn);
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -1272,11 +1301,9 @@ export function QuestionReader({
     revealed,
     outlineOpen,
     annotationsOpen,
-    conceptLinksOn,
     activeConceptId,
     device.isMobileShell,
     setAnnotationsVisible,
-    setConceptLinksVisible,
   ]);
   const mobileConceptSheetOpen = Boolean(activeConcept && device.isMobileShell);
   useEffect(() => {
@@ -1290,87 +1317,83 @@ export function QuestionReader({
   }, [mobileAnnotationsOpen, mobileOutlineOpen, mobileConceptSheetOpen]);
   useEffect(() => {
     const container = answerProseRef.current;
-    const canDecorate = Boolean(
-      container && revealed && !editingAnswer && tab === "answer",
-    );
-    const annotationsActive = Boolean(
-      canDecorate && annotationsOpen && !review && annotations.length > 0,
-    );
-    const conceptLinksActive = Boolean(
-      canDecorate && conceptLinksOn && concepts.length > 0,
-    );
-
-    if (!container || (!annotationsActive && !conceptLinksActive)) {
+    if (
+      !container ||
+      !revealed ||
+      editingAnswer ||
+      tab !== "answer" ||
+      (!visibleAnnotationHighlights && !conceptMatcher)
+    ) {
       setUnmatchedIds((prev) => (prev.size ? new Set() : prev));
-      setDomMatchedConceptCount(conceptLinksOn && canDecorate ? 0 : null);
       return;
     }
 
-    let cleanupAnnotations: (() => void) | null = null;
-    let cleanupConcepts: (() => void) | null = null;
-    let matchedAnnotationIds: Set<string> | null = null;
+    const markConcepts = (element: HTMLElement) =>
+      conceptMatcher
+        ? applyConceptLinks(
+            element,
+            conceptInputs,
+            activeConceptIdRef.current,
+            conceptMatcher,
+          ).cleanup
+        : undefined;
 
-    // Explicit annotations run FIRST; concept auto-links run SECOND and skip marks.
-    if (annotationsActive) {
-      const { matchedIds, cleanup } = applyAnnotationHighlights(
-        container,
-        annotations,
-        activeAnnotationIdRef.current,
-      );
-      cleanupAnnotations = cleanup;
-      matchedAnnotationIds = matchedIds;
-      const nextUnmatched = new Set<string>();
-      for (const item of annotations) {
-        if (item.quote.trim() && !matchedIds.has(item.id)) {
-          nextUnmatched.add(item.id);
-        }
-      }
-      setUnmatchedIds(nextUnmatched);
-    } else {
-      setUnmatchedIds((prev) => (prev.size ? new Set() : prev));
-    }
-
-    if (conceptLinksActive) {
-      const { matchedConceptIds, cleanup } = applyConceptLinks(
-        container,
-        concepts,
-        activeConceptIdRef.current,
-      );
-      cleanupConcepts = cleanup;
-      const combinedConceptIds = new Set(matchedConceptIds);
-      if (matchedAnnotationIds) {
-        for (const item of annotations) {
-          if (
-            item.conceptId &&
-            matchedAnnotationIds.has(item.id) &&
-            conceptById.has(item.conceptId)
-          ) {
-            combinedConceptIds.add(item.conceptId);
+    if (visibleAnnotationHighlights) {
+      let clearHighlights: (() => void) | undefined;
+      const markAnswer = () => {
+        clearHighlights?.();
+        const { matchedIds, cleanup } = applyAnnotationHighlights(
+          container,
+          visibleAnnotationHighlights,
+          activeAnnotationIdRef.current,
+        );
+        const nextUnmatched = new Set<string>();
+        for (const annotation of visibleAnnotationHighlights) {
+          if (annotation.quote.trim() && !matchedIds.has(annotation.id)) {
+            nextUnmatched.add(annotation.id);
           }
         }
-      }
-      setDomMatchedConceptCount(combinedConceptIds.size);
-    } else {
-      setDomMatchedConceptCount(null);
+        setUnmatchedIds(nextUnmatched);
+        // Annotation quotes can span nodes. Apply them before automatic concept links.
+        const clearConcepts = markConcepts(container);
+        clearHighlights = () => {
+          clearConcepts?.();
+          cleanup();
+        };
+      };
+      markAnswer();
+      refreshAnswerBlock.current = markAnswer;
+      return () => {
+        refreshAnswerBlock.current = null;
+        clearHighlights?.();
+      };
     }
 
+    setUnmatchedIds((prev) => (prev.size ? new Set() : prev));
+    const blockCleanups = new Map<HTMLElement, () => void>();
+    const markBlock = (block: HTMLElement) => {
+      if (block.parentElement !== container) return;
+      blockCleanups.get(block)?.();
+      const cleanup = markConcepts(block);
+      if (cleanup) blockCleanups.set(block, cleanup);
+    };
+    for (const block of container.children) {
+      if (block instanceof HTMLElement) markBlock(block);
+    }
+    refreshAnswerBlock.current = markBlock;
     return () => {
-      // Unwrap in reverse (LIFO) order to restore pristine text nodes cleanly.
-      cleanupConcepts?.();
-      cleanupAnnotations?.();
+      refreshAnswerBlock.current = null;
+      for (const cleanup of blockCleanups.values()) cleanup();
     };
   }, [
     revealed,
-    annotationsOpen,
-    conceptLinksOn,
-    review,
     editingAnswer,
     tab,
-    annotations,
-    concepts,
-    conceptById,
+    visibleAnnotationHighlights,
+    conceptInputs,
+    conceptMatcher,
     hideAll,
-    question.answer,
+    documentView.blocks,
   ]);
   useEffect(() => {
     const container = answerProseRef.current;
@@ -1514,7 +1537,7 @@ export function QuestionReader({
           aria-label="本题作答"
           placeholder="先合上参考答案，按自己的理解默写出核心结论、关键机制与举例说明（Ctrl/⌘ + Enter 对照答案）…"
           value={answer}
-          maxLength={20000}
+          maxLength={MAX_REVIEW_ANSWER_LENGTH}
           rows={7}
           readOnly={revealed}
           onChange={(event) => {
@@ -1602,7 +1625,7 @@ export function QuestionReader({
                   aria-label="口述要点草稿"
                   placeholder="随手记下关键词或要点，对照参考答案时方便自查…"
                   value={answer}
-                  maxLength={20000}
+                  maxLength={MAX_REVIEW_ANSWER_LENGTH}
                   rows={3}
                   readOnly={revealed}
                   style={{ flex: "0 0 auto", minHeight: 84 }}
@@ -1826,7 +1849,7 @@ export function QuestionReader({
                     event.stopPropagation();
                     setActiveAnnotationId(annId);
                     const markConceptId = mark.dataset.conceptId;
-                    if (markConceptId && conceptLinksOn) {
+                    if (markConceptId) {
                       openConceptFromElement(mark, markConceptId);
                     }
                   }
@@ -1852,7 +1875,7 @@ export function QuestionReader({
                     event.preventDefault();
                     setActiveAnnotationId(annId);
                     const markConceptId = mark.dataset.conceptId;
-                    if (markConceptId && conceptLinksOn) {
+                    if (markConceptId) {
                       openConceptFromElement(mark, markConceptId);
                     }
                   }
@@ -1864,6 +1887,7 @@ export function QuestionReader({
                       key={block.id}
                       block={block}
                       hideAll={hideAll}
+                      onReferenceChange={onReferenceChange}
                       references={documentView.references}
                       draftKey={`${paragraphPrefix}:${block.id}`}
                     />
@@ -1924,7 +1948,6 @@ export function QuestionReader({
             question={question}
             userId={data.user.id}
             mutate={mutate}
-            onSwitchToNotes={switchToNotesTab}
             onEditingChange={setEditingNote}
           />
         )}
@@ -2086,28 +2109,6 @@ export function QuestionReader({
             </div>
           )}
           <div className="reader-tools">
-            {(!review || revealed) && (
-              <button
-                type="button"
-                className={`reader-desktop-tool reader-concepts-toggle ${conceptLinksOn ? "is-active" : ""}`}
-                title={
-                  conceptLinksOn
-                    ? `关闭概念释义 (G)${displayedConceptCount > 0 ? ` · 本文命中 ${displayedConceptCount} 个概念` : ""}`
-                    : `开启概念释义 (G)${displayedConceptCount > 0 ? ` · 本文命中 ${displayedConceptCount} 个概念` : ""}`
-                }
-                aria-label={conceptLinksOn ? "关闭概念释义" : "开启概念释义"}
-                aria-pressed={conceptLinksOn}
-                onClick={() => setConceptLinksVisible(!conceptLinksOn)}
-              >
-                <BookMarked size={16} />
-                <span>概念</span>
-                {displayedConceptCount > 0 && (
-                  <span className="reader-annotations-count">
-                    {displayedConceptCount}
-                  </span>
-                )}
-              </button>
-            )}
             {!review && (
               <button
                 type="button"
@@ -2147,23 +2148,6 @@ export function QuestionReader({
                 fill={question.favorite ? "currentColor" : "none"}
               />
             </button>
-            {(!review || revealed) && (
-              <button
-                type="button"
-                className={`icon-button reader-mobile-concepts-btn ${conceptLinksOn ? "is-active" : ""}`}
-                aria-label={conceptLinksOn ? "关闭概念释义" : "开启概念释义"}
-                aria-pressed={conceptLinksOn}
-                onClick={() => setConceptLinksVisible(!conceptLinksOn)}
-              >
-                <BookMarked size={17} />
-                {!conceptLinksOn && displayedConceptCount > 0 && (
-                  <span
-                    className="reader-mobile-concepts-dot"
-                    aria-hidden="true"
-                  />
-                )}
-              </button>
-            )}
             {review && revealed && (
               <button
                 type="button"
@@ -2630,7 +2614,6 @@ export function QuestionReader({
                 onClose={() => setAnnotationsVisible(false)}
                 onEditingChange={setAnnotationEditing}
                 onSwitchToNotes={switchToNotesTab}
-                onConceptLinked={ensureConceptLinksOn}
                 onOpenConcept={onOpenConcept}
               />
             </div>
@@ -2935,7 +2918,6 @@ export function QuestionReader({
                 setAnnotationsVisible(false);
                 switchToNotesTab();
               }}
-              onConceptLinked={ensureConceptLinksOn}
               onOpenConcept={
                 onOpenConcept
                   ? (conceptId) => {

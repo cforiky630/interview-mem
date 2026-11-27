@@ -1023,3 +1023,23 @@ test("CSS architecture keeps unified page widths and zero-specificity global inp
   );
   assert.match(globalsCss, /\.ai-launcher-search:focus-within\s*\{/);
 });
+
+test("next.config.ts CSP allows unsafe-eval only outside production", async () => {
+  const nextConfig = (await import("../next.config")).default;
+  const prevEnv = process.env.NODE_ENV;
+  try {
+    (process.env as Record<string, string | undefined>).NODE_ENV = "development";
+    const devHeaders = (await nextConfig.headers!())[0].headers;
+    const devCsp = devHeaders.find((h) => h.key === "Content-Security-Policy")?.value ?? "";
+    assert.ok(devCsp.includes("'unsafe-eval'"), devCsp);
+    assert.ok(devCsp.includes("ws: wss:"), devCsp);
+
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    const prodHeaders = (await nextConfig.headers!())[0].headers;
+    const prodCsp = prodHeaders.find((h) => h.key === "Content-Security-Policy")?.value ?? "";
+    assert.ok(!prodCsp.includes("'unsafe-eval'"), prodCsp);
+    assert.ok(!prodCsp.includes("ws:"), prodCsp);
+  } finally {
+    (process.env as Record<string, string | undefined>).NODE_ENV = prevEnv;
+  }
+});

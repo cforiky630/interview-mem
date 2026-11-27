@@ -8,19 +8,15 @@ import {
 import { seedSamples } from "@/server/seed";
 export const runtime = "nodejs";
 export const GET = route(async (request, user) => {
-  const ifNoneMatch = request.headers.get("if-none-match");
-  let precomputedEtag: string | null = null;
-  if (ifNoneMatch) {
-    precomputedEtag = await getWorkspaceEtag(user.id);
-    if (ifNoneMatch === precomputedEtag) {
-      return new NextResponse(null, {
-        status: 304,
-        headers: { ETag: precomputedEtag, "Cache-Control": "no-store" },
-      });
-    }
+  // Read the revision first so a concurrent write cannot label older data as current.
+  const etag = await getWorkspaceEtag(user.id, true);
+  if (request.headers.get("if-none-match") === etag) {
+    return new NextResponse(null, {
+      status: 304,
+      headers: { ETag: etag, "Cache-Control": "no-store" },
+    });
   }
   const workspace = await getWorkspace(user);
-  const etag = precomputedEtag ?? (await getWorkspaceEtag(user.id));
   return NextResponse.json(workspace, {
     headers: { ETag: etag, "Cache-Control": "no-store" },
   });

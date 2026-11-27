@@ -483,16 +483,21 @@ test("chat accepts optional written attempt for streaming critique and suppresse
       request(alice, "/api/chat", {
         questionId,
         message: "点评",
-        attempt: "a".repeat(12_001),
+        attempt: "a".repeat(20_001),
       }),
     );
     assert.equal(tooLong.status, 400);
 
+    const attemptStart = "PUT 和 DELETE 是幂等的，POST 不是，重试要带幂等 key。";
+    const attemptEnd = "末尾核对标记";
+    const fullAttempt =
+      attemptStart + "中".repeat(20_000 - attemptStart.length - attemptEnd.length) + attemptEnd;
     const response = await chat.POST(
       request(alice, "/api/chat", {
         questionId,
+        questionRevision: 1,
         message: "请点评我的作答。",
-        attempt: "PUT 和 DELETE 是幂等的，POST 不是，重试要带幂等 key。",
+        attempt: fullAttempt,
       }),
     );
     assert.equal(response.status, 200);
@@ -500,7 +505,44 @@ test("chat accepts optional written attempt for streaming critique and suppresse
     assert.match(streamText, /答对要点/);
     assert.match(streamText, /event: done/);
     assert.ok(capturedSystemPrompt.includes("<用户默写作答>PUT 和 DELETE 是幂等的"));
+    assert.ok(capturedSystemPrompt.includes("末尾核对标记</用户默写作答>"));
     assert.ok(!capturedSystemPrompt.includes("shiyi-edits"));
+
+    const updated = await questions.POST(
+      request(alice, "/api/questions", {
+        action: "edit",
+        id: questionId,
+        expectedRevision: 1,
+        title: "HTTP 幂等性与重试安全",
+        answer: "新版参考答案，强调并发场景。",
+        tags: ["HTTP"],
+        major: true,
+      }),
+    );
+    assert.equal(updated.status, 200);
+    const stale = await chat.POST(
+      request(alice, "/api/chat", {
+        questionId,
+        questionRevision: 1,
+        message: "点评当前作答",
+        attempt: "按旧版作答",
+      }),
+    );
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).code, "QUESTION_REVISION_CONFLICT");
+
+    const { conversationId } = JSON.parse(streamText.match(/event: meta\ndata: ([^\n]+)/)![1]);
+    const followUp = await chat.POST(
+      request(alice, "/api/chat", {
+        questionId,
+        conversationId,
+        message: "继续点评刚才的作答",
+      }),
+    );
+    assert.equal(followUp.status, 200);
+    assert.match(await followUp.text(), /event: done/);
+    assert.match(capturedSystemPrompt, /<参考答案>GET\/PUT\/DELETE/);
+    assert.doesNotMatch(capturedSystemPrompt, /新版参考答案/);
   } finally {
     fetchMock.mock.restore();
     dnsMock.mock.restore();

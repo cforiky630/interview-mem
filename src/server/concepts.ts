@@ -345,10 +345,15 @@ async function resolveFolderTargetInTx(
   };
 }
 
-/**
- * Sync linked `study_cards.annotations` entries for one or more concepts inside an active
- * transaction that ALREADY holds `lockUserTree(tx, userId)`.
- */
+export function linkedConceptAnnotationFilter(conceptIds: readonly string[]) {
+  return conceptIds.length <= 20
+    ? or(...conceptIds.map(
+        (conceptId) => sql`${studyCards.annotations} @> ${JSON.stringify([{ conceptId }])}::jsonb`,
+      ))
+    : sql`jsonb_array_length(${studyCards.annotations}) > 0`;
+}
+
+/** Sync linked annotations inside a transaction that holds the user's tree lock. */
 export async function syncLinkedAnnotationsInTx(
   tx: DbTx,
   userId: string,
@@ -365,23 +370,13 @@ export async function syncLinkedAnnotationsInTx(
   );
   if (!idSet.size) return;
 
-  const conceptFilter =
-    idSet.size <= 20
-      ? or(
-          ...[...idSet].map(
-            (cid) =>
-              sql`${studyCards.annotations} @> ${JSON.stringify([{ conceptId: cid }])}::jsonb`,
-          ),
-        )
-      : sql`jsonb_array_length(${studyCards.annotations}) > 0`;
-
   const cards = await tx
     .select({
       questionId: studyCards.questionId,
       annotations: studyCards.annotations,
     })
     .from(studyCards)
-    .where(and(eq(studyCards.userId, userId), conceptFilter))
+    .where(and(eq(studyCards.userId, userId), linkedConceptAnnotationFilter([...idSet])))
     .orderBy(asc(studyCards.questionId))
     .for("update");
 

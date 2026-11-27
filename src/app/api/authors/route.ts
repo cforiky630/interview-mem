@@ -1,19 +1,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import {
-  authorSubscriptions,
-  decks,
-  subscriptions,
-  user as users,
-} from "@/db/schema";
+import { authorSubscriptions, decks, subscriptions } from "@/db/schema";
 import { body, route } from "@/server/api";
+import { findFollowableAuthorIds } from "@/server/authors";
 import { AppError } from "@/server/errors";
-import { deckIdSchema } from "@/server/resource-ids";
+import { authorIdSchema, deckIdSchema } from "@/server/resource-ids";
 import { withWorkspaceEtag } from "@/server/workspace";
-
-const authorIdSchema = z.string().trim().min(1, "缺少创作者标识。").max(128);
 
 const schema = z.discriminatedUnion("action", [
   z.object({
@@ -114,19 +108,7 @@ export const POST = route(async (request, user) => {
     if (data.authorId === user.id) {
       throw new AppError(400, "不能关注自己。");
     }
-    const [author] = await db
-      .select({ id: users.id })
-      .from(users)
-      .innerJoin(decks, eq(decks.ownerId, users.id))
-      .where(
-        and(
-          eq(users.id, data.authorId),
-          eq(decks.visibility, "public"),
-          gt(decks.publishedVersion, 0),
-          isNull(decks.deletedAt),
-        ),
-      )
-      .limit(1);
+    const [author] = await findFollowableAuthorIds(db, [data.authorId]);
     if (!author) throw new AppError(404, "创作者不存在。");
 
     const subscribedDecks = await db.transaction(async (tx) => {
@@ -215,19 +197,7 @@ export const POST = route(async (request, user) => {
     if (data.authorId === user.id) {
       throw new AppError(400, "你已经拥有自己的全部资料。");
     }
-    const [author] = await db
-      .select({ id: users.id })
-      .from(users)
-      .innerJoin(decks, eq(decks.ownerId, users.id))
-      .where(
-        and(
-          eq(users.id, data.authorId),
-          eq(decks.visibility, "public"),
-          gt(decks.publishedVersion, 0),
-          isNull(decks.deletedAt),
-        ),
-      )
-      .limit(1);
+    const [author] = await findFollowableAuthorIds(db, [data.authorId]);
     if (!author) throw new AppError(404, "创作者不存在。");
     await assertOptionalOwnedFolder(db, user.id, data.folderId);
     const publicDecks = await selectTopMostPublicDecks(

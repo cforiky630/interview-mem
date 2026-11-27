@@ -7,6 +7,7 @@ import { body, route } from "@/server/api";
 import { accessibleQuestion, withWorkspaceEtag } from "@/server/workspace";
 import { reviewInsight, schedule } from "@/server/scheduler";
 import { AppError } from "@/server/errors";
+import { MAX_REVIEW_ANSWER_LENGTH } from "@/lib/review-queue";
 import type { StoredCard } from "@/lib/types";
 
 export const GET = route(async (request, user) => {
@@ -30,7 +31,7 @@ const schema = z.object({
   expectedVersion: z.number().int().nonnegative(),
   questionRevision: z.number().int().positive(),
   rating: z.number().int().min(1).max(4),
-  answer: z.string().max(20000).default(""),
+  answer: z.string().max(MAX_REVIEW_ANSWER_LENGTH).default(""),
 });
 export const POST = route(async (request, user) => {
   const data = await body(request, schema);

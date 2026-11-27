@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import dns from "node:dns/promises";
 import type { Conversation } from "../src/lib/types";
+import {
+  clearMatchingNoteDraft,
+  clearNoteDraft,
+  noteDraftKey,
+  pendingNoteDrafts,
+  readNoteDraft,
+  readNoteDrafts,
+  saveNoteDraft,
+  selectedNoteDraft,
+} from "../src/lib/drafts";
 
 Object.assign(process.env, { NODE_ENV: "test" });
 process.env.LOCAL_DATABASE_PATH = ":memory:";
@@ -26,6 +36,7 @@ const { formatQuotePreview, formatThreadLabel, isFullAnswerQuote } =
   await import("../src/lib/ai-quote");
 const { computeLineDiff } = await import("../src/lib/text-diff");
 const {
+  appendToStoredNote,
   clampAiDockWidth,
   formatNoteAppendSection,
   parseSseBlocks,
@@ -591,4 +602,86 @@ test("ai-stream helpers parse SSE blocks, clamp dock widths, format note section
     suggestCardTitle("文档解析", msgs, msgs[3]),
     "文档解析 · 对比 PyMuPDF 与 MinerU",
   );
+});
+
+test("AI note append includes the current draft and clears only the submitted draft", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const originalSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  const store = new Map<string, string>();
+  let currentTab = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      get length() { return store.size; },
+      key: (index: number) => [...store.keys()][index] ?? null,
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+    },
+  });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => currentTab.get(key) ?? null,
+      setItem: (key: string, value: string) => currentTab.set(key, value),
+    },
+  });
+  try {
+    const question = { id: "card", note: "已保存笔记", noteVersion: 2 };
+    const key = noteDraftKey("user", question.id);
+    store.set(key, JSON.stringify({ content: "手写草稿", version: 2 }));
+    const result = appendToStoredNote("user", question, "AI 补充内容");
+    assert.ok(result?.draft);
+    assert.equal(result.expectedVersion, 2);
+    assert.equal(result.nextNote, "手写草稿\n\n### AI 补充\nAI 补充内容");
+
+    store.set(
+      key,
+      JSON.stringify({ content: "发送后另一端写的草稿", version: 2 }),
+    );
+    clearMatchingNoteDraft(key, result.draft.stored);
+    const newer = readNoteDraft(key);
+    assert.equal(newer?.content, "发送后另一端写的草稿");
+    clearMatchingNoteDraft(key, newer?.stored);
+    assert.equal(readNoteDraft(key), null);
+
+    store.set(key, "旧版纯文本草稿");
+    const legacy = appendToStoredNote("user", question, "新增内容");
+    assert.ok(legacy);
+    assert.equal(legacy.expectedVersion, 0);
+    assert.match(legacy.nextNote, /^旧版纯文本草稿/);
+
+    store.delete(key);
+    const tabOne = currentTab;
+    const first = saveNoteDraft(key, `${key}:draft:first`, "甲窗口的草稿", 2);
+    currentTab = new Map();
+    const tabTwo = currentTab;
+    const second = saveNoteDraft(key, `${key}:draft:second`, "乙窗口的草稿", 2);
+    assert.ok(first && second);
+    assert.equal(readNoteDrafts(key).length, 2);
+    assert.equal(appendToStoredNote("user", question, "AI")?.draft?.key, second.key);
+    currentTab = new Map();
+    assert.equal(appendToStoredNote("user", question, "AI"), null);
+    currentTab = tabOne;
+    assert.equal(appendToStoredNote("user", question, "AI")?.draft?.key, first.key);
+    currentTab = tabTwo;
+    const continued = saveNoteDraft(
+      key,
+      `${key}:draft:continued`,
+      "刷新后继续写乙窗口的草稿",
+      2,
+      second,
+    );
+    assert.ok(continued);
+    assert.equal(pendingNoteDrafts(readNoteDrafts(key)).length, 2);
+    clearNoteDraft(key, continued);
+    assert.deepEqual(readNoteDrafts(key).map((draft) => draft.content), ["甲窗口的草稿"]);
+    assert.equal(selectedNoteDraft(key, readNoteDrafts(key)), null);
+    assert.equal(appendToStoredNote("user", question, "AI"), null);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+    if (originalSession) Object.defineProperty(globalThis, "sessionStorage", originalSession);
+    else Reflect.deleteProperty(globalThis, "sessionStorage");
+  }
 });

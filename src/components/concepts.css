@@ -333,6 +333,7 @@
 }
 
 .concept-row:focus-within .concept-row-actions,
+.concept-row-actions:has(> .action-menu[open]),
 .concept-row.is-actions-pinned .concept-row-actions {
   opacity: 1;
   pointer-events: auto;

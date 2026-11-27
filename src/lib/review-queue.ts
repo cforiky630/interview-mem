@@ -1,5 +1,7 @@
 import type { QuestionView } from "./types";
 
+export const MAX_REVIEW_ANSWER_LENGTH = 20_000;
+
 export function isQuestionReviewable(
   q: Pick<QuestionView, "archived" | "answer">,
 ): boolean {

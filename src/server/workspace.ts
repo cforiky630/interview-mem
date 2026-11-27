@@ -291,7 +291,10 @@ export async function accessibleQuestion(
   return { ...question, isOwner: false };
 }
 
-export async function getWorkspaceEtag(userId: string): Promise<string> {
+export async function getWorkspaceEtag(
+  userId: string,
+  initialize = false,
+): Promise<string> {
   const db = await getDb();
   const [[prefRow], [credRow], [subAgg], [followAgg], [dueRow]] =
     await Promise.all([
@@ -343,6 +346,11 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
         .from(studyCards)
         .where(eq(studyCards.userId, userId)),
     ]);
+
+  if (initialize && !prefRow) {
+    await ensureWorkspace(userId);
+    return getWorkspaceEtag(userId);
+  }
 
   let followedPublicSig = "";
   if ((followAgg?.count ?? 0) > 0) {

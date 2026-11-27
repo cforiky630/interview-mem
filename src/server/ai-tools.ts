@@ -14,10 +14,16 @@ import {
   isQuestionMajorRevisionDue,
 } from "@/lib/review-queue";
 import { ROOT_FOLDER_LABEL } from "@/lib/folders";
+import {
+  buildConceptSources,
+  findConceptMatchesInText,
+  normalizeConceptKey,
+} from "@/lib/concepts";
 import { normalizeReleaseGroups } from "@/lib/subscriptions";
 import type { StoredCard } from "@/lib/types";
 import type { ProviderTool } from "./ai";
 import { AppError } from "./errors";
+import { linkedConceptAnnotationFilter, listConcepts } from "./concepts";
 import { accessibleQuestion } from "./workspace";
 import {
   buildServerFolderTree,
@@ -86,6 +92,25 @@ function formatReleaseGroupPath(
 }
 
 export const WORKSPACE_AI_TOOLS: ProviderTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "search_concepts",
+      description:
+        "按名称或别名检索用户的概念、释义和来源题。文件夹范围只返回与该文件夹题目有关联的概念。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "概念名称、别名或包含多个概念名称的问题。",
+          },
+          limit: { type: "integer", minimum: 1, maximum: 8 },
+        },
+        required: ["query"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -521,6 +546,68 @@ export async function loadScopedPool(
   return { pool, deckRows };
 }
 
+async function searchScopedConcepts(
+  userId: string,
+  scope: "deck" | "workspace",
+  query: string,
+  limit: number,
+  pool: ScopedPool["pool"],
+) {
+  const key = normalizeConceptKey(query);
+  if (!key) return { matches: [], refs: [] };
+
+  const concepts = await listConcepts(userId);
+  const mentioned = new Set(
+    findConceptMatchesInText(query.normalize("NFKC"), concepts).map(
+      ({ concept }) => concept.id,
+    ),
+  );
+  const candidates = concepts.filter(
+    (concept) =>
+      mentioned.has(concept.id) ||
+      [concept.term, ...concept.aliases].some((name) =>
+        normalizeConceptKey(name).includes(key),
+      ),
+  );
+  if (!candidates.length) return { matches: [], refs: [] };
+
+  const db = await getDb();
+  const annotations = await db
+    .select({
+      questionId: studyCards.questionId,
+      annotations: studyCards.annotations,
+    })
+    .from(studyCards)
+    .where(
+      and(
+        eq(studyCards.userId, userId),
+        linkedConceptAnnotationFilter(candidates.map((concept) => concept.id)),
+      ),
+    );
+  const sources = buildConceptSources(candidates, pool, annotations);
+  const matches = candidates
+    .filter((concept) => scope === "workspace" || sources.get(concept.id)?.size)
+    .sort((a, b) => Number(mentioned.has(b.id)) - Number(mentioned.has(a.id)))
+    .slice(0, limit)
+    .map((concept) => ({
+      id: concept.id,
+      term: concept.term,
+      aliases: concept.aliases,
+      definition: concept.definition.slice(0, 1200),
+      sources: Array.from(sources.get(concept.id)?.values() ?? [])
+        .slice(0, 3)
+        .map((question): ToolQuestionRef => ({
+          id: question.id,
+          title: question.title,
+          deckTitle: question.folderPath,
+        })),
+    }));
+  const refs = new Map(
+    matches.flatMap((match) => match.sources.map((ref) => [ref.id, ref] as const)),
+  );
+  return { matches, refs: [...refs.values()].slice(0, 8) };
+}
+
 export async function executeWorkspaceTool(
   userId: string,
   scope: "deck" | "workspace",
@@ -642,6 +729,31 @@ export async function executeWorkspaceTool(
   }
 
   const getPool = () => cachedPool ?? loadScopedPool(userId, scope, deckId);
+
+  if (name === "search_concepts") {
+    const query =
+      typeof args.query === "string" ? args.query.trim().slice(0, 4000) : "";
+    if (!query) {
+      return { output: { matches: [] }, label: "请输入概念关键词", refs: [] };
+    }
+    const limit =
+      typeof args.limit === "number" && Number.isInteger(args.limit)
+        ? Math.max(1, Math.min(8, args.limit))
+        : 5;
+    const { pool } = await getPool();
+    const { matches, refs } = await searchScopedConcepts(
+      userId,
+      scope,
+      query,
+      limit,
+      pool,
+    );
+    return {
+      output: { matches },
+      label: matches.length ? `已检索到 ${matches.length} 条概念` : "未检索到匹配概念",
+      refs,
+    };
+  }
 
   if (name === "list_workspace_overview") {
     const { pool, deckRows } = await getPool();
@@ -884,6 +996,7 @@ export async function buildFallbackScopeSummary(
   scope: "deck" | "workspace",
   deckId: string | null,
   cachedPool?: Promise<ScopedPool>,
+  query = "",
 ) {
   const { pool, deckRows } = await (cachedPool ??
     loadScopedPool(userId, scope, deckId));
@@ -898,9 +1011,17 @@ export async function buildFallbackScopeSummary(
       tags: q.tags,
       needsEditing: q.needsEditing,
     }));
-  return JSON.stringify({
+  const { matches, refs } = await searchScopedConcepts(
+    userId,
+    scope,
+    query,
+    4,
+    pool,
+  );
+  const summary = JSON.stringify({
     scope,
     totalInScope: pool.length,
+    ...(matches.length ? { relatedConcepts: matches } : {}),
     folders: deckRows.map((d) => ({
       title: d.title,
       path: d.path,
@@ -910,4 +1031,5 @@ export async function buildFallbackScopeSummary(
     })),
     recentQuestions: top,
   });
+  return { summary, refs };
 }

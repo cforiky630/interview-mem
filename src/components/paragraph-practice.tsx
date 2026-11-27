@@ -25,11 +25,13 @@ export const ParagraphPractice = memo(function ParagraphPractice({
   draftKey,
   references,
   hideAll,
+  onReferenceChange,
 }: {
   block: StudyBlock;
   draftKey: string;
   references: string;
   hideAll: boolean;
+  onReferenceChange: (block: HTMLElement) => void;
 }) {
   const [active, setActive] = useState(hideAll);
   const [prevHideAll, setPrevHideAll] = useState(hideAll);
@@ -40,6 +42,13 @@ export const ParagraphPractice = memo(function ParagraphPractice({
     setShowReference(false);
   }
   const [refMounted, setRefMounted] = useState(false);
+  const referenceView = !active
+    ? "reading"
+    : refMounted
+      ? "comparison"
+      : "hidden";
+  const previousReferenceView = useRef(referenceView);
+  const practiceBlockRef = useRef<HTMLElement>(null);
   const [draft, setDraft] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -51,6 +60,13 @@ export const ParagraphPractice = memo(function ParagraphPractice({
   useEffect(() => {
     if (active && !hideAll) input.current?.focus({ preventScroll: true });
   }, [active, hideAll]);
+  useEffect(() => {
+    if (!block.practice || previousReferenceView.current === referenceView) {
+      return;
+    }
+    previousReferenceView.current = referenceView;
+    if (practiceBlockRef.current) onReferenceChange(practiceBlockRef.current);
+  }, [block.practice, referenceView, onReferenceChange]);
   const original = block.markdown + (references ? `\n\n${references}` : "");
   if (!block.practice) return <Markdown>{original}</Markdown>;
   function update(value: string) {
@@ -60,6 +76,7 @@ export const ParagraphPractice = memo(function ParagraphPractice({
   }
   return (
     <section
+      ref={practiceBlockRef}
       className={`practice-block ${active ? "is-writing" : ""}`}
       data-block-id={block.id}
       style={{ marginLeft: Math.min(block.depth, 3) * 12 }}

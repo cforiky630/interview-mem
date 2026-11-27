@@ -38,6 +38,7 @@ const reviewsRoute = await import("../src/app/api/reviews/route");
 const authorsRoute = await import("../src/app/api/authors/route");
 const catalogRoute = await import("../src/app/api/catalog/route");
 const exportRoute = await import("../src/app/api/export/route");
+const restoreRoute = await import("../src/app/api/backup/restore/route");
 const { executeWorkspaceTool } = await import("../src/server/ai-tools");
 
 type Account = { id: string; cookie: string; deckId: string };
@@ -108,6 +109,211 @@ before(async () => {
   alice = await register("sub-alice");
   bob = await register("sub-bob");
   charlie = await register("sub-charlie");
+});
+
+test("backup restores follow settings and reports duplicate and unavailable authors", async () => {
+  const author = await register("restore-public-author");
+  const original = await register("restore-original-follower");
+  const target = await register("restore-target-follower");
+  const privateAuthor = await register("restore-private-author");
+
+  async function publishFolder(deckId: string, title: string) {
+    const question = await questionsRoute.POST(
+      req(author, "/api/questions", {
+        action: "create",
+        deckId,
+        title,
+        answer: "用于验证关注恢复。",
+      }),
+    );
+    assert.equal(question.status, 200);
+    const publication = await decksRoute.POST(
+      req(author, "/api/decks", {
+        action: "publish",
+        deckId,
+        expectedVersion: 0,
+        visibility: "public",
+      }),
+    );
+    assert.equal(publication.status, 200);
+  }
+
+  await publishFolder(author.deckId, "公开资料");
+  const follow = await authorsRoute.POST(
+    req(original, "/api/authors", {
+      action: "follow",
+      authorId: author.id,
+      autoSubscribeNew: true,
+    }),
+  );
+  assert.equal(follow.status, 200);
+
+  const exported = await exportRoute.GET(req(original, "/api/export"));
+  assert.equal(exported.status, 200);
+  const backup = await exported.json();
+  assert.equal(backup.followedAuthors[0].autoSubscribeNew, true);
+  const payload = {
+    ...backup,
+    followedAuthors: [
+      ...backup.followedAuthors,
+      { authorId: privateAuthor.id },
+      { authorId: target.id },
+    ],
+  };
+  const restored = await restoreRoute.POST(req(target, "/api/backup/restore", payload));
+  assert.equal(restored.status, 200);
+  const result = await restored.json();
+  assert.equal(result.restored.followedAuthors, 1);
+  assert.equal(result.skipped.followedAuthors, 2);
+  const follows = (await state(target)).followedAuthors ?? [];
+  assert.equal(follows.length, 1);
+  assert.equal(follows[0].authorId, author.id);
+  assert.equal(follows[0].autoSubscribeNew, true);
+  assert.equal(follows[0].createdAt, backup.followedAuthors[0].createdAt);
+
+  const created = await decksRoute.POST(
+    req(author, "/api/decks", { action: "create", title: "关注恢复后发布" }),
+  );
+  assert.equal(created.status, 200);
+  const { deck } = await created.json();
+  await publishFolder(deck.id, "后续发布的题目");
+  assert.ok((await state(target)).decks.some((d) => d.id === deck.id && !d.isOwner));
+
+  const disableAutoSubscribe = await authorsRoute.POST(
+    req(target, "/api/authors", {
+      action: "setAutoSubscribe",
+      authorId: author.id,
+      autoSubscribeNew: false,
+    }),
+  );
+  assert.equal(disableAutoSubscribe.status, 200);
+  const retry = await restoreRoute.POST(req(target, "/api/backup/restore", payload));
+  assert.equal(retry.status, 200);
+  const retried = await retry.json();
+  assert.equal(retried.restored.followedAuthors, 0);
+  assert.equal(retried.skipped.followedAuthors, 3);
+  assert.equal((await state(target)).followedAuthors?.[0].autoSubscribeNew, false);
+});
+
+test("restore keeps personal history for questions removed from the accessible subscription release", async () => {
+  const author = await register("backup-release-author");
+  const original = await register("backup-release-subscriber");
+  const target = await register("backup-release-target");
+  const deckId = author.deckId;
+  const title = "备份中停留在旧版的题目";
+  const answer = "备份时看到的参考答案。";
+
+  async function addQuestion(title: string, answer: string) {
+    const response = await questionsRoute.POST(
+      req(author, "/api/questions", { action: "create", deckId, title, answer }),
+    );
+    assert.equal(response.status, 200);
+    return (await response.json()).id as string;
+  }
+  async function publish(expectedVersion: number) {
+    const response = await decksRoute.POST(
+      req(author, "/api/decks", {
+        action: "publish",
+        deckId,
+        expectedVersion,
+        visibility: "public",
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const oldId = await addQuestion(title, answer);
+  await publish(0);
+  const subscribed = await decksRoute.POST(
+    req(original, "/api/decks", { action: "subscribe", deckId }),
+  );
+  assert.equal(subscribed.status, 200);
+  const oldCard = (await state(original)).questions.find((q) => q.id === oldId);
+  assert.ok(oldCard);
+  const note = "需要恢复的个人笔记。";
+  const noted = await questionsRoute.POST(
+    req(original, "/api/questions", {
+      action: "note",
+      id: oldId,
+      note,
+      expectedVersion: oldCard.noteVersion,
+    }),
+  );
+  assert.equal(noted.status, 200);
+  const writtenAnswer = "需要恢复的复习作答。";
+  const graded = await reviewsRoute.POST(
+    req(original, "/api/reviews", {
+      questionId: oldId,
+      eventId: randomUUID(),
+      questionRevision: oldCard.revision,
+      expectedVersion: oldCard.studyVersion,
+      rating: 3,
+      answer: writtenAnswer,
+    }),
+  );
+  assert.equal(graded.status, 200);
+  const exported = await exportRoute.GET(req(original, "/api/export"));
+  assert.equal(exported.status, 200);
+  const backup = await exported.json();
+  assert.equal(backup.subscriptions[0].seenVersion, 1);
+
+  const removed = await questionsRoute.POST(
+    req(author, "/api/questions", { action: "delete", id: oldId }),
+  );
+  assert.equal(removed.status, 200);
+  const newId = await addQuestion("新版订阅中的题目", "新的参考答案。");
+  await publish(1);
+
+  const sameName = await decksRoute.POST(
+    req(target, "/api/decks", { action: "create", title: "备份中的旧版订阅题" }),
+  );
+  assert.equal(sameName.status, 200);
+  const { deck: existingPublicFolder } = await sameName.json();
+  const unrelated = await questionsRoute.POST(
+    req(target, "/api/questions", {
+      action: "create",
+      deckId: existingPublicFolder.id,
+      title: "已有公开资料",
+      answer: "与备份无关。",
+    }),
+  );
+  assert.equal(unrelated.status, 200);
+  const published = await decksRoute.POST(
+    req(target, "/api/decks", {
+      action: "publish",
+      deckId: existingPublicFolder.id,
+      visibility: "public",
+      expectedVersion: 0,
+    }),
+  );
+  assert.equal(published.status, 200);
+
+  const restored = await restoreRoute.POST(req(target, "/api/backup/restore", backup));
+  assert.equal(restored.status, 200);
+  const result = await restored.json();
+  assert.equal(result.restored.subscriptionBackupQuestions, 1);
+  assert.equal(result.skipped.studyCards, 0);
+  assert.equal(result.skipped.reviews, 0);
+  const workspace = await state(target);
+  assert.equal(workspace.decks.find((deck) => deck.id === deckId)?.seenVersion, 2);
+  assert.ok(workspace.questions.some((q) => q.id === newId));
+  const recovered = workspace.questions.find((q) => q.title === title);
+  assert.ok(recovered?.isOwner && recovered.id !== oldId);
+  assert.equal(recovered.note, note);
+  assert.equal(recovered.answer, answer);
+  assert.equal(recovered.fsrs?.reps, 1);
+  assert.notEqual(recovered.deckId, existingPublicFolder.id);
+  assert.equal(workspace.decks.find((deck) => deck.id === recovered.deckId)?.visibility, "private");
+  const review = workspace.recentReviews.find((entry) => entry.questionId === recovered.id);
+  assert.equal(review?.answer, writtenAnswer);
+  assert.equal(review?.questionAnswer, answer);
+
+  const retry = await restoreRoute.POST(req(target, "/api/backup/restore", backup));
+  assert.equal(retry.status, 200);
+  assert.equal((await retry.json()).restored.subscriptionBackupQuestions, 0);
+  const retried = await state(target);
+  assert.equal(retried.questions.filter((q) => q.title === title).length, 1);
+  assert.equal(retried.recentReviews.filter((entry) => entry.questionId === recovered.id).length, 1);
 });
 
 test("pure diff helpers accurately compare release versions and unpublished live changes", () => {

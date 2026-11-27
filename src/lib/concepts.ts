@@ -14,6 +14,37 @@ export const MAX_CONCEPT_ALIAS_LENGTH = 80;
 export const CONCEPT_UNGROUPED_LABEL = "未分组";
 export const CONCEPT_ROOT_LABEL = "我的概念";
 
+export function buildConceptSources<T extends { id: string }>(
+  concepts: readonly Pick<ConceptView, "id" | "sourceQuestionId">[],
+  questions: readonly T[],
+  questionAnnotations: readonly {
+    questionId: string;
+    annotations: readonly { conceptId?: string | null }[];
+  }[],
+) {
+  const questionById = new Map(
+    questions.map((question) => [question.id, question]),
+  );
+  const sources = new Map(
+    concepts.map((concept) => [concept.id, new Map<string, T>()]),
+  );
+  for (const concept of concepts) {
+    if (!concept.sourceQuestionId) continue;
+    const question = questionById.get(concept.sourceQuestionId);
+    if (question) sources.get(concept.id)?.set(question.id, question);
+  }
+  for (const { questionId, annotations } of questionAnnotations) {
+    const question = questionById.get(questionId);
+    if (!question || !Array.isArray(annotations)) continue;
+    for (const annotation of annotations) {
+      if (annotation?.conceptId) {
+        sources.get(annotation.conceptId)?.set(questionId, question);
+      }
+    }
+  }
+  return sources;
+}
+
 export const CONCEPT_COLORS: readonly QuestionAnnotationColor[] = [
   "accent",
   "amber",
@@ -130,8 +161,9 @@ export function findMatchingConcept(
   return undefined;
 }
 
-function buildTokenPattern(token: string): string {
+function buildTokenPattern(token: string) {
   let out = "";
+  let firstVariableOffset: number | undefined;
   for (let i = 0; i < token.length; i++) {
     const ch = token[i];
     if (i > 0) {
@@ -140,19 +172,21 @@ function buildTokenPattern(token: string): string {
         (CJK_CHAR_RE.test(prev) && LATIN_OR_SYMBOL_RE.test(ch)) ||
         (LATIN_OR_SYMBOL_RE.test(prev) && CJK_CHAR_RE.test(ch))
       ) {
+        firstVariableOffset ??= out.length;
         out += "\\s*";
       }
     }
     out += escapeRegExp(ch);
   }
-  return out;
+  return { source: out, literalLength: firstVariableOffset ?? out.length };
 }
 
 type PhrasePatternResult = {
   source: string;
+  head: string;
+  tail: string;
   normKey: string;
   compactKey: string | null;
-  allowsJoinedAscii: boolean;
 };
 
 /**
@@ -176,12 +210,15 @@ function compilePhrasePattern(phrase: string): PhrasePatternResult | null {
 
   const parts = cleaned.split(SEPARATOR_SPLIT_RE).filter(Boolean);
   let body = "";
+  let literalLength = 0;
   let allowsJoinedAscii = false;
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if (i % 2 === 0) {
-      body += buildTokenPattern(part);
+      const token = buildTokenPattern(part);
+      if (i === 0) literalLength = token.literalLength;
+      body += token.source;
     } else {
       const leftTok = parts[i - 1] ?? "";
       const rightTok = parts[i + 1] ?? "";
@@ -208,47 +245,55 @@ function compilePhrasePattern(phrase: string): PhrasePatternResult | null {
   const suffix = endsAscii ? "(?![A-Za-z0-9_])" : "";
   const source = `${prefix}(?:${body})${suffix}`;
   const compactKey = allowsJoinedAscii ? normKey.replace(/ /g, "") : null;
-  return { source, normKey, compactKey, allowsJoinedAscii };
+  return {
+    source,
+    head: prefix + body.slice(0, literalLength),
+    tail: body.slice(literalLength) + suffix,
+    normKey,
+    compactKey,
+  };
 }
 
-export type ConceptTextMatch = {
+export type ConceptLinkInput = Pick<
+  ConceptView,
+  "id" | "term" | "aliases" | "color"
+>;
+
+export type ConceptTextMatch<Concept extends ConceptLinkInput = ConceptView> = {
   start: number;
   end: number;
   text: string;
-  concept: ConceptView;
+  concept: Concept;
 };
 
-export type CompiledConceptMatcher = {
+export type CompiledConceptMatcher<
+  Concept extends ConceptLinkInput = ConceptView,
+> = {
   regex: RegExp;
-  resolveConcept: (matchedText: string) => ConceptView | undefined;
+  resolveConcept: (matchedText: string) => Concept | undefined;
 };
 
-type CandidateEntry = {
-  source: string;
-  normKey: string;
-  compactKey: string | null;
+type CandidateEntry = PhrasePatternResult & {
   rawLength: number;
   isPrimaryTerm: boolean;
-  concept: ConceptView;
 };
 
 /**
  * Compile a single reusable matcher for a list of concepts (terms + aliases).
  * Alternatives are ordered longest-first with primary terms taking precedence over aliases.
  */
-export function buildConceptMatcherPattern(
-  concepts: readonly ConceptView[],
-): CompiledConceptMatcher | null {
+export function buildConceptMatcherPattern<Concept extends ConceptLinkInput>(
+  concepts: readonly Concept[],
+): CompiledConceptMatcher<Concept> | null {
   if (!concepts.length) return null;
 
-  const exactKeyMap = new Map<string, ConceptView>();
-  const compactKeyMap = new Map<string, ConceptView>();
+  const exactKeyMap = new Map<string, Concept>();
+  const compactKeyMap = new Map<string, Concept>();
   const entries: CandidateEntry[] = [];
 
-  // Register primary terms first so they win lookup precedence over another concept's alias.
-  for (const concept of concepts) {
-    const compiled = compilePhrasePattern(concept.term);
-    if (!compiled) continue;
+  function addPhrase(concept: Concept, phrase: string, isPrimaryTerm: boolean) {
+    const compiled = compilePhrasePattern(phrase);
+    if (!compiled) return;
     if (!exactKeyMap.has(compiled.normKey)) {
       exactKeyMap.set(compiled.normKey, concept);
     }
@@ -256,33 +301,19 @@ export function buildConceptMatcherPattern(
       compactKeyMap.set(compiled.compactKey, concept);
     }
     entries.push({
-      source: compiled.source,
-      normKey: compiled.normKey,
-      compactKey: compiled.compactKey,
-      rawLength: concept.term.trim().length,
-      isPrimaryTerm: true,
-      concept,
+      ...compiled,
+      rawLength: phrase.trim().length,
+      isPrimaryTerm,
     });
   }
 
+  // Register primary terms first so they win lookup precedence over another concept's alias.
+  for (const concept of concepts) {
+    addPhrase(concept, concept.term, true);
+  }
   for (const concept of concepts) {
     for (const alias of concept.aliases) {
-      const compiled = compilePhrasePattern(alias);
-      if (!compiled) continue;
-      if (!exactKeyMap.has(compiled.normKey)) {
-        exactKeyMap.set(compiled.normKey, concept);
-      }
-      if (compiled.compactKey && !compactKeyMap.has(compiled.compactKey)) {
-        compactKeyMap.set(compiled.compactKey, concept);
-      }
-      entries.push({
-        source: compiled.source,
-        normKey: compiled.normKey,
-        compactKey: compiled.compactKey,
-        rawLength: alias.trim().length,
-        isPrimaryTerm: false,
-        concept,
-      });
+      addPhrase(concept, alias, false);
     }
   }
 
@@ -295,16 +326,25 @@ export function buildConceptMatcherPattern(
       (a.isPrimaryTerm === b.isPrimaryTerm ? 0 : a.isPrimaryTerm ? -1 : 1),
   );
 
-  const uniqueSources: string[] = [];
+  const groups: { head: string; tails: string[] }[] = [];
   const seenSources = new Set<string>();
   for (const entry of entries) {
     if (seenSources.has(entry.source)) continue;
     seenSources.add(entry.source);
-    uniqueSources.push(entry.source);
+    // Share only fixed prefixes of consecutive alternatives to preserve match priority.
+    const group = groups.at(-1);
+    if (group?.head === entry.head) {
+      group.tails.push(entry.tail);
+    } else {
+      groups.push({ head: entry.head, tails: [entry.tail] });
+    }
   }
 
-  const regex = new RegExp(`(?:${uniqueSources.join("|")})`, "gi");
-  const resolveConcept = (matchedText: string): ConceptView | undefined => {
+  const sources = groups.map(({ head, tails }) =>
+    tails.length === 1 ? head + tails[0] : `${head}(?:${tails.join("|")})`,
+  );
+  const regex = new RegExp(`(?:${sources.join("|")})`, "gi");
+  const resolveConcept = (matchedText: string): Concept | undefined => {
     const norm = normalizeConceptKey(matchedText);
     if (!norm) return undefined;
     const direct = exactKeyMap.get(norm);
@@ -320,11 +360,11 @@ export function buildConceptMatcherPattern(
  * Find non-overlapping concept matches in `text` resolved longest-match-first,
  * returned in ascending document order.
  */
-export function findConceptMatchesInText(
+export function findConceptMatchesInText<Concept extends ConceptLinkInput>(
   text: string,
-  concepts: readonly ConceptView[],
-  compiled?: CompiledConceptMatcher | null,
-): ConceptTextMatch[] {
+  concepts: readonly Concept[],
+  compiled?: CompiledConceptMatcher<Concept> | null,
+): ConceptTextMatch<Concept>[] {
   if (!text) return [];
   const matcher =
     compiled !== undefined ? compiled : buildConceptMatcherPattern(concepts);
@@ -332,7 +372,9 @@ export function findConceptMatchesInText(
 
   const re = matcher.regex;
   re.lastIndex = 0;
-  const candidates: ConceptTextMatch[] = [];
+  const candidates: ConceptTextMatch<Concept>[] = [];
+  let previousEnd = 0;
+  let hasOverlap = false;
   let match: RegExpExecArray | null;
 
   while ((match = re.exec(text)) !== null) {
@@ -343,9 +385,12 @@ export function findConceptMatchesInText(
     }
     const concept = matcher.resolveConcept(matchedText);
     if (concept) {
+      const end = match.index + matchedText.length;
+      hasOverlap ||= match.index < previousEnd;
+      previousEnd = end;
       candidates.push({
         start: match.index,
-        end: match.index + matchedText.length,
+        end,
         text: matchedText,
         concept,
       });
@@ -354,13 +399,13 @@ export function findConceptMatchesInText(
     re.lastIndex = match.index + 1;
   }
 
-  if (!candidates.length) return [];
+  if (!hasOverlap) return candidates;
 
   candidates.sort(
     (a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start,
   );
 
-  const selected: ConceptTextMatch[] = [];
+  const selected: ConceptTextMatch<Concept>[] = [];
   for (const cand of candidates) {
     const overlaps = selected.some(
       (s) => cand.start < s.end && cand.end > s.start,
@@ -377,10 +422,11 @@ export function findConceptMatchesInText(
  * `.prose-concept-link` spans. Returns matched concept IDs, total match count, and a
  * reversible idempotent `cleanup()` function.
  */
-export function applyConceptLinks(
+export function applyConceptLinks<Concept extends ConceptLinkInput>(
   container: HTMLElement,
-  concepts: readonly ConceptView[],
+  concepts: readonly Concept[],
   activeConceptId: string | null,
+  compiled?: CompiledConceptMatcher<Concept> | null,
 ): { matchedConceptIds: Set<string>; matchCount: number; cleanup: () => void } {
   const matchedConceptIds = new Set<string>();
   const createdSpans: HTMLElement[] = [];
@@ -389,7 +435,8 @@ export function applyConceptLinks(
     return { matchedConceptIds, matchCount: 0, cleanup: () => {} };
   }
 
-  const matcher = buildConceptMatcherPattern(concepts);
+  const matcher =
+    compiled !== undefined ? compiled : buildConceptMatcherPattern(concepts);
   if (!matcher) {
     return { matchedConceptIds, matchCount: 0, cleanup: () => {} };
   }
@@ -914,27 +961,4 @@ export function groupConceptsByName(
   }
 
   return result;
-}
-
-function conceptLinksKey(userId: string): string {
-  return `shiyi:concept-links:${userId}`;
-}
-
-export function readConceptLinksPref(userId: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const raw = window.localStorage.getItem(conceptLinksKey(userId));
-    return raw === "1" || raw === "true";
-  } catch {
-    return false;
-  }
-}
-
-export function writeConceptLinksPref(userId: string, open: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(conceptLinksKey(userId), open ? "1" : "0");
-  } catch {
-    /* Ignore storage access restrictions. */
-  }
 }

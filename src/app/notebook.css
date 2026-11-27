@@ -2747,7 +2747,6 @@
 .mobile-review-reveal-bar,
 .reader-mobile-theme-btn,
 .reader-mobile-ai-btn,
-.reader-mobile-concepts-btn,
 .ai-sheet-backdrop,
 .sheet-grabber {
   display: none;
@@ -6888,8 +6887,7 @@ html[data-input="touch"] .inline-title-trigger {
 }
 
 /* —— 3. 阅读器侧边栏批注、概念自动释义与可逆正文高亮 —— */
-.reader-annotations-toggle,
-.reader-concepts-toggle {
+.reader-annotations-toggle {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -6909,13 +6907,11 @@ html[data-input="touch"] .inline-title-trigger {
     transform var(--dur-fast) var(--ease-smooth);
 }
 
-.reader-annotations-toggle:active,
-.reader-concepts-toggle:active {
+.reader-annotations-toggle:active {
   transform: scale(0.96);
 }
 
-.reader-annotations-toggle.is-active,
-.reader-concepts-toggle.is-active {
+.reader-annotations-toggle.is-active {
   background: var(--accent-soft);
   border-color: var(--border-accent);
   color: var(--accent-dark);
@@ -6940,8 +6936,7 @@ html[data-input="touch"] .inline-title-trigger {
     color var(--dur-fast) ease;
 }
 
-.reader-annotations-toggle.is-active .reader-annotations-count,
-.reader-concepts-toggle.is-active .reader-annotations-count {
+.reader-annotations-toggle.is-active .reader-annotations-count {
   background: var(--accent);
   color: var(--btn-primary-text);
 }
@@ -8094,13 +8089,11 @@ html[data-focus-modality="keyboard"] .annotation-concept-select:focus-visible {
   .focus-list-row:hover {
     background: var(--hover);
   }
-  .reader-annotations-toggle:hover,
-  .reader-concepts-toggle:hover {
+  .reader-annotations-toggle:hover {
     background: var(--hover);
     color: var(--text);
   }
-  .reader-annotations-toggle.is-active:hover,
-  .reader-concepts-toggle.is-active:hover {
+  .reader-annotations-toggle.is-active:hover {
     background: var(--accent-soft);
     color: var(--accent-dark);
   }
@@ -8166,7 +8159,6 @@ html[data-focus-modality="keyboard"] .annotation-concept-select:focus-visible {
   .mastery-bar-track .seg-mastered,
   .mastery-bar-track .seg-learning,
   .reader-annotations-toggle,
-  .reader-concepts-toggle,
   .reader-annotations-count,
   .notebook-reader.can-annotate-rail .reader-toolbar,
   .notebook-reader.can-annotate-rail .reader-workspace,

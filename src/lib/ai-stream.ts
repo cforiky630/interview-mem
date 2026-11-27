@@ -1,4 +1,10 @@
 import type { ChatMessage, QuestionView } from "./types";
+import {
+  noteDraftKey,
+  pendingNoteDrafts,
+  readNoteDrafts,
+  selectedNoteDraft,
+} from "./drafts";
 
 export type AiScope = "question" | "deck" | "workspace";
 
@@ -92,34 +98,25 @@ export function appendToStoredNote(
   question: Pick<QuestionView, "id" | "note" | "noteVersion">,
   content: string,
   heading = "AI 补充",
-): { nextNote: string; expectedVersion: number } {
-  const draftKey = `shiyi:note:${userId}:${question.id}`;
-  let baseNote = question.note;
-  let expectedVersion = question.noteVersion;
-  let rawDraft: string | null = null;
-  try {
-    rawDraft = localStorage.getItem(draftKey);
-  } catch {
-    rawDraft = null;
-  }
-  if (rawDraft !== null) {
-    try {
-      const saved = JSON.parse(rawDraft);
-      if (
-        typeof saved.content === "string" &&
-        Number.isInteger(saved.version)
-      ) {
-        baseNote = saved.content;
-        expectedVersion = saved.version;
-      }
-    } catch {
-      baseNote = rawDraft;
-      expectedVersion = question.noteVersion;
-    }
-  }
+) {
+  const key = noteDraftKey(userId, question.id);
+  const drafts = readNoteDrafts(key);
+  const selected = selectedNoteDraft(key, drafts);
+  const pending = pendingNoteDrafts(drafts).filter(
+    (draft) => draft.content !== question.note,
+  );
+  const draft = selected && selected.content !== question.note
+    ? selected
+    : selected === undefined && pending.length === 1 ? pending[0] : undefined;
+  if (pending.length && !draft) return null;
   return {
-    nextNote: formatNoteAppendSection(baseNote, content, heading),
-    expectedVersion,
+    nextNote: formatNoteAppendSection(
+      draft?.content ?? question.note,
+      content,
+      heading,
+    ),
+    expectedVersion: draft?.version ?? question.noteVersion,
+    draft,
   };
 }
 

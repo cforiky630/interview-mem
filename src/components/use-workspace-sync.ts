@@ -1092,9 +1092,12 @@ export function applyLocalWorkspacePatch(
 }
 
 export function useWorkspaceSync(sessionId: string) {
-  const [data, setData] = useState<Workspace | null>(null);
+  const [data, setWorkspace] = useState<Workspace | null>(null);
   const dataRef = useRef<Workspace | null>(null);
-  dataRef.current = data;
+  const setData = useCallback((value: Workspace | null) => {
+    dataRef.current = value;
+    setWorkspace(value);
+  }, []);
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState(false);
   const [pending, setPending] = useState(0);
@@ -1105,6 +1108,7 @@ export function useWorkspaceSync(sessionId: string) {
   const mutationEpoch = useRef(0);
   const lastSyncedAt = useRef(0);
   const etagRef = useRef<string | null>(null);
+  const reconcileAfterMutations = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1141,7 +1145,11 @@ export function useWorkspaceSync(sessionId: string) {
           signal,
         });
         if (response.status === 304 && dataRef.current) {
-          if (seq !== refreshSeq.current || startEpoch !== mutationEpoch.current) {
+          if (
+            signal.aborted ||
+            seq !== refreshSeq.current ||
+            startEpoch !== mutationEpoch.current
+          ) {
             return null;
           }
           lastSyncedAt.current = Date.now();
@@ -1182,10 +1190,15 @@ export function useWorkspaceSync(sessionId: string) {
           window.location.reload();
           return null;
         }
-        if (seq !== refreshSeq.current || startEpoch !== mutationEpoch.current) {
+        if (
+          signal.aborted ||
+          seq !== refreshSeq.current ||
+          startEpoch !== mutationEpoch.current
+        ) {
           return null;
         }
         etagRef.current = response.headers.get("etag");
+        reconcileAfterMutations.current = false;
         lastSyncedAt.current = Date.now();
         setData(result);
         setError("");
@@ -1217,7 +1230,7 @@ export function useWorkspaceSync(sessionId: string) {
         }
       }
     },
-    [sessionId],
+    [sessionId, setData],
   );
 
   useEffect(() => {
@@ -1225,6 +1238,7 @@ export function useWorkspaceSync(sessionId: string) {
     setError("");
     lastSyncedAt.current = 0;
     etagRef.current = null;
+    reconcileAfterMutations.current = false;
     if (!sessionId) return;
     void refresh();
 
@@ -1251,7 +1265,7 @@ export function useWorkspaceSync(sessionId: string) {
       window.removeEventListener("online", onOnline);
       window.clearInterval(timer);
     };
-  }, [sessionId, refresh]);
+  }, [sessionId, refresh, setData]);
 
   const mutate: WorkspaceMutate = useCallback(
     async (url, payload, options) => {
@@ -1264,23 +1278,21 @@ export function useWorkspaceSync(sessionId: string) {
       mutationEpoch.current += 1;
       refreshAbort.current?.abort();
       try {
-        let nextEtag: string | null = null;
         const result = await api<Record<string, unknown>>(url, payload, {
           userId: sessionId,
           signal,
-          onResponseHeaders: (headers) => {
-            nextEtag = headers.get("x-workspace-etag");
-          },
         });
+        if (signal.aborted) return null;
         mutationEpoch.current += 1;
         refreshAbort.current?.abort();
+        // A mutation only describes its own changes, which may omit other clients' writes.
+        etagRef.current = null;
+        reconcileAfterMutations.current = true;
         const patched =
           dataRef.current !== null
             ? applyLocalWorkspacePatch(dataRef.current, url, payload, result)
             : null;
         if (patched) {
-          etagRef.current = nextEtag;
-          lastSyncedAt.current = Date.now();
           setData(patched);
         } else {
           const refreshed = await refresh(true);
@@ -1307,14 +1319,24 @@ export function useWorkspaceSync(sessionId: string) {
           throw e;
         }
         toast.error(e instanceof Error ? e.message : "操作失败，请重试。");
-        if (e instanceof RequestError && e.status === 409) await refresh(true);
+        if (e instanceof RequestError && e.status === 409) {
+          etagRef.current = null;
+          await refresh(true);
+        }
         return null;
       } finally {
         pendingCount.current = Math.max(0, pendingCount.current - 1);
         setPending((n) => Math.max(0, n - 1));
+        if (
+          !pendingCount.current &&
+          reconcileAfterMutations.current &&
+          !signal.aborted
+        ) {
+          void refresh(true);
+        }
       }
     },
-    [sessionId, refresh],
+    [sessionId, refresh, setData],
   );
 
   return {

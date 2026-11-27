@@ -50,6 +50,7 @@ import {
   MAX_CONCEPT_DEFINITION_LENGTH,
   MAX_CONCEPT_TERM_LENGTH,
   buildConceptFolderIndex,
+  buildConceptSources,
   findMatchingConcept,
   normalizeConceptKey,
   parseConceptAliasesInput,
@@ -791,7 +792,7 @@ const ConceptKvEditRow = memo(function ConceptKvEditRow({
 
 const ConceptDisplayRow = memo(function ConceptDisplayRow({
   concept,
-  sourceQuestion,
+  sourceQuestions,
   pathLabel,
   isFocused,
   isSelected,
@@ -814,7 +815,7 @@ const ConceptDisplayRow = memo(function ConceptDisplayRow({
   onPointerCancel,
 }: {
   concept: ConceptView;
-  sourceQuestion: QuestionView | null;
+  sourceQuestions: ReadonlyMap<string, QuestionView> | undefined;
   pathLabel: string;
   isFocused: boolean;
   isSelected: boolean;
@@ -840,6 +841,8 @@ const ConceptDisplayRow = memo(function ConceptDisplayRow({
   const [canExpand, setCanExpand] = useState(false);
   const defRef = useRef<HTMLDivElement>(null);
   const defId = `concept-def-${concept.id}`;
+  const sourceQuestion =
+    sourceQuestions?.size === 1 ? sourceQuestions.values().next().value : undefined;
 
   useEffect(() => {
     if (expanded) return;
@@ -996,6 +999,29 @@ const ConceptDisplayRow = memo(function ConceptDisplayRow({
                 <span>来源题</span>
               </button>
             )}
+            {sourceQuestions && sourceQuestions.size > 1 && (
+              <ActionMenu
+                label={`查看 ${concept.term} 的来源题（${sourceQuestions.size}）`}
+                triggerClassName="concept-action-btn"
+                triggerContent={
+                  <>
+                    <ArrowUpRight size={13} />
+                    <span>来源题</span>
+                  </>
+                }
+              >
+                {Array.from(sourceQuestions.values(), (question) => (
+                  <button
+                    type="button"
+                    key={question.id}
+                    onClick={() => onOpenQuestion(question)}
+                  >
+                    <ArrowUpRight size={13} />
+                    <span>{question.title}</span>
+                  </button>
+                ))}
+              </ActionMenu>
+            )}
 
             {isConfirmingDelete ? (
               <button
@@ -1143,11 +1169,18 @@ export function ConceptsView({
     setSelectMode(false);
   }, []);
 
-  const questionMap = useMemo(() => {
-    const map = new Map<string, QuestionView>();
-    for (const q of data.questions) map.set(q.id, q);
-    return map;
-  }, [data.questions]);
+  const conceptSources = useMemo(
+    () =>
+      buildConceptSources(
+        data.concepts ?? [],
+        data.questions,
+        data.questions.map((question) => ({
+          questionId: question.id,
+          annotations: question.annotations,
+        })),
+      ),
+    [data.concepts, data.questions],
+  );
 
   const legacyAnnotations = useMemo(() => {
     const items: { questionId: string; annotationId: string }[] = [];
@@ -1702,7 +1735,7 @@ export function ConceptsView({
                       ·
                     </span>
                     <span className="concepts-heading-hint">
-                      阅读题目时开启「概念」即可自动浮窗释义
+                      点击题目正文中的概念即可查看释义
                     </span>
                   </>
                 )}
@@ -2122,9 +2155,6 @@ export function ConceptsView({
                       );
                     }
 
-                    const sourceQuestion = concept.sourceQuestionId
-                      ? (questionMap.get(concept.sourceQuestionId) ?? null)
-                      : null;
                     const pathLabel = isSearching
                       ? searchGlobal || currentFolderId === null
                         ? concept.folderId
@@ -2140,7 +2170,7 @@ export function ConceptsView({
                       <ConceptDisplayRow
                         key={concept.id}
                         concept={concept}
-                        sourceQuestion={sourceQuestion}
+                        sourceQuestions={conceptSources.get(concept.id)}
                         pathLabel={pathLabel}
                         isFocused={highlightedId === concept.id}
                         isSelected={selectedConceptIds.has(concept.id)}

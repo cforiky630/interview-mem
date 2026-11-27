@@ -250,6 +250,7 @@ export function SettingsCard({
     decks: number;
     questions: number;
     reviews: number;
+    followedAuthors: number;
     payload: Record<string, unknown>;
   } | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -518,6 +519,9 @@ export function SettingsCard({
         decks: Array.isArray(parsed.decks) ? parsed.decks.length : 0,
         questions: Array.isArray(parsed.questions) ? parsed.questions.length : 0,
         reviews: Array.isArray(parsed.reviews) ? parsed.reviews.length : 0,
+        followedAuthors: Array.isArray(parsed.followedAuthors)
+          ? parsed.followedAuthors.length
+          : 0,
         payload: parsed,
       });
     } catch {
@@ -534,21 +538,35 @@ export function SettingsCard({
         restored: {
           decks: number;
           questions: number;
+          subscriptionBackupQuestions: number;
           studyCards: number;
           reviews: number;
+          followedAuthors: number;
           preferencesRestored?: boolean;
         };
         skipped: {
           decks: number;
           questions: number;
+          studyCards: number;
+          reviews: number;
+          followedAuthors: number;
         };
       }>("/api/backup/restore", restorePreview.payload, {
         userId: data.user.id,
       });
       await onRefreshWorkspace?.();
       setRestorePreview(null);
+      const followed = restorePreview.followedAuthors
+        ? `恢复 ${res.restored.followedAuthors} 个创作者关注，跳过 ${res.skipped.followedAuthors} 个。`
+        : "";
+      const recovered = res.restored.subscriptionBackupQuestions > 0
+        ? `其中 ${res.restored.subscriptionBackupQuestions} 道旧版订阅题已作为私有题目恢复。`
+        : "";
+      const skippedStudy = res.skipped.studyCards || res.skipped.reviews
+        ? `跳过 ${res.skipped.studyCards} 份学习状态和 ${res.skipped.reviews} 条复习记录。已有记录会保留，找不到对应题目的记录会跳过。`
+        : "";
       toast.success(
-        `已合并恢复：新增 ${res.restored.decks} 个文件夹、${res.restored.questions} 道题、${res.restored.reviews} 条复习记录。`,
+        `已合并恢复，新增 ${res.restored.decks} 个文件夹、${res.restored.questions} 道题、${res.restored.reviews} 条复习记录。${recovered}${followed}${skippedStudy}`,
       );
     } catch (error) {
       toast.error(
@@ -1004,6 +1022,8 @@ export function SettingsCard({
                             {restorePreview.decks} 个文件夹 ·{" "}
                             {restorePreview.questions} 道题 ·{" "}
                             {restorePreview.reviews} 条复习记录
+                            {restorePreview.followedAuthors > 0 &&
+                              ` · ${restorePreview.followedAuthors} 个创作者关注`}
                             {restorePreview.exportedAt
                               ? ` · 导出于 ${restorePreview.exportedAt.slice(0, 10)}`
                               : ""}
