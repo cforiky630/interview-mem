@@ -1918,7 +1918,28 @@ test("review regressions: client helpers match /api/decks schema, dissolve keepB
   // 4. batchPublish with [child, parent] order still deduplicates autoSubscribeNew (follower only subscribes to parent!)
   const bpAuthor = await register("bp-order-author");
   const bpFollower = await register("bp-order-follower");
-  await authorsRoute.POST(
+  const { deck: bpSeed } = await (
+    await decksRoute.POST(
+      req(bpAuthor, "/api/decks", { action: "create", title: "前置公开题库" }),
+    )
+  ).json();
+  await questionsRoute.POST(
+    req(bpAuthor, "/api/questions", {
+      action: "create",
+      deckId: bpSeed.id,
+      title: "前置公开题",
+      answer: "答案",
+    }),
+  );
+  await decksRoute.POST(
+    req(bpAuthor, "/api/decks", {
+      action: "publish",
+      deckId: bpSeed.id,
+      expectedVersion: 0,
+      visibility: "public",
+    }),
+  );
+  const bpFollowRes = await authorsRoute.POST(
     req(bpFollower, "/api/authors", {
       action: "follow",
       authorId: bpAuthor.id,
@@ -1926,6 +1947,7 @@ test("review regressions: client helpers match /api/decks schema, dissolve keepB
       subscribeAll: false,
     }),
   );
+  assert.equal(bpFollowRes.status, 200);
   const { deck: bpParent } = await (
     await decksRoute.POST(
       req(bpAuthor, "/api/decks", { action: "create", title: "父体系" }),

@@ -236,15 +236,24 @@ export async function providerModels(
   throw providerError(lastStatus || 404);
 }
 
-// Bound concurrent paid calls for a user; release in finally on every success/failure path.
+// Bound concurrent paid calls per user and globally; release in finally on every path.
+const MAX_GLOBAL_AI_CALLS = Math.max(
+  2,
+  Number(process.env.AI_MAX_GLOBAL_CONCURRENCY || 24),
+);
 const state = globalThis as unknown as {
   interviewAiCalls?: Map<string, number>;
+  interviewAiGlobalCalls?: number;
 };
 export function acquireAi(userId: string) {
   state.interviewAiCalls ??= new Map();
   const active = state.interviewAiCalls.get(userId) ?? 0;
   if (active >= 2) throw new AppError(429, "已有 AI 请求正在处理，请稍候。");
+  const globalActive = state.interviewAiGlobalCalls ?? 0;
+  if (globalActive >= MAX_GLOBAL_AI_CALLS)
+    throw new AppError(429, "当前 AI 服务繁忙，请稍候再试。");
   state.interviewAiCalls.set(userId, active + 1);
+  state.interviewAiGlobalCalls = globalActive + 1;
   let released = false;
   return () => {
     if (!released) {
@@ -252,6 +261,10 @@ export function acquireAi(userId: string) {
       const count = (state.interviewAiCalls!.get(userId) ?? 1) - 1;
       if (count <= 0) state.interviewAiCalls!.delete(userId);
       else state.interviewAiCalls!.set(userId, count);
+      state.interviewAiGlobalCalls = Math.max(
+        0,
+        (state.interviewAiGlobalCalls ?? 1) - 1,
+      );
     }
   };
 }

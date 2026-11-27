@@ -1,6 +1,23 @@
 services:
   db:
     image: postgres:17-alpine
+    command: >
+      postgres
+      -c shared_buffers=1GB
+      -c work_mem=16MB
+      -c maintenance_work_mem=256MB
+      -c effective_cache_size=3GB
+      -c max_connections=80
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c wal_buffers=16MB
+      -c max_wal_size=1GB
+      -c checkpoint_completion_target=0.9
+      -c statement_timeout=30000
+      -c idle_in_transaction_session_timeout=60000
+      -c log_min_duration_statement=200
+    shm_size: 256m
+    mem_limit: 2048m
     environment:
       POSTGRES_USER: shiyi
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
@@ -13,9 +30,39 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "${REDIS_PASSWORD:?Set REDIS_PASSWORD}",
+        "--maxmemory",
+        "256mb",
+        "--maxmemory-policy",
+        "noeviction",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+      ]
+    mem_limit: 384m
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
   app:
     image: ${SHIYI_IMAGE:-ghcr.io/cforiky630/interview-mem:main}
     init: true
+    mem_limit: 2200m
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
@@ -24,13 +71,24 @@ services:
       PGUSER: shiyi
       PGDATABASE: shiyi
       PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      PGPOOL_MAX: ${PGPOOL_MAX:-20}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
+      UV_THREADPOOL_SIZE: "8"
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=1536}
+      DISABLE_NEXT_COMPRESS: "true"
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:?Set public HTTPS origin}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-}
       AI_PROXY_TRUSTED_ORIGINS: ${AI_PROXY_TRUSTED_ORIGINS:-}
       KEY_ENCRYPTION_SECRET: ${KEY_ENCRYPTION_SECRET:?Set KEY_ENCRYPTION_SECRET}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 30s

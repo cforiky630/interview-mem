@@ -1264,9 +1264,13 @@ export function useWorkspaceSync(sessionId: string) {
       mutationEpoch.current += 1;
       refreshAbort.current?.abort();
       try {
+        let nextEtag: string | null = null;
         const result = await api<Record<string, unknown>>(url, payload, {
           userId: sessionId,
           signal,
+          onResponseHeaders: (headers) => {
+            nextEtag = headers.get("x-workspace-etag");
+          },
         });
         mutationEpoch.current += 1;
         refreshAbort.current?.abort();
@@ -1275,7 +1279,7 @@ export function useWorkspaceSync(sessionId: string) {
             ? applyLocalWorkspacePatch(dataRef.current, url, payload, result)
             : null;
         if (patched) {
-          etagRef.current = null;
+          etagRef.current = nextEtag;
           lastSyncedAt.current = Date.now();
           setData(patched);
         } else {

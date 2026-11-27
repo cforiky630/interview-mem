@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   authorSubscriptions,
@@ -11,6 +11,7 @@ import {
 import { body, route } from "@/server/api";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
+import { withWorkspaceEtag } from "@/server/workspace";
 
 const authorIdSchema = z.string().trim().min(1, "缺少创作者标识。").max(128);
 
@@ -105,7 +106,8 @@ async function selectTopMostPublicDecks(
 }
 
 export const POST = route(async (request, user) => {
-  const data = await body(request, schema);
+  const response = await (async () => {
+    const data = await body(request, schema);
   const db = await getDb();
 
   if (data.action === "follow") {
@@ -115,7 +117,16 @@ export const POST = route(async (request, user) => {
     const [author] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.id, data.authorId));
+      .innerJoin(decks, eq(decks.ownerId, users.id))
+      .where(
+        and(
+          eq(users.id, data.authorId),
+          eq(decks.visibility, "public"),
+          gt(decks.publishedVersion, 0),
+          isNull(decks.deletedAt),
+        ),
+      )
+      .limit(1);
     if (!author) throw new AppError(404, "创作者不存在。");
 
     const subscribedDecks = await db.transaction(async (tx) => {
@@ -207,7 +218,16 @@ export const POST = route(async (request, user) => {
     const [author] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.id, data.authorId));
+      .innerJoin(decks, eq(decks.ownerId, users.id))
+      .where(
+        and(
+          eq(users.id, data.authorId),
+          eq(decks.visibility, "public"),
+          gt(decks.publishedVersion, 0),
+          isNull(decks.deletedAt),
+        ),
+      )
+      .limit(1);
     if (!author) throw new AppError(404, "创作者不存在。");
     await assertOptionalOwnedFolder(db, user.id, data.folderId);
     const publicDecks = await selectTopMostPublicDecks(
@@ -258,4 +278,6 @@ export const POST = route(async (request, user) => {
     ok: true,
     autoSubscribeNew: data.autoSubscribeNew,
   });
+  })();
+  return withWorkspaceEtag(user.id, response);
 }, true);

@@ -1,4 +1,5 @@
 "use client";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftToLine,
@@ -54,7 +55,11 @@ import type {
   QuestionView,
   Workspace,
 } from "@/lib/types";
-import { AiReaderDialog, type AiReaderTarget } from "./ai-reader-dialog";
+import type { AiReaderTarget } from "./ai-reader-dialog";
+const AiReaderDialog = dynamic(
+  () => import("./ai-reader-dialog").then((m) => m.AiReaderDialog),
+  { ssr: false },
+);
 import { AiSaveDialog, type AiSaveTarget } from "./ai-save-dialog";
 import { ReasoningDisclosure, ScopeLauncher } from "./ai-scope-launcher";
 import { ChatEditCard, chatEditState } from "./chat-edit-card";
@@ -635,6 +640,60 @@ export function AiIsland({
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = "";
+      let bufferedAnswer = "";
+      let bufferedReasoning = "";
+      let flushRafId: number | null = null;
+      let flushTimerId: number | null = null;
+
+      const cancelScheduledFlush = () => {
+        if (flushRafId !== null && typeof cancelAnimationFrame === "function") {
+          cancelAnimationFrame(flushRafId);
+          flushRafId = null;
+        }
+        if (flushTimerId !== null) {
+          clearTimeout(flushTimerId);
+          flushTimerId = null;
+        }
+      };
+
+      const flushBufferedText = () => {
+        cancelScheduledFlush();
+        if (!bufferedAnswer && !bufferedReasoning) return;
+        const answerAppend = bufferedAnswer;
+        const reasoningAppend = bufferedReasoning;
+        bufferedAnswer = "";
+        bufferedReasoning = "";
+        if (loadedTargetRef.current.key !== targetKey) return;
+        setItems((previous) =>
+          previous.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  ...(answerAppend ? { content: m.content + answerAppend } : {}),
+                  ...(reasoningAppend
+                    ? { reasoning: (m.reasoning ?? "") + reasoningAppend }
+                    : {}),
+                }
+              : m,
+          ),
+        );
+      };
+
+      const scheduleBufferedFlush = () => {
+        if (flushRafId !== null || flushTimerId !== null) return;
+        if (typeof requestAnimationFrame === "function") {
+          flushRafId = requestAnimationFrame(() => {
+            flushRafId = null;
+            flushBufferedText();
+          });
+        } else {
+          flushTimerId = window.setTimeout(() => {
+            flushTimerId = null;
+            flushBufferedText();
+          }, 50);
+        }
+      };
+
       try {
         while (true) {
           const { value, done } = await reader.read();
@@ -656,15 +715,11 @@ export function AiIsland({
               const textChunk =
                 typeof payload.text === "string" ? payload.text : "";
               if (textChunk && loadedTargetRef.current.key === targetKey) {
-                setItems((previous) =>
-                  previous.map((m) =>
-                    m.id === assistantId
-                      ? { ...m, reasoning: (m.reasoning ?? "") + textChunk }
-                      : m,
-                  ),
-                );
+                bufferedReasoning += textChunk;
+                scheduleBufferedFlush();
               }
             } else if (event === "tool") {
+              flushBufferedText();
               const step = {
                 name: String(payload.name ?? ""),
                 label: String(payload.label ?? ""),
@@ -679,6 +734,7 @@ export function AiIsland({
                 );
               }
             } else if (event === "references") {
+              flushBufferedText();
               if (
                 Array.isArray(payload.refs) &&
                 loadedTargetRef.current.key === targetKey
@@ -695,6 +751,7 @@ export function AiIsland({
                 );
               }
             } else if (event === "edits") {
+              flushBufferedText();
               if (
                 Array.isArray(payload.edits) &&
                 loadedTargetRef.current.key === targetKey
@@ -711,17 +768,14 @@ export function AiIsland({
               const textChunk =
                 typeof payload.text === "string" ? payload.text : "";
               if (textChunk && loadedTargetRef.current.key === targetKey) {
-                setItems((previous) =>
-                  previous.map((m) =>
-                    m.id === assistantId
-                      ? { ...m, content: m.content + textChunk }
-                      : m,
-                  ),
-                );
+                bufferedAnswer += textChunk;
+                scheduleBufferedFlush();
               }
             } else if (event === "done") {
+              flushBufferedText();
               sawTerminalEvent = true;
             } else if (event === "error") {
+              flushBufferedText();
               sawTerminalEvent = true;
               throw new Error(
                 typeof payload.error === "string"
@@ -733,6 +787,7 @@ export function AiIsland({
           if (done) break;
         }
       } finally {
+        flushBufferedText();
         await reader.cancel().catch(() => {});
       }
       if (!sawTerminalEvent && !controller.signal.aborted) {

@@ -2739,6 +2739,8 @@ strong {
   gap: 14px;
   padding: 15px 20px;
   border-bottom: 1px solid var(--border-subtle);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
   transition: background-color var(--dur-fast) ease;
 }
 
@@ -5695,6 +5697,93 @@ strong {
   text-underline-offset: 4px;
 }
 
+.auth-method-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+  padding: 4px;
+  margin-top: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+
+.auth-method-tabs button {
+  padding: 7px 10px;
+  font-size: 0.825rem;
+  font-weight: 500;
+  border-radius: calc(var(--radius-sm) - 3px);
+  color: var(--subtle);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.auth-method-tabs button.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.auth-otp-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.auth-otp-row input {
+  flex: 1;
+  min-width: 0;
+  letter-spacing: 0.18em;
+}
+
+.auth-resend-btn {
+  flex-shrink: 0;
+  padding: 0 14px;
+  font-size: 0.825rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.auth-resend-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.auth-turnstile-wrap {
+  min-height: 66px;
+}
+
+.auth-turnstile-hint {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.auth-notice {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  font-size: 0.825rem;
+  line-height: 1.5;
+}
+
+.auth-aux-links {
+  margin: 12px 0 0;
+  text-align: right;
+}
+
+.auth-aux-links button {
+  font-size: 0.8rem;
+  color: var(--subtle);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .status-dot {
   display: inline-block;
   width: 6px;
@@ -6883,6 +6972,8 @@ html[data-focus-modality="keyboard"] .library-sort-select select:focus-visible {
   align-items: center;
   gap: 8px;
   padding: 11px 12px 11px 14px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
   transition:
     background-color var(--dur-fast) ease,
     transform var(--dur-fast) var(--ease-smooth);

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import {
   useCallback,
   useDeferredValue,
@@ -82,8 +83,14 @@ import type {
   DuplicateConflictDetail,
   MoveSelection,
 } from "./folder-move-dialog";
-import { DuplicatesView } from "./duplicates-view";
-import { LibraryTrash } from "./library-trash";
+const DuplicatesView = dynamic(
+  () => import("./duplicates-view").then((m) => m.DuplicatesView),
+  { ssr: false },
+);
+const LibraryTrash = dynamic(
+  () => import("./library-trash").then((m) => m.LibraryTrash),
+  { ssr: false },
+);
 import { useDiscretePresence } from "./use-discrete-presence";
 
 export type LibraryProps = {

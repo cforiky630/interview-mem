@@ -155,9 +155,28 @@ export function sseResponse(
   onAbort: () => void,
 ) {
   const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  const clearHeartbeat = () => {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
   const stream = new ReadableStream({
     async start(controller) {
       let closed = false;
+      heartbeat = setInterval(() => {
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(": ping\n\n"));
+          } catch {
+            closed = true;
+            clearHeartbeat();
+            onAbort();
+          }
+        }
+      }, 18_000);
+      heartbeat.unref?.();
       const send = (event: string, value: unknown) => {
         if (!closed) {
           try {
@@ -168,6 +187,7 @@ export function sseResponse(
             );
           } catch {
             closed = true;
+            clearHeartbeat();
             onAbort();
           }
         }
@@ -175,6 +195,7 @@ export function sseResponse(
       try {
         await run(send, () => closed);
       } finally {
+        clearHeartbeat();
         onCleanup();
         if (!closed) {
           closed = true;
@@ -187,6 +208,7 @@ export function sseResponse(
       }
     },
     cancel() {
+      clearHeartbeat();
       onAbort();
       onCleanup();
     },

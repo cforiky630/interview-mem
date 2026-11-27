@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { conceptFolders, concepts, studyCards } from "@/db/schema";
 import {
@@ -365,18 +365,23 @@ export async function syncLinkedAnnotationsInTx(
   );
   if (!idSet.size) return;
 
+  const conceptFilter =
+    idSet.size <= 20
+      ? or(
+          ...[...idSet].map(
+            (cid) =>
+              sql`${studyCards.annotations} @> ${JSON.stringify([{ conceptId: cid }])}::jsonb`,
+          ),
+        )
+      : sql`jsonb_array_length(${studyCards.annotations}) > 0`;
+
   const cards = await tx
     .select({
       questionId: studyCards.questionId,
       annotations: studyCards.annotations,
     })
     .from(studyCards)
-    .where(
-      and(
-        eq(studyCards.userId, userId),
-        sql`jsonb_array_length(${studyCards.annotations}) > 0`,
-      ),
-    )
+    .where(and(eq(studyCards.userId, userId), conceptFilter))
     .orderBy(asc(studyCards.questionId))
     .for("update");
 

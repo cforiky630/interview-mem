@@ -26,8 +26,41 @@ BETTER_AUTH_URL=https://study.example.com
 BETTER_AUTH_SECRET=独立随机值_至少32字符
 KEY_ENCRYPTION_SECRET=另一个独立随机值_至少32字符
 POSTGRES_PASSWORD=独立的数据库密码
+REDIS_PASSWORD=独立的Redis密码
+# 4 GB 宿主机建议调低：PGPOOL_MAX=15, NODE_OPTIONS=--max-old-space-size=1024
+# 并相应调整 compose.yaml 中 db shared_buffers=512MB、redis --maxmemory 192mb。
 # 推荐从 Actions 摘要复制 SHIYI_IMAGE=...@sha256:...，固定到已验证的镜像。
 SHIYI_IMAGE=ghcr.io/cforiky630/interview-mem:main
+```
+
+### Cloudflare、人机验证（Turnstile）与邮箱验证码（Resend）
+
+1. **Cloudflare → Nginx 真实 IP 防伪造**：
+   - 公网直连 80/443 时：将 Cloudflare IPv4/IPv6 段定时同步到 `/etc/nginx/conf.d/cloudflare-ips.conf`（`set_real_ip_from ...;`）并在 [nginx.conf](nginx.conf) 取消注释 `include /etc/nginx/conf.d/cloudflare-ips.conf;`，同时在云安全组/`ufw` 仅放行 Cloudflare IP（或启用 Authenticated Origin Pulls mTLS），防止绕过 Cloudflare 伪造 `CF-Connecting-IP`；
+   - 使用 Cloudflare Tunnel 时：改用仅监听本机回环的 [nginx-tunnel.conf](nginx-tunnel.conf)（`listen 127.0.0.1:8080`，无需开放 80/443 或配置源站证书），将 `cloudflared` 转发目标从 `http://127.0.0.1:3000` 指向 `http://127.0.0.1:8080` 即可。
+2. **Cloudflare Turnstile（人机验证）**：
+   - 在 Cloudflare Dashboard 创建 Turnstile 小组件，绑定线上域名；
+   - 在 `.env` 填入 `TURNSTILE_SITE_KEY` 与 `TURNSTILE_SECRET_KEY`，重启容器即可生效，无需重编镜像。
+3. **Resend 邮箱验证码（模式 A：注册验证 + 验证码登录 + 忘记密码）**：
+   - 注册 [Resend](https://resend.com) 并在 Domains 验证发信域名（按指引向 Cloudflare DNS 添加 SPF/DKIM 记录）；
+   - 创建 API Key，在 `.env` 填入 `RESEND_API_KEY=re_...` 与 `EMAIL_FROM=拾忆 <noreply@yourdomain.com>`；
+   - 未配置时保持纯密码登录；配置后自动启用强制注册邮箱验证、验证码登录与忘记密码重置，并受 Redis 60 秒冷却与单邮箱每日 10 次上限保护。
+   - **Redis 淘汰策略提醒**：`compose.yaml` 对 Redis 强制使用 `--maxmemory-policy noeviction`，避免高负载时静默淘汰限流计数或活跃会话。
+
+### 已有生产库平滑加索引（零停机）
+
+容器启动会自动应用 `drizzle/` 迁移；若对运行中的大库先手动在线加索引避免建索引期间锁表，可在维护窗口先执行：
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS deck_public_updated_idx ON decks (updated_at DESC) WHERE visibility = 'public' AND published_version > 0 AND deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS deck_owner_public_idx ON decks (owner_id) WHERE visibility = 'public' AND published_version > 0 AND deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS question_owner_created_desc_idx ON questions (owner_id, created_at DESC);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS question_owner_deck_pos_idx ON questions (owner_id, deck_id, position DESC) WHERE deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS question_owner_active_created_idx ON questions (owner_id, created_at ASC, id ASC) WHERE deleted_at IS NULL AND purged_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS review_user_question_idx ON review_events (user_id, question_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS study_card_annotations_gin_idx ON study_cards USING gin (annotations jsonb_path_ops);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS import_orphan_cleanup_idx ON imports (created_at) WHERE status IN ('draft', 'failed', 'parsing');
+CREATE INDEX CONCURRENTLY IF NOT EXISTS session_expires_idx ON sessions (expires_at);
 ```
 
 每次用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` 生成一个值。Compose 使用独立连接字段传递数据库密码，不需要手动做 URL 编码。含 `$` 等字符的手写值应按 Docker Compose `.env` 语法使用单引号。
@@ -80,7 +113,7 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait
 
 ## 运行边界
 
-- 当前按单个应用实例部署，认证限流及 AI 并发计数保存在进程内。多实例前需共享限流状态；数据库迁移已有锁保护。
-- 外部托管 PostgreSQL 可改用 `DATABASE_URL`；TLS/CA 按数据库服务配置，不关闭证书校验。
-- 邮件验证与密码找回尚未接入。开放给陌生用户注册前应配置邮件服务并验证找回流程。
-- Linux 镜像及 PostgreSQL 由 CI 运行验证；目标服务器的域名、HTTPS、网络与数据迁移仍需部署时验收。
+- 引入 Redis 后，认证会话、限流计数与防邮件轰炸冷却均可在重启及多实例间共享；AI 并发计数与备份恢复并发锁仍保存在单进程内存中。
+- 外部托管 PostgreSQL / Redis 可分别改用 `DATABASE_URL` / `REDIS_URL`；TLS/CA 按服务商配置，不关闭证书校验。
+- 已提供 Cloudflare Turnstile 人机验证与基于 Resend 的邮箱验证码（模式 A）；若需高并发扩展，按需调大 `PGPOOL_MAX` 与 PostgreSQL `max_connections`。
+- Linux 镜像及 PostgreSQL 由 CI 运行验证；目标服务器的域名、HTTPS、Cloudflare IP 限制、网络与数据迁移仍需部署时验收。

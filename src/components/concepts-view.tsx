@@ -1352,6 +1352,13 @@ export function ConceptsView({
     [deletingId, mutate],
   );
 
+  const handleConfirmDeleteClick = useCallback(
+    (concept: ConceptView) => {
+      void handleConfirmDeleteConcept(concept);
+    },
+    [handleConfirmDeleteConcept],
+  );
+
   const toggleFolderSelect = useCallback((id: string) => {
     setSelectedFolderIds((prev) => {
       const next = new Set(prev);
@@ -2111,9 +2118,7 @@ export function ConceptsView({
                         onOpenQuestion={onOpenQuestion}
                         onOpenFolder={onSelectFolder}
                         onStartConfirmDelete={setConfirmDeleteId}
-                        onConfirmDelete={(c) =>
-                          void handleConfirmDeleteConcept(c)
-                        }
+                        onConfirmDelete={handleConfirmDeleteClick}
                         onToggleSelect={toggleConceptSelect}
                         onDragStartConcept={handleDragStartConcept}
                         onPointerDownConcept={handlePointerDownConcept}

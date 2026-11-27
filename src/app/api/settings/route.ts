@@ -11,7 +11,7 @@ import {
   providerRequest,
   acquireAi,
 } from "@/server/ai";
-import { ensureWorkspace } from "@/server/workspace";
+import { ensureWorkspace, withWorkspaceEtag } from "@/server/workspace";
 import { AppError } from "@/server/errors";
 import { AI_PROTOCOL, DEFAULT_AI, normalizeAiBaseUrl } from "@/lib/ai-config";
 import { assertAiHostname } from "@/server/ai-transport";
@@ -109,7 +109,10 @@ export const POST = route(async (request, user) => {
         .set({ theme: data.theme })
         .where(eq(preferences.userId, user.id));
     }
-    return NextResponse.json({ ok: true, theme: data.theme });
+    return withWorkspaceEtag(
+      user.id,
+      NextResponse.json({ ok: true, theme: data.theme }),
+    );
   }
   await ensureWorkspace(user.id);
   if (
@@ -240,6 +243,7 @@ export const POST = route(async (request, user) => {
     } finally {
       release();
     }
+    return NextResponse.json({ ok: true });
   }
-  return NextResponse.json({ ok: true });
+  return withWorkspaceEtag(user.id, NextResponse.json({ ok: true }));
 }, true);

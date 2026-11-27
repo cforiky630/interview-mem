@@ -26,16 +26,23 @@ export function encryptKey(plain: string, userId: string, secret?: string) {
   ].join(".");
 }
 export function decryptKey(value: string, userId: string, secret?: string) {
-  const [version, iv, tag, encrypted] = value.split(".");
+  const parts = value.split(".");
+  if (parts.length !== 4) throw new Error("密钥数据无效。");
+  const [version, iv, tag, encrypted] = parts;
   if (version !== "v1" || !iv || !tag || !encrypted)
+    throw new Error("密钥数据无效。");
+  const ivBuf = Buffer.from(iv, "base64url");
+  const tagBuf = Buffer.from(tag, "base64url");
+  if (ivBuf.length !== 12 || tagBuf.length !== 16)
     throw new Error("密钥数据无效。");
   const decipher = createDecipheriv(
     "aes-256-gcm",
     encryptionKey(secret),
-    Buffer.from(iv, "base64url"),
+    ivBuf,
+    { authTagLength: 16 },
   );
   decipher.setAAD(Buffer.from(userId));
-  decipher.setAuthTag(Buffer.from(tag, "base64url"));
+  decipher.setAuthTag(tagBuf);
   return Buffer.concat([
     decipher.update(Buffer.from(encrypted, "base64url")),
     decipher.final(),

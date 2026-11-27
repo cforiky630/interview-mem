@@ -21,7 +21,11 @@ import {
   subscriptions,
 } from "@/db/schema";
 import { body, route } from "@/server/api";
-import { buildOwnedPublishSubtree, ownedDeck } from "@/server/workspace";
+import {
+  buildOwnedPublishSubtree,
+  ownedDeck,
+  withWorkspaceEtag,
+} from "@/server/workspace";
 import { computeUnpublishedDiff } from "@/lib/subscriptions";
 import { AppError } from "@/server/errors";
 import { deckIdSchema } from "@/server/resource-ids";
@@ -178,6 +182,7 @@ async function publishDeckInTx(
     visibility: "public" | "unlisted";
     summary: string;
     skipUnchanged?: boolean;
+    preloadedHistory?: { release: typeof releases.$inferSelect }[];
   },
 ): Promise<{ deckId: string; version: number; skipped: boolean }> {
   if (deck.publishedVersion !== options.expectedVersion) {
@@ -247,12 +252,14 @@ async function publishDeckInTx(
   }
 
   const version = deck.publishedVersion + 1;
-  const history = await tx
-    .select({ release: releases })
-    .from(releases)
-    .innerJoin(decks, eq(releases.deckId, decks.id))
-    .where(eq(decks.ownerId, userId))
-    .orderBy(desc(releases.version));
+  const history =
+    options.preloadedHistory ??
+    (await tx
+      .select({ release: releases })
+      .from(releases)
+      .innerJoin(decks, eq(releases.deckId, decks.id))
+      .where(eq(decks.ownerId, userId))
+      .orderBy(desc(releases.version)));
   const prior = new Map<
     string,
     (typeof history)[number]["release"]["questions"][number]
@@ -374,6 +381,8 @@ async function applySubscriptionUpdate(
     const [row] = await tx
       .select({
         publishedVersion: decks.publishedVersion,
+        visibility: decks.visibility,
+        deletedAt: decks.deletedAt,
         seenVersion: subscriptions.seenVersion,
       })
       .from(subscriptions)
@@ -382,7 +391,8 @@ async function applySubscriptionUpdate(
         and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)),
       )
       .for("update", { of: subscriptions });
-    if (!row) throw new AppError(404, "订阅不可访问。");
+    if (!row || row.deletedAt || row.visibility === "private")
+      throw new AppError(404, "订阅不可访问或作者已取消公开。");
     const targetVersion =
       requestedVersion === undefined || requestedVersion === 0
         ? row.publishedVersion
@@ -461,7 +471,8 @@ export const GET = route(async (_request, user) =>
 );
 
 export const POST = route(async (request, user) => {
-  const data = await body(request, schema);
+  const response = await (async () => {
+    const data = await body(request, schema);
   const db = await getDb();
 
   if (data.action === "create") {
@@ -608,6 +619,12 @@ export const POST = route(async (request, user) => {
           (a, b) =>
             folderDepth(ownedTree, a.deckId) - folderDepth(ownedTree, b.deckId),
         );
+        const preloadedHistory = await tx
+          .select({ release: releases })
+          .from(releases)
+          .innerJoin(decks, eq(releases.deckId, decks.id))
+          .where(eq(decks.ownerId, user.id))
+          .orderBy(desc(releases.version));
         const results: { deckId: string; version: number; skipped: boolean }[] =
           [];
         for (const item of orderedItems) {
@@ -617,8 +634,21 @@ export const POST = route(async (request, user) => {
             visibility: item.visibility ?? data.defaultVisibility,
             summary: item.summary ?? data.defaultSummary,
             skipUnchanged: item.skipUnchanged ?? data.skipUnchanged,
+            preloadedHistory,
           });
           results.push(published);
+          if (!published.skipped) {
+            const [createdRel] = await tx
+              .select({ release: releases })
+              .from(releases)
+              .where(
+                and(
+                  eq(releases.deckId, deck.id),
+                  eq(releases.version, published.version),
+                ),
+              );
+            if (createdRel) preloadedHistory.unshift(createdRel);
+          }
         }
         const publishedCount = results.filter((r) => !r.skipped).length;
         const skippedCount = results.length - publishedCount;
@@ -796,38 +826,32 @@ export const POST = route(async (request, user) => {
 
   if (data.action === "applyAllUpdates") {
     const targetIds = data.deckIds ? [...new Set(data.deckIds)] : undefined;
-    const updated = await db.transaction(async (tx) => {
-      const outdated = await tx
-        .select({
-          deckId: subscriptions.deckId,
-          publishedVersion: decks.publishedVersion,
-        })
-        .from(subscriptions)
-        .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-        .where(
-          and(
-            eq(subscriptions.userId, user.id),
-            gt(decks.publishedVersion, subscriptions.seenVersion),
-            targetIds?.length
-              ? inArray(subscriptions.deckId, targetIds)
-              : undefined,
-          ),
-        );
-      for (const item of outdated) {
-        await tx
-          .update(subscriptions)
-          .set({ seenVersion: item.publishedVersion, dismissedVersion: 0 })
-          .where(
-            and(
-              eq(subscriptions.userId, user.id),
-              eq(subscriptions.deckId, item.deckId),
-            ),
-          );
-      }
-      return outdated.length;
-    });
-    return NextResponse.json({ ok: true, updated });
+    if (targetIds && !targetIds.length) {
+      return NextResponse.json({ ok: true, updated: 0 });
+    }
+    const idFilter = targetIds?.length
+      ? sql`and s.deck_id in (${sql.join(
+          targetIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`
+      : sql``;
+    const updatedRows = await db.execute(sql`
+      update ${subscriptions} as s
+      set seen_version = d.published_version,
+          dismissed_version = 0
+      from ${decks} as d
+      where s.deck_id = d.id
+        and s.user_id = ${user.id}
+        and d.deleted_at is null
+        and d.visibility <> 'private'
+        and d.published_version > s.seen_version
+        ${idFilter}
+      returning s.deck_id
+    `);
+    return NextResponse.json({ ok: true, updated: updatedRows.rows.length });
   }
 
   return NextResponse.json({ ok: true });
+  })();
+  return withWorkspaceEtag(user.id, response);
 }, true);

@@ -64,12 +64,18 @@ function MathNodeView({
   }, [latex]);
 
   useEffect(() => {
+    void import("katex/dist/katex.min.css");
+  }, []);
+
+  useEffect(() => {
     if (!editing && previewRef.current) {
       katex.render(latex || "\\text{公式}", previewRef.current, {
         displayMode,
         throwOnError: false,
         strict: "ignore",
         trust: false,
+        maxSize: 10,
+        maxExpand: 500,
       });
     }
   }, [latex, editing, displayMode]);
@@ -81,6 +87,8 @@ function MathNodeView({
         throwOnError: false,
         strict: "ignore",
         trust: false,
+        maxSize: 10,
+        maxExpand: 500,
       });
     }
   }, [draft, editing, displayMode]);
@@ -301,9 +309,17 @@ export function Editor({
   onSaveShortcutRef.current = onSaveShortcut;
   onEscapeKeyRef.current = onEscapeKey;
 
+  useEffect(() => {
+    void import("katex/dist/katex.min.css");
+  }, []);
+
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        link: {
+          openOnClick: false,
+        },
+      }),
       TableKit,
       LiveBlockMath,
       LiveInlineMath,

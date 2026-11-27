@@ -9,6 +9,11 @@ export function hasPostgres(env = process.env) {
 
 /** @param {Record<string, string | undefined>} [env] */
 export function createPostgresPool(env = process.env) {
+  const max = Math.max(5, Math.min(100, Number(env.PGPOOL_MAX || 20) || 20));
+  const statementTimeout = Math.max(
+    1000,
+    Number(env.PG_STATEMENT_TIMEOUT_MS || 30_000) || 30_000,
+  );
   const pool = new Pool({
     ...(env.DATABASE_URL
       ? { connectionString: env.DATABASE_URL }
@@ -19,9 +24,12 @@ export function createPostgresPool(env = process.env) {
           password: env.PGPASSWORD,
           database: env.PGDATABASE,
         }),
-    max: 5,
+    max,
+    keepAlive: true,
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 30_000,
+    statement_timeout: statementTimeout,
+    idle_in_transaction_session_timeout: 60_000,
   });
   pool.on("error", () => console.error("Idle database connection failed."));
   return pool;
@@ -36,6 +44,7 @@ export async function migratePostgres(pool, folder) {
   const client = await pool.connect();
   try {
     await client.query("SET lock_timeout = '60s'");
+    await client.query("SET statement_timeout = '0'");
     await client.query("SELECT pg_advisory_lock($1)", [0x53485949]); // SHYI
     await migrate(drizzle(client), { migrationsFolder: folder });
   } finally {

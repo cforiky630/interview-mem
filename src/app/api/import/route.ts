@@ -5,7 +5,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { imports, questions, decks } from "@/db/schema";
 import { body, route } from "@/server/api";
-import { nextQuestionBaseMs, ownedDeck } from "@/server/workspace";
+import { nextQuestionBaseMs, ownedDeck, withWorkspaceEtag } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { parseQuestions, type ParsedQuestion } from "@/lib/importer";
 import { aiCredential, providerRequest, acquireAi } from "@/server/ai";
@@ -195,7 +195,7 @@ export const POST = route(async (request, user) => {
         .where(eq(decks.id, data.deckId));
       return { added, duplicates };
     });
-    return NextResponse.json(result);
+    return withWorkspaceEtag(user.id, NextResponse.json(result));
   } catch (error) {
     await db
       .update(imports)

@@ -154,8 +154,8 @@ export function chatEditInstructions(
       : null,
     note: note
       ? {
-          note: sanitizeUntrustedText(note.content, CHAT_ANSWER_CONTEXT_LIMIT),
           version: note.version,
+          present: Boolean(note.content.trim()),
         }
       : null,
   };

@@ -54,6 +54,7 @@ jobs:
       BETTER_AUTH_SECRET: ci-only-auth-secret-11111111111111111111111111111111
       KEY_ENCRYPTION_SECRET: ci-only-encryption-secret-2222222222222222222222222222
       POSTGRES_PASSWORD: ci-only-postgres-password
+      REDIS_PASSWORD: ci-only-redis-password
       DOCKER_BUILD_RECORD_UPLOAD: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,7 +82,7 @@ jobs:
             org.opencontainers.image.description=拾忆：面试题整理与间隔复习
       - name: Start image with PostgreSQL
         run: |
-          docker compose --project-name shiyi-ci pull db
+          docker compose --project-name shiyi-ci pull db redis
           docker compose --project-name shiyi-ci up -d --no-build --pull never --wait --wait-timeout 120
           curl --fail --silent --show-error http://localhost:3107/api/health
       - name: Log in to GitHub Container Registry

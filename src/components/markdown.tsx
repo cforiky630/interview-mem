@@ -1,5 +1,13 @@
 "use client";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import type { PluggableList } from "unified";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -11,11 +19,41 @@ import {
   mergeQuestionTags,
   remarkObsidian,
 } from "@/lib/markdown-source";
-const plainPlugins = [remarkGfm, remarkObsidian];
-const mathPlugins = [remarkGfm, remarkMath, remarkObsidian];
+
+const plainPlugins: PluggableList = [remarkGfm, remarkObsidian];
+const mathPlugins: PluggableList = [remarkGfm, remarkMath, remarkObsidian];
+const EMPTY_REHYPE: PluggableList = [];
 const mathRehype: PluggableList = [
-  [rehypeKatex, { strict: "ignore", throwOnError: false, trust: false }],
+  [
+    rehypeKatex,
+    {
+      strict: "ignore",
+      throwOnError: false,
+      trust: false,
+      maxSize: 10,
+      maxExpand: 500,
+    },
+  ],
 ];
+
+let katexCssLoaded = false;
+let katexCssPromise: Promise<unknown> | null = null;
+
+function hasMathSyntax(source: string): boolean {
+  if (!source.includes("$")) return false;
+  if (/(?<!\\)\$\$/.test(source)) return true;
+  return /(?<!\\)\$(?!\s)(?:\\.|[^$\\\n])+?(?<!\s)\$/.test(source);
+}
+
+function loadKatexCss(): Promise<unknown> {
+  if (katexCssLoaded) return Promise.resolve();
+  if (!katexCssPromise) {
+    katexCssPromise = import("katex/dist/katex.min.css").then(() => {
+      katexCssLoaded = true;
+    });
+  }
+  return katexCssPromise;
+}
 
 function CodeBlock({ children }: { children?: ReactNode }) {
   const preRef = useRef<HTMLPreElement>(null);
@@ -57,6 +95,63 @@ function CodeBlock({ children }: { children?: ReactNode }) {
     </div>
   );
 }
+type MarkdownComponents = ComponentProps<typeof ReactMarkdown>["components"];
+
+function buildMarkdownComponents(interactiveLinks: boolean): MarkdownComponents {
+  return {
+    a: ({ children, href }) =>
+      interactiveLinks ? (
+        <a
+          href={href}
+          target={href?.startsWith("#note=") ? undefined : "_blank"}
+          rel="noopener noreferrer"
+          onClick={
+            href?.startsWith("#note=")
+              ? (event) => {
+                  event.preventDefault();
+                  try {
+                    window.dispatchEvent(
+                      new CustomEvent("shiyi:open-note", {
+                        detail: decodeURIComponent(href.slice(6)),
+                      }),
+                    );
+                  } catch {
+                    /* malformed imported link */
+                  }
+                }
+              : undefined
+          }
+        >
+          {children}
+        </a>
+      ) : (
+        <span>{children}</span>
+      ),
+    img: ({ src, alt }) =>
+      !interactiveLinks ? (
+        <span>[图片：{alt || "查看图片"}]</span>
+      ) : typeof src === "string" ? (
+        <a href={src} target="_blank" rel="noopener noreferrer">
+          [图片：{alt || "查看图片"}]
+        </a>
+      ) : null,
+    table: ({ children }) => (
+      <div className="table-scroll">
+        <table>{children}</table>
+      </div>
+    ),
+    pre: ({ children }) =>
+      interactiveLinks ? (
+        <CodeBlock>{children}</CodeBlock>
+      ) : (
+        <pre>{children}</pre>
+      ),
+  };
+}
+
+const INTERACTIVE_COMPONENTS = buildMarkdownComponents(true);
+const STATIC_COMPONENTS = buildMarkdownComponents(false);
+
 // 选文、同步状态、AI 面板变化时，原文不变就不重复解析 Markdown。
 export const Markdown = memo(function Markdown({
   children,
@@ -65,63 +160,25 @@ export const Markdown = memo(function Markdown({
   children: string;
   interactiveLinks?: boolean;
 }) {
-  const math = children.includes("$");
+  const needsMath = hasMathSyntax(children);
+
+  useEffect(() => {
+    if (!needsMath || katexCssLoaded) return;
+    void loadKatexCss().catch(() => {});
+  }, [needsMath]);
+
+  const activeBody = useMemo(() => markdownDocument(children).body, [children]);
+
   return (
     <div className="prose-content">
       <ReactMarkdown
-        remarkPlugins={math ? mathPlugins : plainPlugins}
-        rehypePlugins={math ? mathRehype : []}
-        components={{
-          a: ({ children, href }) =>
-            interactiveLinks ? (
-              <a
-                href={href}
-                target={href?.startsWith("#note=") ? undefined : "_blank"}
-                rel="noopener noreferrer"
-                onClick={
-                  href?.startsWith("#note=")
-                    ? (event) => {
-                        event.preventDefault();
-                        try {
-                          window.dispatchEvent(
-                            new CustomEvent("shiyi:open-note", {
-                              detail: decodeURIComponent(href.slice(6)),
-                            }),
-                          );
-                        } catch {
-                          /* malformed imported link */
-                        }
-                      }
-                    : undefined
-                }
-              >
-                {children}
-              </a>
-            ) : (
-              <span>{children}</span>
-            ),
-          img: ({ src, alt }) =>
-            !interactiveLinks ? (
-              <span>[图片：{alt || "查看图片"}]</span>
-            ) : typeof src === "string" ? (
-              <a href={src} target="_blank" rel="noopener noreferrer">
-                [图片：{alt || "查看图片"}]
-              </a>
-            ) : null,
-          table: ({ children }) => (
-            <div className="table-scroll">
-              <table>{children}</table>
-            </div>
-          ),
-          pre: ({ children }) =>
-            interactiveLinks ? (
-              <CodeBlock>{children}</CodeBlock>
-            ) : (
-              <pre>{children}</pre>
-            ),
-        }}
+        remarkPlugins={needsMath ? mathPlugins : plainPlugins}
+        rehypePlugins={needsMath ? mathRehype : EMPTY_REHYPE}
+        components={
+          interactiveLinks ? INTERACTIVE_COMPONENTS : STATIC_COMPONENTS
+        }
       >
-        {markdownDocument(children).body}
+        {activeBody}
       </ReactMarkdown>
     </div>
   );

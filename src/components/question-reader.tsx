@@ -1414,11 +1414,9 @@ export function QuestionReader({
     const first = marks[0];
     if (!first) return;
     first.scrollIntoView({ behavior: "smooth", block: "center" });
-    marks.forEach((mark) => {
-      mark.classList.remove("is-pulse");
-      void mark.offsetWidth;
-      mark.classList.add("is-pulse");
-    });
+    marks.forEach((mark) => mark.classList.remove("is-pulse"));
+    void container.offsetWidth;
+    marks.forEach((mark) => mark.classList.add("is-pulse"));
     if (pulseTimerRef.current !== null) {
       window.clearTimeout(pulseTimerRef.current);
     }

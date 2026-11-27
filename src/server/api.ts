@@ -4,11 +4,20 @@ import { getAuth } from "./auth";
 import { AppError } from "./errors";
 import { applicationOrigins } from "./config.mjs";
 
+const SESSION_ABSOLUTE_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+
 export type Identity = { id: string; name: string; email: string };
 export async function identity(request: Request): Promise<Identity> {
   const auth = await getAuth();
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) throw new AppError(401, "请先登录。", "UNAUTHENTICATED");
+  const createdMs = new Date(session.session.createdAt).getTime();
+  if (
+    Number.isFinite(createdMs) &&
+    Date.now() - createdMs > SESSION_ABSOLUTE_MAX_MS
+  ) {
+    throw new AppError(401, "登录会话已超时，请重新登录。", "SESSION_EXPIRED");
+  }
   const expectedUser = request.headers.get("X-Workspace-User");
   if (expectedUser && expectedUser !== session.user.id)
     throw new AppError(

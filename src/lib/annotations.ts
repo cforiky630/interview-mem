@@ -127,15 +127,30 @@ function buildTextIndex(container: HTMLElement): TextIndex {
 
 type TextSlice = { node: Text; start: number; end: number };
 
+function overlapsRanges(
+  occupied: readonly { start: number; end: number }[] | undefined,
+  start: number,
+  end: number,
+): boolean {
+  if (!occupied) return false;
+  for (const range of occupied) {
+    if (start < range.end && range.start < end) return true;
+  }
+  return false;
+}
+
 function findAnnotationSlices(
   index: TextIndex,
   rawQuote: string,
+  occupiedByNode: Map<Text, Array<{ start: number; end: number }>>,
 ): TextSlice[] | null {
   const normQuote = normalizeAnnotationQuote(rawQuote);
   if (!normQuote) return null;
 
-  const matchIdx = index.normStr.indexOf(normQuote);
-  if (matchIdx !== -1) {
+  let searchFrom = 0;
+  while (searchFrom <= index.normStr.length - normQuote.length) {
+    const matchIdx = index.normStr.indexOf(normQuote, searchFrom);
+    if (matchIdx === -1) break;
     const slices: TextSlice[] = [];
     for (let i = matchIdx; i < matchIdx + normQuote.length; i++) {
       const pos = index.charPositions[i];
@@ -147,7 +162,16 @@ function findAnnotationSlices(
         slices.push({ node: pos.node, start: pos.offset, end: pos.offset + 1 });
       }
     }
-    if (slices.length > 0) return slices;
+    if (
+      slices.length > 0 &&
+      slices.every(
+        (slice) =>
+          !overlapsRanges(occupiedByNode.get(slice.node), slice.start, slice.end),
+      )
+    ) {
+      return slices;
+    }
+    searchFrom = matchIdx + 1;
   }
 
   // Fallback: exact raw substring match within a single eligible text node.
@@ -155,9 +179,16 @@ function findAnnotationSlices(
   if (!trimmed) return null;
   for (const textNode of index.textNodes) {
     const value = textNode.nodeValue ?? "";
-    const exactIdx = value.indexOf(trimmed);
-    if (exactIdx !== -1) {
-      return [{ node: textNode, start: exactIdx, end: exactIdx + trimmed.length }];
+    let exactFrom = 0;
+    while (exactFrom <= value.length - trimmed.length) {
+      const exactIdx = value.indexOf(trimmed, exactFrom);
+      if (exactIdx === -1) break;
+      const start = exactIdx;
+      const end = exactIdx + trimmed.length;
+      if (!overlapsRanges(occupiedByNode.get(textNode), start, end)) {
+        return [{ node: textNode, start, end }];
+      }
+      exactFrom = exactIdx + 1;
     }
   }
 
@@ -176,32 +207,75 @@ export function applyAnnotationHighlights(
     return { matchedIds, cleanup: () => {} };
   }
 
+  const index = buildTextIndex(container);
+  const occupiedByNode = new Map<Text, Array<{ start: number; end: number }>>();
+  const plannedByNode = new Map<
+    Text,
+    Array<{ annotation: QuestionAnnotation; start: number; end: number }>
+  >();
+  const wrappedIds = new Set<string>();
+
   for (const annotation of annotations) {
     if (!annotation.quote.trim()) continue;
-    const index = buildTextIndex(container);
-    const slices = findAnnotationSlices(index, annotation.quote);
+    const slices = findAnnotationSlices(index, annotation.quote, occupiedByNode);
     if (!slices || !slices.length) continue;
 
-    let wrappedAny = false;
     for (const slice of slices) {
-      const parent = slice.node.parentNode;
       const value = slice.node.nodeValue ?? "";
-      if (!parent || slice.start < 0 || slice.end <= slice.start || slice.end > value.length) {
+      if (
+        !slice.node.parentNode ||
+        slice.start < 0 ||
+        slice.end <= slice.start ||
+        slice.end > value.length
+      ) {
         continue;
       }
-      if (slice.end < value.length) {
-        slice.node.splitText(slice.end);
+      let occ = occupiedByNode.get(slice.node);
+      if (!occ) {
+        occ = [];
+        occupiedByNode.set(slice.node, occ);
+      }
+      occ.push({ start: slice.start, end: slice.end });
+
+      let planned = plannedByNode.get(slice.node);
+      if (!planned) {
+        planned = [];
+        plannedByNode.set(slice.node, planned);
+      }
+      planned.push({
+        annotation,
+        start: slice.start,
+        end: slice.end,
+      });
+    }
+  }
+
+  for (const [textNode, entries] of plannedByNode) {
+    entries.sort((a, b) => b.start - a.start);
+    for (const entry of entries) {
+      const parent = textNode.parentNode;
+      const value = textNode.nodeValue ?? "";
+      if (
+        !parent ||
+        entry.start < 0 ||
+        entry.end <= entry.start ||
+        entry.end > value.length
+      ) {
+        continue;
+      }
+      if (entry.end < value.length) {
+        textNode.splitText(entry.end);
       }
       const targetNode =
-        slice.start > 0 ? slice.node.splitText(slice.start) : slice.node;
+        entry.start > 0 ? textNode.splitText(entry.start) : textNode;
       const mark = doc.createElement("mark");
-      mark.className = `prose-annotation-mark color-${annotation.color}${
-        activeId === annotation.id ? " is-active" : ""
+      mark.className = `prose-annotation-mark color-${entry.annotation.color}${
+        activeId === entry.annotation.id ? " is-active" : ""
       }`;
-      mark.dataset.annotationId = annotation.id;
-      if (annotation.conceptId) {
-        mark.dataset.conceptId = annotation.conceptId;
-        mark.setAttribute("data-concept-id", annotation.conceptId);
+      mark.dataset.annotationId = entry.annotation.id;
+      if (entry.annotation.conceptId) {
+        mark.dataset.conceptId = entry.annotation.conceptId;
+        mark.setAttribute("data-concept-id", entry.annotation.conceptId);
       }
       mark.tabIndex = 0;
       mark.setAttribute("role", "button");
@@ -209,10 +283,12 @@ export function applyAnnotationHighlights(
       parent.insertBefore(mark, targetNode);
       mark.appendChild(targetNode);
       createdMarks.push(mark);
-      wrappedAny = true;
+      wrappedIds.add(entry.annotation.id);
     }
+  }
 
-    if (wrappedAny) {
+  for (const annotation of annotations) {
+    if (wrappedIds.has(annotation.id)) {
       matchedIds.add(annotation.id);
     }
   }

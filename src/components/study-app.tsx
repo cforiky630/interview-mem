@@ -45,6 +45,7 @@ import {
   CONCEPT_ROOT_LABEL,
   buildConceptFolderIndex,
 } from "@/lib/concepts";
+import { clampAiDockWidth } from "@/lib/ai-stream";
 import { useDeviceProfile } from "@/lib/device-profile";
 import {
   ROOT_FOLDER_LABEL,
@@ -79,20 +80,49 @@ import { Button } from "./ui/button";
 import { ConfirmDialog } from "./ui/confirm-dialog";
 import { AuthScreen } from "./auth-screen";
 import { Dashboard } from "./dashboard";
-import { Library } from "./library";
-import { Catalog } from "./catalog";
-import { ReviewHub } from "./review-hub";
+const Library = dynamic(
+  () => import("./library").then((m) => m.Library),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="view-loading">
+        <Loader2 className="spin" size={20} />
+      </div>
+    ),
+  },
+);
+const Catalog = dynamic(
+  () => import("./catalog").then((m) => m.Catalog),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="view-loading">
+        <Loader2 className="spin" size={20} />
+      </div>
+    ),
+  },
+);
+const ReviewHub = dynamic(
+  () => import("./review-hub").then((m) => m.ReviewHub),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="view-loading">
+        <Loader2 className="spin" size={20} />
+      </div>
+    ),
+  },
+);
 import { useAiAnswerDraft } from "./use-ai-answer-draft";
 import { useAppShortcuts } from "./use-app-shortcuts";
 import { usePageScroll } from "./use-page-scroll";
 import { useWorkspaceSync } from "./use-workspace-sync";
 import { UserMenu } from "./user-menu";
-import {
-  AiIsland,
-  clampAiDockWidth,
-  type AiIslandMode,
-  type AiTrigger,
-} from "./ai-island";
+import type { AiIslandMode, AiTrigger } from "./ai-island";
+const AiIsland = dynamic(
+  () => import("./ai-island").then((m) => m.AiIsland),
+  { ssr: false },
+);
 const QuestionReader = dynamic(
   () => import("./question-reader").then((m) => m.QuestionReader),
   {
@@ -421,6 +451,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
   const [aiDockWidth, setAiDockWidth] = useState<number | null>(null);
   const [aiDockResizing, setAiDockResizing] = useState(false);
   const [aiTrigger, setAiTrigger] = useState<AiTrigger | null>(null);
+  const [hasOpenedAi, setHasOpenedAi] = useState(false);
   const triggerSeq = useRef(0);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiUnread, setAiUnread] = useState(false);
@@ -800,6 +831,11 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       setAiUnread(false);
     }
   }, [aiMode, aiHiddenInReview]);
+  useEffect(() => {
+    if (aiMode !== "collapsed" || aiTrigger !== null) {
+      setHasOpenedAi(true);
+    }
+  }, [aiMode, aiTrigger]);
   const viewedQuestionId =
     view === "question" &&
     questionId &&
@@ -1010,6 +1046,36 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       },
     );
   }
+  const openQuestionRef = useRef(openQuestion);
+  openQuestionRef.current = openQuestion;
+  const openConceptFolderRef = useRef(openConceptFolder);
+  openConceptFolderRef.current = openConceptFolder;
+  const handleSelectConceptFolder = useCallback((fid: string | null) => {
+    openConceptFolderRef.current(fid);
+  }, []);
+  const handleClearFocusConcept = useCallback(() => {
+    setFocusConceptId(null);
+    if (
+      typeof window !== "undefined" &&
+      viewRef.current === "concepts"
+    ) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("concept")) {
+        params.delete("concept");
+        const nextSearch = params.toString()
+          ? `?${params.toString()}`
+          : "";
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${nextSearch}`,
+        );
+      }
+    }
+  }, []);
+  const handleOpenConceptQuestion = useCallback((q: QuestionView) => {
+    openQuestionRef.current(q, []);
+  }, []);
   function startReview(targetDeck?: string, single?: QuestionView) {
     if (!data) return;
     if (
@@ -1977,28 +2043,9 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               folderId={conceptFolderId}
               focusConceptId={focusConceptId}
               focusNonce={focusConceptNonce}
-              onSelectFolder={openConceptFolder}
-              onClearFocusConcept={() => {
-                setFocusConceptId(null);
-                if (
-                  typeof window !== "undefined" &&
-                  viewRef.current === "concepts"
-                ) {
-                  const params = new URLSearchParams(window.location.search);
-                  if (params.has("concept")) {
-                    params.delete("concept");
-                    const nextSearch = params.toString()
-                      ? `?${params.toString()}`
-                      : "";
-                    window.history.replaceState(
-                      null,
-                      "",
-                      `${window.location.pathname}${nextSearch}`,
-                    );
-                  }
-                }
-              }}
-              onOpenQuestion={(q) => openQuestion(q, [])}
+              onSelectFolder={handleSelectConceptFolder}
+              onClearFocusConcept={handleClearFocusConcept}
+              onOpenQuestion={handleOpenConceptQuestion}
             />
           )}
           {view === "question" && currentQuestion && (
@@ -2518,35 +2565,37 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
           }
         }}
       />
-      <AiIsland
-        key={data.user.id}
-        data={data}
-        question={
-          view === "question"
-            ? currentQuestion
-            : view === "review" && reviewSessionActive && reviewRevealed
-              ? currentReview
+      {hasOpenedAi && (
+        <AiIsland
+          key={data.user.id}
+          data={data}
+          question={
+            view === "question"
+              ? currentQuestion
+              : view === "review" && reviewSessionActive && reviewRevealed
+                ? currentReview
+                : undefined
+          }
+          activeDeck={
+            (view === "library" || view === "question") && activeDeckId
+              ? data.decks.find((d) => d.id === activeDeckId)
               : undefined
-        }
-        activeDeck={
-          (view === "library" || view === "question") && activeDeckId
-            ? data.decks.find((d) => d.id === activeDeckId)
-            : undefined
-        }
-        mode={aiMode}
-        allowDock
-        hidden={aiHiddenInReview}
-        trigger={aiTrigger}
-        dockWidth={aiDockWidth}
-        onDockWidthChange={handleAiDockWidthChange}
-        onResizingDockChange={setAiDockResizing}
-        onModeChange={handleAiModeChange}
-        onOpenQuestion={(target) => openQuestion(target, [])}
-        onSettings={() => openSettings("ai")}
-        onBusyChange={setAiBusy}
-        onUnreadChange={setAiUnread}
-        mutate={mutate}
-      />
+          }
+          mode={aiMode}
+          allowDock
+          hidden={aiHiddenInReview}
+          trigger={aiTrigger}
+          dockWidth={aiDockWidth}
+          onDockWidthChange={handleAiDockWidthChange}
+          onResizingDockChange={setAiDockResizing}
+          onModeChange={handleAiModeChange}
+          onOpenQuestion={(target) => openQuestion(target, [])}
+          onSettings={() => openSettings("ai")}
+          onBusyChange={setAiBusy}
+          onUnreadChange={setAiUnread}
+          mutate={mutate}
+        />
+      )}
     </div>
   );
 }

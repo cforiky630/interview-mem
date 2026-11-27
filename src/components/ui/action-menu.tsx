@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type MutableRefObject,
   type ReactNode,
 } from "react";
 import { MoreHorizontal } from "lucide-react";
@@ -19,79 +20,47 @@ function menuItems(container: HTMLElement | null): HTMLElement[] {
   ).filter((el) => getComputedStyle(el).display !== "none");
 }
 
-export function ActionMenu({
-  label = "更多操作",
+function ActionMenuPanel({
+  label,
+  open,
+  closing,
+  anchorRef,
+  panelRef,
+  closingRef,
+  focusFirstOnOpenRef,
+  requestClose,
   children,
 }: {
-  label?: string;
+  label: string;
+  open: boolean;
+  closing: boolean;
+  anchorRef: MutableRefObject<HTMLDetailsElement | null>;
+  panelRef: MutableRefObject<HTMLDivElement | null>;
+  closingRef: MutableRefObject<boolean>;
+  focusFirstOnOpenRef: MutableRefObject<boolean>;
+  requestClose: (restoreFocus?: "keyboard" | "none") => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
-  const [closing, setClosing] = useState(false);
   const { isMobileShell } = useDeviceProfile();
   const sheetMode = isMobileShell;
-  const ref = useRef<HTMLDetailsElement>(null);
-  const trigger = useRef<HTMLElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const closingRef = useRef(false);
-  const closeTokenRef = useRef(0);
-  const focusFirstOnOpenRef = useRef(false);
-
-  const requestClose = useCallback(
-    (restoreFocus: "keyboard" | "none" = "none") => {
-      const token = ++closeTokenRef.current;
-      if (restoreFocus === "keyboard") {
-        trigger.current?.focus({ preventScroll: true });
-      }
-      const menu = panel.current;
-      if (!menu || (!open && !closingRef.current)) {
-        closingRef.current = false;
-        setClosing(false);
-        setOpen(false);
-        return;
-      }
-      closingRef.current = true;
-      setClosing(true);
-      setOpen(false);
-
-      void (async () => {
-        await new Promise<void>((resolve) =>
-          requestAnimationFrame(() => resolve()),
-        );
-        if (closeTokenRef.current !== token) return;
-        const animations = menu.getAnimations({ subtree: true });
-        if (animations.length > 0) {
-          await Promise.race([
-            Promise.allSettled(animations.map((a) => a.finished)),
-            new Promise((resolve) => setTimeout(resolve, 320)),
-          ]);
-        }
-        if (closeTokenRef.current !== token) return;
-        if (menu.matches(":popover-open")) menu.hidePopover();
-        closingRef.current = false;
-        setClosing(false);
-      })();
-    },
-    [open],
-  );
 
   useEffect(() => {
-    const menu = panel.current;
+    const menu = panelRef.current;
     if (!open && !closing && menu?.matches(":popover-open")) {
       menu.hidePopover();
     }
-  }, [open, closing]);
+  }, [open, closing, panelRef]);
 
   useEffect(() => {
-    const menu = panel.current;
+    const menu = panelRef.current;
     return () => {
       if (menu?.matches(":popover-open")) menu.hidePopover();
     };
-  }, []);
+  }, [panelRef]);
 
   useLayoutEffect(() => {
-    const anchor = ref.current;
-    const menu = panel.current;
+    const anchor = anchorRef.current;
+    const menu = panelRef.current;
     if (!open || !anchor || !menu) return;
 
     const isMobile = getDeviceProfile().isMobileShell;
@@ -198,7 +167,106 @@ export function ActionMenu({
       viewport?.removeEventListener("resize", place);
       viewport?.removeEventListener("scroll", place);
     };
-  }, [open, isMobileShell, requestClose]);
+  }, [
+    open,
+    isMobileShell,
+    requestClose,
+    anchorRef,
+    panelRef,
+    closingRef,
+    focusFirstOnOpenRef,
+  ]);
+
+  return (
+    <div
+      ref={panelRef}
+      popover="manual"
+      data-sheet={sheetMode ? "true" : "false"}
+      data-closing={closing ? "" : undefined}
+      onClick={(event) => {
+        if (!(event.target as Element).closest("button,a")) return;
+        requestClose(event.detail === 0 ? "keyboard" : "none");
+      }}
+    >
+      {sheetMode ? (
+        <>
+          <div
+            className="action-sheet-backdrop"
+            onClick={() => requestClose("none")}
+          />
+          <div className="action-sheet-card" role="menu" aria-label={label}>
+            <div className="sheet-grabber" aria-hidden="true" />
+            <div className="action-sheet-title">{label}</div>
+            <div className="action-sheet-items">{children}</div>
+            <button
+              type="button"
+              className="action-sheet-cancel"
+              onClick={() => requestClose("none")}
+            >
+              取消
+            </button>
+          </div>
+        </>
+      ) : (
+        children
+      )}
+    </div>
+  );
+}
+
+export function ActionMenu({
+  label = "更多操作",
+  children,
+}: {
+  label?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const ref = useRef<HTMLDetailsElement>(null);
+  const trigger = useRef<HTMLElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const closingRef = useRef(false);
+  const closeTokenRef = useRef(0);
+  const focusFirstOnOpenRef = useRef(false);
+
+  const requestClose = useCallback(
+    (restoreFocus: "keyboard" | "none" = "none") => {
+      const token = ++closeTokenRef.current;
+      if (restoreFocus === "keyboard") {
+        trigger.current?.focus({ preventScroll: true });
+      }
+      const menu = panel.current;
+      if (!menu || (!open && !closingRef.current)) {
+        closingRef.current = false;
+        setClosing(false);
+        setOpen(false);
+        return;
+      }
+      closingRef.current = true;
+      setClosing(true);
+      setOpen(false);
+
+      void (async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        if (closeTokenRef.current !== token) return;
+        const animations = menu.getAnimations({ subtree: true });
+        if (animations.length > 0) {
+          await Promise.race([
+            Promise.allSettled(animations.map((a) => a.finished)),
+            new Promise((resolve) => setTimeout(resolve, 320)),
+          ]);
+        }
+        if (closeTokenRef.current !== token) return;
+        if (menu.matches(":popover-open")) menu.hidePopover();
+        closingRef.current = false;
+        setClosing(false);
+      })();
+    },
+    [open],
+  );
 
   return (
     <details ref={ref} open={open || closing} className="reader-more action-menu">
@@ -237,39 +305,20 @@ export function ActionMenu({
       >
         <MoreHorizontal size={19} />
       </summary>
-      <div
-        ref={panel}
-        popover="manual"
-        data-sheet={sheetMode ? "true" : "false"}
-        data-closing={closing ? "" : undefined}
-        onClick={(event) => {
-          if (!(event.target as Element).closest("button,a")) return;
-          requestClose(event.detail === 0 ? "keyboard" : "none");
-        }}
-      >
-        {sheetMode ? (
-          <>
-            <div
-              className="action-sheet-backdrop"
-              onClick={() => requestClose("none")}
-            />
-            <div className="action-sheet-card" role="menu" aria-label={label}>
-              <div className="sheet-grabber" aria-hidden="true" />
-              <div className="action-sheet-title">{label}</div>
-              <div className="action-sheet-items">{children}</div>
-              <button
-                type="button"
-                className="action-sheet-cancel"
-                onClick={() => requestClose("none")}
-              >
-                取消
-              </button>
-            </div>
-          </>
-        ) : (
-          children
-        )}
-      </div>
+      {(open || closing) && (
+        <ActionMenuPanel
+          label={label}
+          open={open}
+          closing={closing}
+          anchorRef={ref}
+          panelRef={panel}
+          closingRef={closingRef}
+          focusFirstOnOpenRef={focusFirstOnOpenRef}
+          requestClose={requestClose}
+        >
+          {children}
+        </ActionMenuPanel>
+      )}
     </details>
   );
 }

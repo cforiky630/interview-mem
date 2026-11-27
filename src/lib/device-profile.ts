@@ -74,9 +74,15 @@ let blurTimer: number | null = null;
 const listeners = new Set<() => void>();
 let teardownListeners: (() => void) | null = null;
 
-function computeProfileAndSyncDom(): DeviceProfile {
+type ComputedDeviceSnapshot = {
+  profile: DeviceProfile;
+  vvh: number;
+  kbOffset: number;
+};
+
+function computeDeviceSnapshot(): ComputedDeviceSnapshot | null {
   if (typeof window === "undefined" || typeof document === "undefined") {
-    return DEFAULT_DEVICE_PROFILE;
+    return null;
   }
   const mm =
     typeof window.matchMedia === "function"
@@ -120,10 +126,30 @@ function computeProfileAndSyncDom(): DeviceProfile {
     isTouchInput &&
     (kbOffset > 120 || (editableFocused && (shrink > 110 || isMobileShell)));
 
+  const profile =
+    initialized &&
+    cachedProfile.input === input &&
+    cachedProfile.shell === shell &&
+    cachedProfile.isKeyboardOpen === isKeyboardOpen
+      ? cachedProfile
+      : Object.freeze({
+          input,
+          shell,
+          isMobileShell,
+          isTouchInput,
+          isDesktopCompact,
+          isKeyboardOpen,
+        });
+
+  return { profile, vvh, kbOffset };
+}
+
+function applyDomFromSnapshot(snapshot: ComputedDeviceSnapshot): void {
+  const { profile, vvh, kbOffset } = snapshot;
   const root = document.documentElement;
-  if (root.dataset.input !== input) root.dataset.input = input;
-  if (root.dataset.shell !== shell) root.dataset.shell = shell;
-  if (isKeyboardOpen) {
+  if (root.dataset.input !== profile.input) root.dataset.input = profile.input;
+  if (root.dataset.shell !== profile.shell) root.dataset.shell = profile.shell;
+  if (profile.isKeyboardOpen) {
     if (root.dataset.keyboardOpen !== "true") {
       root.dataset.keyboardOpen = "true";
     }
@@ -140,40 +166,31 @@ function computeProfileAndSyncDom(): DeviceProfile {
   if (root.style.getPropertyValue("--kb-offset") !== nextKbOffset) {
     root.style.setProperty("--kb-offset", nextKbOffset);
   }
-
-  if (
-    initialized &&
-    cachedProfile.input === input &&
-    cachedProfile.shell === shell &&
-    cachedProfile.isKeyboardOpen === isKeyboardOpen
-  ) {
-    return cachedProfile;
-  }
-
-  initialized = true;
-  cachedProfile = Object.freeze({
-    input,
-    shell,
-    isMobileShell,
-    isTouchInput,
-    isDesktopCompact,
-    isKeyboardOpen,
-  });
-  return cachedProfile;
 }
 
 export function syncDeviceProfile(): DeviceProfile {
+  const snapshot = computeDeviceSnapshot();
+  if (!snapshot) return DEFAULT_DEVICE_PROFILE;
+  applyDomFromSnapshot(snapshot);
   const prev = cachedProfile;
-  const next = computeProfileAndSyncDom();
-  if (next !== prev) {
+  initialized = true;
+  cachedProfile = snapshot.profile;
+  if (snapshot.profile !== prev) {
     listeners.forEach((listener) => listener());
   }
-  return next;
+  return cachedProfile;
 }
 
 export function getDeviceProfile(): DeviceProfile {
   if (typeof window === "undefined") return DEFAULT_DEVICE_PROFILE;
-  return computeProfileAndSyncDom();
+  if (!initialized) {
+    const snapshot = computeDeviceSnapshot();
+    if (snapshot) {
+      initialized = true;
+      cachedProfile = snapshot.profile;
+    }
+  }
+  return cachedProfile;
 }
 
 function getServerDeviceProfile(): DeviceProfile {
@@ -184,8 +201,20 @@ function attachGlobalListeners(): () => void {
   if (typeof window === "undefined" || typeof document === "undefined") {
     return () => {};
   }
+  let rafId: number | null = null;
   const onChange = () => {
     syncDeviceProfile();
+  };
+  const onThrottledViewportChange = () => {
+    if (rafId !== null) return;
+    if (typeof window.requestAnimationFrame === "function") {
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        syncDeviceProfile();
+      });
+    } else {
+      syncDeviceProfile();
+    }
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (
@@ -222,19 +251,25 @@ function attachGlobalListeners(): () => void {
   for (const mql of mediaLists) {
     mql.addEventListener("change", onChange);
   }
-  window.addEventListener("resize", onChange, { passive: true });
+  window.addEventListener("resize", onThrottledViewportChange, {
+    passive: true,
+  });
   window.addEventListener("orientationchange", onChange, { passive: true });
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("focusin", onFocusIn, true);
   document.addEventListener("focusout", onFocusOut, true);
   const vv = window.visualViewport;
-  vv?.addEventListener("resize", onChange);
-  vv?.addEventListener("scroll", onChange);
+  vv?.addEventListener("resize", onThrottledViewportChange);
+  vv?.addEventListener("scroll", onThrottledViewportChange);
 
   syncDeviceProfile();
 
   return () => {
+    if (rafId !== null && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(rafId);
+      rafId = null;
+    }
     if (blurTimer !== null) {
       window.clearTimeout(blurTimer);
       blurTimer = null;
@@ -242,14 +277,14 @@ function attachGlobalListeners(): () => void {
     for (const mql of mediaLists) {
       mql.removeEventListener("change", onChange);
     }
-    window.removeEventListener("resize", onChange);
+    window.removeEventListener("resize", onThrottledViewportChange);
     window.removeEventListener("orientationchange", onChange);
     document.removeEventListener("keydown", onKeyDown, true);
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("focusin", onFocusIn, true);
     document.removeEventListener("focusout", onFocusOut, true);
-    vv?.removeEventListener("resize", onChange);
-    vv?.removeEventListener("scroll", onChange);
+    vv?.removeEventListener("resize", onThrottledViewportChange);
+    vv?.removeEventListener("scroll", onThrottledViewportChange);
   };
 }
 

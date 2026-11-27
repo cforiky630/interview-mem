@@ -10,6 +10,7 @@ import {
   nextQuestionPosition,
   ownedDeck,
   publishedQuestion,
+  withWorkspaceEtag,
 } from "@/server/workspace";
 import { contentHash } from "@/server/crypto";
 import { AppError } from "@/server/errors";
@@ -216,7 +217,8 @@ async function insertOwnedQuestion(
 }
 
 export const POST = route(async (request, user) => {
-  const data = await body(request, schema);
+  const response = await (async () => {
+    const data = await body(request, schema);
   if (data.action === "batch")
     return Response.json(
       await batchMutateQuestions(
@@ -530,4 +532,6 @@ export const POST = route(async (request, user) => {
     return NextResponse.json({ version: changed[0].noteVersion });
   }
   return NextResponse.json({ ok: true });
+  })();
+  return withWorkspaceEtag(user.id, response);
 }, true);

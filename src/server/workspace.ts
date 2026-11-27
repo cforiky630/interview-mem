@@ -85,6 +85,28 @@ export async function nextQuestionPosition(
   return typeof row?.maxPosition === "number" ? row.maxPosition + 1 : 0;
 }
 
+export async function bumpWorkspaceVersion(
+  executor: Pick<Database, "update">,
+  userId: string,
+) {
+  await executor
+    .update(preferences)
+    .set({ workspaceVersion: sql`${preferences.workspaceVersion} + 1` })
+    .where(eq(preferences.userId, userId));
+}
+
+export async function withWorkspaceEtag(
+  userId: string,
+  response: Response,
+  executor?: Pick<Database, "update">,
+): Promise<Response> {
+  const db = executor ?? (await getDb());
+  await bumpWorkspaceVersion(db, userId);
+  const etag = await getWorkspaceEtag(userId);
+  response.headers.set("X-Workspace-ETag", etag);
+  return response;
+}
+
 export async function ensureWorkspace(userId: string) {
   const db = await getDb();
   await db.transaction(async (tx) => {
@@ -244,7 +266,9 @@ export async function accessibleQuestion(
   // A published question keeps its stable identity when the author removes a folder or deletes the draft.
   // Subscribers stay pinned to their accepted release version (`subscriptions.seenVersion`) until opting into updates.
   const snapshots = await db
-    .select({ release: releases })
+    .select({
+      question: sql<PublishedQuestion | null>`jsonb_path_query_first(${releases.questions}, '$[*] ? (@.id == $qid)', jsonb_build_object('qid', ${questionId}::text))`,
+    })
     .from(subscriptions)
     .innerJoin(decks, eq(subscriptions.deckId, decks.id))
     .innerJoin(
@@ -262,131 +286,63 @@ export async function accessibleQuestion(
     )
     .orderBy(releases.deckId)
     .limit(1);
-  const question = snapshots[0]?.release.questions.find(
-    (q) => q.id === questionId,
-  );
+  const question = snapshots[0]?.question;
   if (!question) throw new AppError(404, "这道题尚未发布或无权访问。");
   return { ...question, isOwner: false };
 }
 
 export async function getWorkspaceEtag(userId: string): Promise<string> {
   const db = await getDb();
-  const [
-    [prefRow],
-    [credRow],
-    [ownDecksAgg],
-    [ownQuestionsAgg],
-    [subAgg],
-    [followAgg],
-    [studyAgg],
-    [reviewAgg],
-    [conceptsAgg],
-    [conceptFoldersAgg],
-  ] = await Promise.all([
-    db
-      .select({
-        dailyGoal: preferences.dailyGoal,
-        dailyNewLimit: preferences.dailyNewLimit,
-        theme: preferences.theme,
-        timeZone: preferences.timeZone,
-        onboarded: preferences.onboarded,
-      })
-      .from(preferences)
-      .where(eq(preferences.userId, userId)),
-    db
-      .select({
-        keyHint: credentials.keyHint,
-        provider: credentials.provider,
-        baseUrl: credentials.baseUrl,
-        model: credentials.model,
-        updatedAt: credentials.updatedAt,
-      })
-      .from(credentials)
-      .where(eq(credentials.userId, userId)),
-    db
-      .select({
-        activeCount: sql<number>`(count(*) filter (where ${decks.deletedAt} is null))::int`,
-        totalCount: sql<number>`count(*)::int`,
-        maxUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
-        sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
-        treeSig: sql<string>`coalesce(string_agg(${decks.id} || ':' || coalesce(${decks.parentId}, '') || ':' || ${decks.title}, ',' order by ${decks.id}) filter (where ${decks.deletedAt} is null), '')`,
-      })
-      .from(decks)
-      .where(eq(decks.ownerId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxUpdated: sql<string>`coalesce(max(${questions.updatedAt})::text, '')`,
-        sumRev: sql<string>`coalesce(sum(${questions.revision})::bigint, 0)::text`,
-        sumMajor: sql<string>`coalesce(sum(${questions.majorRevision})::bigint, 0)::text`,
-      })
-      .from(questions)
-      .where(
-        and(
-          eq(questions.ownerId, userId),
-          isNull(questions.deletedAt),
-          isNull(questions.purgedAt),
-        ),
-      ),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxCreated: sql<string>`coalesce(max(${subscriptions.createdAt})::text, '')`,
-        sumSeen: sql<string>`coalesce(sum(${subscriptions.seenVersion})::bigint, 0)::text`,
-        sumDismissed: sql<string>`coalesce(sum(${subscriptions.dismissedVersion})::bigint, 0)::text`,
-        sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
-        maxDeckUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
-        deletedCount: sql<number>`(count(*) filter (where ${decks.deletedAt} is not null))::int`,
-        foldersSig: sql<string>`coalesce(string_agg(${subscriptions.deckId} || ':' || coalesce(${subscriptions.folderId}, ''), ',' order by ${subscriptions.deckId}), '')`,
-      })
-      .from(subscriptions)
-      .innerJoin(decks, eq(subscriptions.deckId, decks.id))
-      .where(eq(subscriptions.userId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxCreated: sql<string>`coalesce(max(${authorSubscriptions.createdAt})::text, '')`,
-        autoCount: sql<number>`(count(*) filter (where ${authorSubscriptions.autoSubscribeNew}))::int`,
-        maxAuthorUpdated: sql<string>`coalesce(max(${users.updatedAt})::text, '')`,
-      })
-      .from(authorSubscriptions)
-      .innerJoin(users, eq(authorSubscriptions.authorId, users.id))
-      .where(eq(authorSubscriptions.followerId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxUpdated: sql<string>`coalesce(max(${studyCards.updatedAt})::text, '')`,
-        sumVersions: sql<string>`coalesce(sum(${studyCards.version} + ${studyCards.noteVersion} + ${studyCards.annotationsVersion})::bigint, 0)::text`,
-        favCount: sql<number>`(count(*) filter (where ${studyCards.favorite}))::int`,
-        favSig: sql<string>`coalesce(string_agg(${studyCards.questionId}, ',' order by ${studyCards.questionId}) filter (where ${studyCards.favorite}), '')`,
-        dueCount: sql<number>`(count(*) filter (where ${studyCards.fsrs} is not null and case when (${studyCards.fsrs}->>'due') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' then (${studyCards.fsrs}->>'due')::timestamptz <= now() else false end))::int`,
-      })
-      .from(studyCards)
-      .where(eq(studyCards.userId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxCreated: sql<string>`coalesce(max(${reviewEvents.createdAt})::text, '')`,
-      })
-      .from(reviewEvents)
-      .where(eq(reviewEvents.userId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxUpdated: sql<string>`coalesce(max(${concepts.updatedAt})::text, '')`,
-        sig: sql<string>`coalesce(string_agg(${concepts.id} || ':' || coalesce(${concepts.folderId}, '') || ':' || ${concepts.normalizedKey} || ':' || ${concepts.groupName} || ':' || ${concepts.color} || ':' || md5(${concepts.definition} || ':' || ${concepts.aliases}::text) || ':' || ${concepts.updatedAt}::text, ',' order by ${concepts.id}), '')`,
-      })
-      .from(concepts)
-      .where(eq(concepts.userId, userId)),
-    db
-      .select({
-        count: sql<number>`count(*)::int`,
-        maxUpdated: sql<string>`coalesce(max(${conceptFolders.updatedAt})::text, '')`,
-        sig: sql<string>`coalesce(string_agg(${conceptFolders.id} || ':' || coalesce(${conceptFolders.parentId}, '') || ':' || ${conceptFolders.title} || ':' || ${conceptFolders.color} || ':' || ${conceptFolders.updatedAt}::text, ',' order by ${conceptFolders.id}), '')`,
-      })
-      .from(conceptFolders)
-      .where(eq(conceptFolders.userId, userId)),
-  ]);
+  const [[prefRow], [credRow], [subAgg], [followAgg], [dueRow]] =
+    await Promise.all([
+      db
+        .select({
+          workspaceVersion: preferences.workspaceVersion,
+          dailyGoal: preferences.dailyGoal,
+          dailyNewLimit: preferences.dailyNewLimit,
+          theme: preferences.theme,
+          timeZone: preferences.timeZone,
+          onboarded: preferences.onboarded,
+        })
+        .from(preferences)
+        .where(eq(preferences.userId, userId)),
+      db
+        .select({
+          updatedAt: credentials.updatedAt,
+          model: credentials.model,
+          baseUrl: credentials.baseUrl,
+        })
+        .from(credentials)
+        .where(eq(credentials.userId, userId)),
+      db
+        .select({
+          count: sql<number>`count(*)::int`,
+          sumSeen: sql<string>`coalesce(sum(${subscriptions.seenVersion})::bigint, 0)::text`,
+          sumDismissed: sql<string>`coalesce(sum(${subscriptions.dismissedVersion})::bigint, 0)::text`,
+          sumPublished: sql<string>`coalesce(sum(${decks.publishedVersion})::bigint, 0)::text`,
+          maxDeckUpdated: sql<string>`coalesce(max(${decks.updatedAt})::text, '')`,
+          deletedCount: sql<number>`(count(*) filter (where ${decks.deletedAt} is not null))::int`,
+          visSig: sql<string>`coalesce(string_agg(${subscriptions.deckId} || ':' || ${decks.visibility}, ',' order by ${subscriptions.deckId}), '')`,
+        })
+        .from(subscriptions)
+        .innerJoin(decks, eq(subscriptions.deckId, decks.id))
+        .where(eq(subscriptions.userId, userId)),
+      db
+        .select({
+          count: sql<number>`count(*)::int`,
+          autoCount: sql<number>`(count(*) filter (where ${authorSubscriptions.autoSubscribeNew}))::int`,
+          maxAuthorUpdated: sql<string>`coalesce(max(${users.updatedAt})::text, '')`,
+        })
+        .from(authorSubscriptions)
+        .innerJoin(users, eq(authorSubscriptions.authorId, users.id))
+        .where(eq(authorSubscriptions.followerId, userId)),
+      db
+        .select({
+          dueCount: sql<number>`(count(*) filter (where ${studyCards.fsrs} is not null and case when (${studyCards.fsrs}->>'due') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' then (${studyCards.fsrs}->>'due')::timestamptz <= now() else false end))::int`,
+        })
+        .from(studyCards)
+        .where(eq(studyCards.userId, userId)),
+    ]);
 
   let followedPublicSig = "";
   if ((followAgg?.count ?? 0) > 0) {
@@ -418,15 +374,10 @@ export async function getWorkspaceEtag(userId: string): Promise<string> {
     today,
     prefRow ?? null,
     credRow ?? null,
-    ownDecksAgg ?? null,
-    ownQuestionsAgg ?? null,
     subAgg ?? null,
     followAgg ?? null,
     followedPublicSig,
-    studyAgg ?? null,
-    reviewAgg ?? null,
-    conceptsAgg ?? null,
-    conceptFoldersAgg ?? null,
+    dueRow ?? null,
   ]);
   const hash = createHash("sha256").update(fingerprint).digest("hex").slice(0, 24);
   return `W/"${hash}"`;
@@ -531,15 +482,19 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     ...new Set([
       ...own.filter((d) => d.publishedVersion > 0).map((d) => d.id),
       ...subscribed
-        .filter((s) => s.deck.publishedVersion > s.subscription.seenVersion)
+        .filter(
+          (s) =>
+            !s.deck.deletedAt &&
+            s.deck.visibility !== "private" &&
+            s.deck.publishedVersion > s.subscription.seenVersion,
+        )
         .map((s) => s.deck.id),
     ]),
   ];
   const followedAuthorIds = followedRows.map((row) => row.authorId);
   const [
     drafts,
-    activityRows,
-    aggregateRows,
+    reviewDailyRows,
     pinnedSubReleases,
     latestReleases,
     followedAuthorDecks,
@@ -571,20 +526,17 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
       )
       .orderBy(asc(questions.createdAt), asc(questions.id)),
     db
-      .select({ date: dayExpression, count: sql<number>`count(*)::int` })
+      .select({
+        date: dayExpression,
+        count: sql<number>`count(*)::int`,
+        recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
+        remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
+        todayDistinct: sql<number>`count(distinct ${reviewEvents.questionId})::int`,
+        newTodayDistinct: sql<number>`count(distinct case when ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
+      })
       .from(reviewEvents)
       .where(eq(reviewEvents.userId, identity.id))
       .groupBy(sql`1`),
-    db
-      .select({
-        total: sql<number>`count(*)::int`,
-        recent: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff}))::int`,
-        remembered: sql<number>`(count(*) filter (where ${reviewEvents.createdAt} >= ${recentCutoff} and ${reviewEvents.rating} > 1))::int`,
-        today: sql<number>`count(distinct case when ${dayExpression} = ${today} then ${reviewEvents.questionId} end)::int`,
-        newToday: sql<number>`count(distinct case when ${dayExpression} = ${today} and ${reviewEvents.before} is null then ${reviewEvents.questionId} end)::int`,
-      })
-      .from(reviewEvents)
-      .where(eq(reviewEvents.userId, identity.id)),
     subscribed.length
       ? db
           .select({ release: releases })
@@ -880,6 +832,8 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     );
     const validGroupIds = new Set(releaseGroups.map((g) => g.id));
     const latest =
+      !item.deck.deletedAt &&
+      item.deck.visibility !== "private" &&
       item.deck.publishedVersion > item.subscription.seenVersion
         ? latestReleaseMap.get(item.deck.id)
         : undefined;
@@ -960,7 +914,24 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
   });
 
   const pref = prefRows[0];
-  const counts = new Map(activityRows.map((row) => [row.date, row.count]));
+  const counts = new Map<string, number>();
+  const aggregate = {
+    total: 0,
+    recent: 0,
+    remembered: 0,
+    today: 0,
+    newToday: 0,
+  };
+  for (const row of reviewDailyRows) {
+    counts.set(row.date, row.count);
+    aggregate.total += row.count;
+    aggregate.recent += row.recent;
+    aggregate.remembered += row.remembered;
+    if (row.date === today) {
+      aggregate.today = row.todayDistinct;
+      aggregate.newToday = row.newTodayDistinct;
+    }
+  }
   let streak = 0;
   const cursor = new Date(`${today}T12:00:00Z`);
   if (!counts.has(today)) cursor.setUTCDate(cursor.getUTCDate() - 1);
@@ -998,7 +969,6 @@ export async function getWorkspace(identity: Identity): Promise<Workspace> {
     recomputeConceptFolderState(rawConceptFolders, rawConcepts);
 
   const active = questionViews.filter((q) => !q.archived);
-  const aggregate = aggregateRows[0];
   const titles = new Map(questionViews.map((q) => [q.id, q.title]));
   return {
     user: identity,

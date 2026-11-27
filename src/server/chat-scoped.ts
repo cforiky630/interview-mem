@@ -164,7 +164,7 @@ export async function handleScopedChat(
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
           let response: Response;
           try {
-            response = await providerRequest(credential, convo, false, signal, {
+            response = await providerRequest(credential, convo, true, signal, {
               maxTokens: 3000,
               tools: WORKSPACE_AI_TOOLS,
               toolChoice: "auto",
@@ -181,39 +181,60 @@ export async function handleScopedChat(
             throw error;
           }
 
-          const payload = (await response.json()) as {
-            choices?: Array<{
-              message?: {
-                content?: string | null;
-                reasoning_content?: string | null;
-                reasoning?: string | null;
-                tool_calls?: ProviderToolCall[];
-              };
-            }>;
-          };
-          const msg = payload.choices?.[0]?.message;
-          const reasoningText =
-            typeof msg?.reasoning_content === "string"
-              ? msg.reasoning_content
-              : typeof msg?.reasoning === "string"
-                ? msg.reasoning
-                : "";
-          if (reasoningText) {
-            const chunk = reasoningText.endsWith("\n")
-              ? reasoningText
-              : `${reasoningText}\n`;
-            reasoningTotal += chunk;
-            send("reasoning", { text: chunk });
+          let roundAnswer = "";
+          let roundReasoning = "";
+          let rawToolCalls: ProviderToolCall[] = [];
+          const contentType = response.headers.get("content-type") ?? "";
+          if (contentType.includes("text/event-stream")) {
+            const streamed = await readChatSseStream(response, {
+              onReasoning: (text) => {
+                roundReasoning += text;
+                reasoningTotal += text;
+                send("reasoning", { text });
+              },
+              onContent: (delta) => {
+                roundAnswer += delta;
+                send("delta", { text: delta });
+              },
+            });
+            rawToolCalls = streamed.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
+          } else {
+            const payload = (await response.json()) as {
+              choices?: Array<{
+                message?: {
+                  content?: string | null;
+                  reasoning_content?: string | null;
+                  reasoning?: string | null;
+                  tool_calls?: ProviderToolCall[];
+                };
+              }>;
+            };
+            const msg = payload.choices?.[0]?.message;
+            const reasoningText =
+              typeof msg?.reasoning_content === "string"
+                ? msg.reasoning_content
+                : typeof msg?.reasoning === "string"
+                  ? msg.reasoning
+                  : "";
+            if (reasoningText) {
+              const chunk = reasoningText.endsWith("\n")
+                ? reasoningText
+                : `${reasoningText}\n`;
+              roundReasoning = reasoningText;
+              reasoningTotal += chunk;
+              send("reasoning", { text: chunk });
+            }
+            rawToolCalls = Array.isArray(msg?.tool_calls)
+              ? msg.tool_calls.slice(0, MAX_TOOL_CALLS_PER_ROUND)
+              : [];
+            roundAnswer = typeof msg?.content === "string" ? msg.content : "";
+            if (!rawToolCalls.length && roundAnswer.trim()) {
+              send("delta", { text: roundAnswer });
+            }
           }
 
-          const rawToolCalls = Array.isArray(msg?.tool_calls)
-            ? msg.tool_calls.slice(0, MAX_TOOL_CALLS_PER_ROUND)
-            : [];
           if (!rawToolCalls.length) {
-            answer = typeof msg?.content === "string" ? msg.content : "";
-            if (answer.trim()) {
-              send("delta", { text: answer });
-            }
+            answer = roundAnswer;
             break;
           }
 
@@ -224,21 +245,27 @@ export async function handleScopedChat(
 
           convo.push({
             role: "assistant",
-            content: typeof msg?.content === "string" ? msg.content : null,
-            ...(reasoningText ? { reasoning_content: reasoningText } : {}),
+            content: roundAnswer || null,
+            ...(roundReasoning ? { reasoning_content: roundReasoning } : {}),
             tool_calls: normalizedCalls,
           });
 
-          for (const tc of normalizedCalls) {
+          const toolResults = await Promise.all(
+            normalizedCalls.map((tc) =>
+              executeWorkspaceTool(
+                user.id,
+                scope,
+                targetDeckId,
+                tc.function?.name ?? "",
+                tc.function?.arguments ?? "{}",
+                getCachedPool(),
+              ),
+            ),
+          );
+          for (let i = 0; i < normalizedCalls.length; i++) {
+            const tc = normalizedCalls[i];
+            const result = toolResults[i];
             const toolName = tc.function?.name ?? "";
-            const result = await executeWorkspaceTool(
-              user.id,
-              scope,
-              targetDeckId,
-              toolName,
-              tc.function?.arguments ?? "{}",
-              getCachedPool(),
-            );
             const step = { name: toolName, label: result.label };
             toolSteps.push(step);
             send("tool", step);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import {
@@ -51,6 +51,131 @@ import {
 
 const uuidOrString = z.string().min(1).max(120);
 
+const strictValidationSourceSchema = z.object({
+  title: z.string().max(300),
+  url: z
+    .string()
+    .max(2000)
+    .refine(
+      (value) => /^https?:\/\//i.test(value.trim()),
+      "校验来源链接必须使用 http(s) 协议。",
+    ),
+});
+
+const strictValidationFindingSchema = z.object({
+  id: z.string().max(120),
+  severity: z.enum(["error", "qualification", "terminology"]),
+  line: z.number().int().min(0).max(1_000_000),
+  title: z.string().max(500),
+  explanation: z.string().max(20_000),
+  suggestion: z.string().max(20_000),
+  sources: z.array(strictValidationSourceSchema).max(20).optional().default([]),
+});
+
+const strictValidationSchema = z.object({
+  checkedAt: z.string().max(100),
+  sourcePath: z.string().max(512),
+  sourceSha256: z.string().max(128),
+  reviewedHash: z.string().max(128),
+  summary: z.string().max(2000),
+  findings: z.array(strictValidationFindingSchema).max(200),
+  current: z.boolean().optional(),
+});
+
+const annotationBackupSchema = z.object({
+  id: uuidOrString,
+  quote: z.string().max(1000).optional().default(""),
+  comment: z.string().max(4000).optional().default(""),
+  color: z.string().max(32).optional().default("accent"),
+  conceptId: uuidOrString.nullable().optional(),
+  createdAt: z.string().max(100).optional(),
+  updatedAt: z.string().max(100).optional(),
+});
+
+const releaseGroupBackupSchema = z.object({
+  id: uuidOrString,
+  parentId: uuidOrString.nullable().optional(),
+  title: z.string().max(120),
+  category: z.string().max(80).optional(),
+  description: z.string().max(2000).optional().default(""),
+  position: z.number().int().optional(),
+});
+
+const releaseQuestionBackupSchema = z.object({
+  id: uuidOrString,
+  sourceQuestionId: uuidOrString.optional(),
+  deckId: uuidOrString.nullable().optional().default(null),
+  groupId: uuidOrString.nullable().optional().default(null),
+  position: z.number().int().optional(),
+  parentId: uuidOrString.nullable().optional().default(null),
+  title: z.string().max(500),
+  answer: z.string().max(200_000),
+  tags: z.array(z.string().max(60)).max(30).optional().default([]),
+  revision: z.number().int().min(1).optional().default(1),
+  majorRevision: z.number().int().min(0).optional().default(0),
+  needsEditing: z.boolean().optional().default(false),
+  archived: z.boolean().optional().default(false),
+  createdAt: z.string().max(100).optional(),
+  updatedAt: z.string().max(100).optional(),
+  validation: strictValidationSchema.nullable().optional(),
+});
+
+const chatEditBackupSchema = z.discriminatedUnion("target", [
+  z.object({
+    target: z.literal("question"),
+    id: uuidOrString,
+    revision: z.number().int().min(0),
+    fields: z.object({
+      title: z.string().max(500).optional(),
+      answer: z.string().max(200_000).optional(),
+      tags: z.array(z.string().max(60)).max(30).optional(),
+    }),
+  }),
+  z.object({
+    target: z.literal("deck"),
+    id: uuidOrString,
+    expected: z.object({
+      title: z.string().max(120),
+      description: z.string().max(2000),
+    }),
+    fields: z.object({
+      title: z.string().max(120).optional(),
+      description: z.string().max(2000).optional(),
+    }),
+  }),
+  z.object({
+    target: z.literal("note"),
+    id: uuidOrString,
+    expectedVersion: z.number().int().min(0),
+    fields: z.object({
+      note: z.string().max(100_000),
+    }),
+  }),
+]);
+
+const chatMessageMetaBackupSchema = z.object({
+  reasoning: z.string().max(200_000).optional(),
+  toolSteps: z
+    .array(
+      z.object({
+        name: z.string().max(80),
+        label: z.string().max(200),
+      }),
+    )
+    .max(50)
+    .optional(),
+  references: z
+    .array(
+      z.object({
+        id: uuidOrString,
+        title: z.string().max(500),
+        deckTitle: z.string().max(120),
+      }),
+    )
+    .max(100)
+    .optional(),
+});
+
 const deckGroupBackupSchema = z
   .object({
     id: uuidOrString,
@@ -97,7 +222,7 @@ const questionBackupSchema = z
     tags: z.array(z.string().max(60)).max(30).optional().default([]),
     sourceText: z.string().max(200_000).optional().default(""),
     importId: uuidOrString.nullable().optional().default(null),
-    validation: z.unknown().nullable().optional(),
+    validation: strictValidationSchema.nullable().optional(),
     revision: z.number().int().min(1).optional().default(1),
     majorRevision: z.number().int().min(0).optional().default(0),
     needsEditing: z.boolean().optional().default(false),
@@ -105,7 +230,7 @@ const questionBackupSchema = z
     isOwner: z.boolean().optional().default(true),
     note: z.string().max(100_000).optional(),
     noteVersion: z.number().int().min(0).optional(),
-    annotations: z.array(z.unknown()).max(100).optional(),
+    annotations: z.array(annotationBackupSchema).max(100).optional(),
     annotationsVersion: z.number().int().min(0).optional(),
     favorite: z.boolean().optional(),
     fsrs: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -126,7 +251,7 @@ const studyCardBackupSchema = z
     favorite: z.boolean().optional().default(false),
     note: z.string().max(100_000).optional().default(""),
     noteVersion: z.number().int().min(0).optional().default(0),
-    annotations: z.array(z.unknown()).max(100).optional().default([]),
+    annotations: z.array(annotationBackupSchema).max(100).optional().default([]),
     annotationsVersion: z.number().int().min(0).optional().default(0),
     updatedAt: z.string().optional(),
   })
@@ -180,8 +305,12 @@ const releaseBackupSchema = z
     title: z.string().max(120),
     description: z.string().max(2000).optional().default(""),
     summary: z.string().max(1000).optional().default(""),
-    groups: z.array(z.unknown()).max(200).optional().default([]),
-    questions: z.array(z.unknown()).max(5000).optional().default([]),
+    groups: z.array(releaseGroupBackupSchema).max(200).optional().default([]),
+    questions: z
+      .array(releaseQuestionBackupSchema)
+      .max(5000)
+      .optional()
+      .default([]),
     createdAt: z.string().optional(),
   })
   .passthrough();
@@ -202,8 +331,8 @@ const messageBackupSchema = z
     id: uuidOrString,
     role: z.string().max(32),
     content: z.string().max(200_000),
-    edits: z.unknown().nullable().optional(),
-    meta: z.unknown().nullable().optional(),
+    edits: z.array(chatEditBackupSchema).max(50).nullable().optional(),
+    meta: chatMessageMetaBackupSchema.nullable().optional(),
     createdAt: z.string().optional(),
   })
   .passthrough();
@@ -437,6 +566,53 @@ function topoSortFolders<T extends { id: string; parentId: string | null }>(
   return result;
 }
 
+const RESTORE_BATCH_SIZE = 500;
+const IN_ARRAY_CHUNK_SIZE = 5000;
+const MAX_GLOBAL_RESTORES = 2;
+
+const restoreConcurrencyState = globalThis as unknown as {
+  interviewRestoreUsers?: Set<string>;
+  interviewRestoreGlobal?: number;
+};
+
+function acquireRestore(userId: string) {
+  restoreConcurrencyState.interviewRestoreUsers ??= new Set();
+  const activeGlobal = restoreConcurrencyState.interviewRestoreGlobal ?? 0;
+  if (restoreConcurrencyState.interviewRestoreUsers.has(userId)) {
+    throw new AppError(429, "已有备份恢复正在处理，请稍候。");
+  }
+  if (activeGlobal >= MAX_GLOBAL_RESTORES) {
+    throw new AppError(429, "当前系统恢复任务繁忙，请稍候再试。");
+  }
+  restoreConcurrencyState.interviewRestoreUsers.add(userId);
+  restoreConcurrencyState.interviewRestoreGlobal = activeGlobal + 1;
+  let released = false;
+  return () => {
+    if (!released) {
+      released = true;
+      restoreConcurrencyState.interviewRestoreUsers?.delete(userId);
+      restoreConcurrencyState.interviewRestoreGlobal = Math.max(
+        0,
+        (restoreConcurrencyState.interviewRestoreGlobal ?? 1) - 1,
+      );
+    }
+  };
+}
+
+async function queryInChunks<T>(
+  ids: readonly string[],
+  fetchChunk: (chunk: string[]) => Promise<T[]>,
+): Promise<T[]> {
+  if (!ids.length) return [];
+  if (ids.length <= IN_ARRAY_CHUNK_SIZE) return fetchChunk([...ids]);
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += IN_ARRAY_CHUNK_SIZE) {
+    const rows = await fetchChunk(ids.slice(i, i + IN_ARRAY_CHUNK_SIZE));
+    out.push(...rows);
+  }
+  return out;
+}
+
 export async function restorePersonalBackup(
   userId: string,
   rawPayload: unknown,
@@ -449,10 +625,12 @@ export async function restorePersonalBackup(
     );
   }
   const data = parsed.data;
-  const db = await getDb();
+  const releaseRestore = acquireRestore(userId);
+  try {
+    const db = await getDb();
 
-  return db.transaction(async (tx) => {
-    await lockUserTree(tx, userId);
+    return await db.transaction(async (tx) => {
+      await lockUserTree(tx, userId);
 
     const withRemapped = (ids: string[], namespace: string) => [
       ...new Set([
@@ -528,15 +706,7 @@ export async function restorePersonalBackup(
     );
     const allQuestionCandidates = [...data.questions, ...data.trash];
     const releaseQuestionIds = data.releases.flatMap((rel) =>
-      rel.questions
-        .filter(
-          (q): q is PublishedQuestion =>
-            Boolean(q) &&
-            typeof q === "object" &&
-            typeof (q as { id?: unknown }).id === "string",
-        )
-        .map((q) => q.id)
-        .filter(Boolean),
+      rel.questions.map((q) => q.id).filter(Boolean),
     );
     const allQuestionIds = [
       ...new Set([
@@ -625,75 +795,78 @@ export async function restorePersonalBackup(
         .from(reviewEvents)
         .where(eq(reviewEvents.userId, userId))
         .limit(1),
-      allDeckIds.length
-        ? tx
-            .select({
-              id: decks.id,
-              ownerId: decks.ownerId,
-              parentId: decks.parentId,
-              title: decks.title,
-              visibility: decks.visibility,
-              publishedVersion: decks.publishedVersion,
-              deletedAt: decks.deletedAt,
-            })
-            .from(decks)
-            .where(inArray(decks.id, allDeckIds))
-        : Promise.resolve([]),
+      queryInChunks(allDeckIds, (chunk) =>
+        tx
+          .select({
+            id: decks.id,
+            ownerId: decks.ownerId,
+            parentId: decks.parentId,
+            title: decks.title,
+            visibility: decks.visibility,
+            publishedVersion: decks.publishedVersion,
+            deletedAt: decks.deletedAt,
+          })
+          .from(decks)
+          .where(inArray(decks.id, chunk)),
+      ),
       tx
-        .select({ deckId: subscriptions.deckId })
+        .select({
+          deckId: subscriptions.deckId,
+          seenVersion: subscriptions.seenVersion,
+        })
         .from(subscriptions)
         .where(eq(subscriptions.userId, userId)),
-      allImportIds.length
-        ? tx
-            .select({ id: imports.id, userId: imports.userId })
-            .from(imports)
-            .where(inArray(imports.id, allImportIds))
-        : Promise.resolve([]),
-      allQuestionIds.length
-        ? tx
-            .select({
-              id: questions.id,
-              ownerId: questions.ownerId,
-              deckId: questions.deckId,
-              deletedAt: questions.deletedAt,
-              purgedAt: questions.purgedAt,
-            })
-            .from(questions)
-            .where(inArray(questions.id, allQuestionIds))
-        : Promise.resolve([]),
+      queryInChunks(allImportIds, (chunk) =>
+        tx
+          .select({ id: imports.id, userId: imports.userId })
+          .from(imports)
+          .where(inArray(imports.id, chunk)),
+      ),
+      queryInChunks(allQuestionIds, (chunk) =>
+        tx
+          .select({
+            id: questions.id,
+            ownerId: questions.ownerId,
+            deckId: questions.deckId,
+            deletedAt: questions.deletedAt,
+            purgedAt: questions.purgedAt,
+          })
+          .from(questions)
+          .where(inArray(questions.id, chunk)),
+      ),
       tx
         .select({ questionId: studyCards.questionId })
         .from(studyCards)
         .where(eq(studyCards.userId, userId)),
-      allReviewIds.length
-        ? tx
-            .select({ id: reviewEvents.id, userId: reviewEvents.userId })
-            .from(reviewEvents)
-            .where(inArray(reviewEvents.id, allReviewIds))
-        : Promise.resolve([]),
-      allConvIds.length
-        ? tx
-            .select({ id: conversations.id, userId: conversations.userId })
-            .from(conversations)
-            .where(inArray(conversations.id, allConvIds))
-        : Promise.resolve([]),
-      allMsgIds.length
-        ? tx
-            .select({ id: messages.id })
-            .from(messages)
-            .where(inArray(messages.id, allMsgIds))
-        : Promise.resolve([]),
+      queryInChunks(allReviewIds, (chunk) =>
+        tx
+          .select({ id: reviewEvents.id, userId: reviewEvents.userId })
+          .from(reviewEvents)
+          .where(inArray(reviewEvents.id, chunk)),
+      ),
+      queryInChunks(allConvIds, (chunk) =>
+        tx
+          .select({ id: conversations.id, userId: conversations.userId })
+          .from(conversations)
+          .where(inArray(conversations.id, chunk)),
+      ),
+      queryInChunks(allMsgIds, (chunk) =>
+        tx
+          .select({ id: messages.id })
+          .from(messages)
+          .where(inArray(messages.id, chunk)),
+      ),
       loadActiveOwnedFolders(tx, userId),
-      allConceptIds.length
-        ? tx
-            .select({
-              id: concepts.id,
-              userId: concepts.userId,
-              normalizedKey: concepts.normalizedKey,
-            })
-            .from(concepts)
-            .where(inArray(concepts.id, allConceptIds))
-        : Promise.resolve([]),
+      queryInChunks(allConceptIds, (chunk) =>
+        tx
+          .select({
+            id: concepts.id,
+            userId: concepts.userId,
+            normalizedKey: concepts.normalizedKey,
+          })
+          .from(concepts)
+          .where(inArray(concepts.id, chunk)),
+      ),
       tx
         .select({
           id: concepts.id,
@@ -701,17 +874,17 @@ export async function restorePersonalBackup(
         })
         .from(concepts)
         .where(eq(concepts.userId, userId)),
-      allConceptFolderIds.length
-        ? tx
-            .select({
-              id: conceptFolders.id,
-              userId: conceptFolders.userId,
-              parentId: conceptFolders.parentId,
-              title: conceptFolders.title,
-            })
-            .from(conceptFolders)
-            .where(inArray(conceptFolders.id, allConceptFolderIds))
-        : Promise.resolve([]),
+      queryInChunks(allConceptFolderIds, (chunk) =>
+        tx
+          .select({
+            id: conceptFolders.id,
+            userId: conceptFolders.userId,
+            parentId: conceptFolders.parentId,
+            title: conceptFolders.title,
+          })
+          .from(conceptFolders)
+          .where(inArray(conceptFolders.id, chunk)),
+      ),
       tx
         .select()
         .from(conceptFolders)
@@ -720,6 +893,12 @@ export async function restorePersonalBackup(
 
     const existingDeckById = new Map(existingDecks.map((d) => [d.id, d]));
     const existingSubSet = new Set(existingSubs.map((s) => s.deckId));
+    const existingSubSeenByDeck = new Map(
+      existingSubs.map((s) => [s.deckId, s.seenVersion]),
+    );
+    const validReleaseKeys = new Set(
+      data.releases.map((r) => `${r.deckId}:${r.version}`),
+    );
     const existingImportById = new Map(existingImports.map((i) => [i.id, i]));
     const existingQuestionById = new Map(
       existingQuestions.map((q) => [q.id, q]),
@@ -966,6 +1145,16 @@ export async function restorePersonalBackup(
 
       deckMap.set(deck.id, targetDeckId);
       const isMaterializedSub = materializedSubDeckIds.has(deck.id);
+      const requestedVisibility = isMaterializedSub
+        ? "private"
+        : sanitizeVisibility(deck.visibility);
+      const requestedPublishedVersion = isMaterializedSub
+        ? 0
+        : (deck.publishedVersion ?? 0);
+      const hasValidRelease =
+        requestedVisibility !== "private" &&
+        requestedPublishedVersion > 0 &&
+        validReleaseKeys.has(`${deck.id}:${requestedPublishedVersion}`);
       const insertedDeck = await tx
         .insert(decks)
         .values({
@@ -975,10 +1164,8 @@ export async function restorePersonalBackup(
           title: safeTitle,
           description: (deck.description ?? "").slice(0, 2000),
           color: sanitizeColor(deck.color),
-          visibility: isMaterializedSub
-            ? "private"
-            : sanitizeVisibility(deck.visibility),
-          publishedVersion: isMaterializedSub ? 0 : (deck.publishedVersion ?? 0),
+          visibility: hasValidRelease ? requestedVisibility : "private",
+          publishedVersion: hasValidRelease ? requestedPublishedVersion : 0,
           createdAt: safeDate(deck.createdAt),
           updatedAt: safeDate(deck.updatedAt),
         })
@@ -987,28 +1174,22 @@ export async function restorePersonalBackup(
       if (insertedDeck.length) {
         registerTreeFolder(insertedDeck[0]);
         restoredDecks += 1;
-        if (!isMaterializedSub) newlyInsertedOwnedDeckIds.add(targetDeckId);
+        if (!isMaterializedSub && hasValidRelease) {
+          newlyInsertedOwnedDeckIds.add(targetDeckId);
+        }
       } else {
         skippedDecks += 1;
       }
     }
 
     // Restore accessible subscriptions now that owned folders exist so folderId placement resolves cleanly.
+    const subVersionPairs: { deckId: string; version: number }[] = [];
     for (const { deck, existing } of accessibleSubDecks) {
       deckMap.set(deck.id, deck.id);
       accessibleSubDeckIds.add(deck.id);
       const subBackup = subRowByDeck.get(deck.id);
-      const requestedSeen = Math.max(
-        0,
-        Math.min(
-          existing.publishedVersion,
-          subBackup?.seenVersion ??
-            deck.syncedVersion ??
-            deck.seenVersion ??
-            existing.publishedVersion,
-        ),
-      );
-      if (requestedSeen > 0 && !existingSubSet.has(deck.id)) {
+      const latestVersion = existing.publishedVersion;
+      if (latestVersion > 0 && !existingSubSet.has(deck.id)) {
         let placementFolderId: string | null = null;
         const candidateFolderRef = subBackup?.folderId ?? deck.parentId ?? null;
         if (candidateFolderRef) {
@@ -1027,14 +1208,44 @@ export async function restorePersonalBackup(
             userId,
             deckId: deck.id,
             folderId: placementFolderId,
-            seenVersion: requestedSeen,
+            seenVersion: latestVersion,
             dismissedVersion: subBackup?.dismissedVersion ?? 0,
           })
           .onConflictDoNothing();
         existingSubSet.add(deck.id);
+        existingSubSeenByDeck.set(deck.id, latestVersion);
+        subVersionPairs.push({ deckId: deck.id, version: latestVersion });
         restoredDecks += 1;
       } else {
+        const currentSeen = existingSubSeenByDeck.get(deck.id) ?? latestVersion;
+        if (currentSeen > 0) {
+          subVersionPairs.push({ deckId: deck.id, version: currentSeen });
+        }
         skippedDecks += 1;
+      }
+    }
+
+    const subAllowedQuestionIdsByDeck = new Map<string, Set<string>>();
+    if (subVersionPairs.length) {
+      const subReleaseRows = await tx
+        .select({
+          deckId: releases.deckId,
+          questions: releases.questions,
+        })
+        .from(releases)
+        .where(
+          or(
+            ...subVersionPairs.map((p) =>
+              and(eq(releases.deckId, p.deckId), eq(releases.version, p.version)),
+            ),
+          ),
+        );
+      for (const rel of subReleaseRows) {
+        const set = subAllowedQuestionIdsByDeck.get(rel.deckId) ?? new Set();
+        for (const rq of rel.questions) {
+          if (rq?.id) set.add(rq.id);
+        }
+        subAllowedQuestionIdsByDeck.set(rel.deckId, set);
       }
     }
 
@@ -1237,6 +1448,7 @@ export async function restorePersonalBackup(
     let restoredQuestions = 0;
     let skippedQuestions = 0;
     const seenQuestions = new Set<string>();
+    const pendingQuestions: (typeof questions.$inferInsert)[] = [];
 
     for (const q of allQuestionCandidates) {
       if (seenQuestions.has(q.id)) continue;
@@ -1249,7 +1461,10 @@ export async function restorePersonalBackup(
       const existing = existingQuestionById.get(q.id);
 
       if (isSubAccessible) {
-        if (existing && !existing.purgedAt) {
+        const allowedInRelease = subAllowedQuestionIdsByDeck
+          .get(q.deckId!)
+          ?.has(q.id);
+        if (allowedInRelease && existing && !existing.purgedAt) {
           questionMap.set(q.id, q.id);
           validQuestionIds.add(q.id);
         }
@@ -1321,41 +1536,40 @@ export async function restorePersonalBackup(
 
       const targetQuestionId = resolvedCollisionId ?? q.id;
       questionMap.set(q.id, targetQuestionId);
+      validQuestionIds.add(targetQuestionId);
+      pendingQuestions.push({
+        id: targetQuestionId,
+        ownerId: userId,
+        deckId: targetDeckId,
+        position: q.position ?? 0,
+        deletedAt: q.deletedAt ? safeDate(q.deletedAt) : null,
+        purgedAt: null,
+        parentId: q.parentId ? (questionMap.get(q.parentId) ?? null) : null,
+        title: (q.title || "未命名题目").slice(0, 500),
+        answer,
+        tags: normalizedTags,
+        sourceText: q.sourceText ?? "",
+        importId: targetImportId,
+        validation: (q.validation as ContentValidation | null) ?? null,
+        contentHash: hash,
+        revision: Math.max(1, q.revision ?? 1),
+        needsEditing: q.needsEditing ?? !answer.trim(),
+        archived: q.archived ?? false,
+        majorRevision: Math.max(0, q.majorRevision ?? 0),
+        createdAt: safeDate(q.createdAt),
+        updatedAt: safeDate(q.updatedAt),
+      });
+    }
+
+    for (let i = 0; i < pendingQuestions.length; i += RESTORE_BATCH_SIZE) {
+      const chunk = pendingQuestions.slice(i, i + RESTORE_BATCH_SIZE);
       const inserted = await tx
         .insert(questions)
-        .values({
-          id: targetQuestionId,
-          ownerId: userId,
-          deckId: targetDeckId,
-          position: q.position ?? 0,
-          deletedAt: q.deletedAt ? safeDate(q.deletedAt) : null,
-          purgedAt: null,
-          parentId: q.parentId ? (questionMap.get(q.parentId) ?? null) : null,
-          title: (q.title || "未命名题目").slice(0, 500),
-          answer,
-          tags: normalizedTags,
-          sourceText: q.sourceText ?? "",
-          importId: targetImportId,
-          validation: (q.validation as ContentValidation | null) ?? null,
-          contentHash: hash,
-          revision: Math.max(1, q.revision ?? 1),
-          needsEditing: q.needsEditing ?? !answer.trim(),
-          archived: q.archived ?? false,
-          majorRevision: Math.max(0, q.majorRevision ?? 0),
-          createdAt: safeDate(q.createdAt),
-          updatedAt: safeDate(q.updatedAt),
-        })
+        .values(chunk)
         .onConflictDoNothing()
         .returning({ id: questions.id });
-
-      if (inserted.length) {
-        restoredQuestions += 1;
-        validQuestionIds.add(targetQuestionId);
-        // Do NOT add newly restored backup items into ownedHashLookup: Global Soft Dedup
-        // explicitly allows distinct intentional same-folder duplicates in a v3 backup.
-      } else {
-        skippedQuestions += 1;
-      }
+      restoredQuestions += inserted.length;
+      skippedQuestions += chunk.length - inserted.length;
     }
 
     // Restore published release snapshots for newly restored owned folders.
@@ -1367,35 +1581,28 @@ export async function restorePersonalBackup(
     );
     const mapFolderRef = (id: string) =>
       groupMap.get(id) ?? deckMap.get(id) ?? id;
+    const pendingAliasPlaceholders: (typeof questions.$inferInsert)[] = [];
+    const pendingReleaseRows: (typeof releases.$inferInsert)[] = [];
 
     for (const rel of sortedReleases) {
       const targetDeckId = deckMap.get(rel.deckId);
       if (!targetDeckId || !newlyInsertedOwnedDeckIds.has(targetDeckId)) {
         continue;
       }
-      const mappedGroups = rel.groups
-        .filter(
-          (g): g is PublishedDeckGroup =>
-            Boolean(g) &&
-            typeof g === "object" &&
-            typeof (g as { id?: unknown }).id === "string",
-        )
-        .map((g) => ({
-          ...g,
-          id: mapFolderRef(g.id),
-          ...(g.parentId !== undefined
-            ? { parentId: g.parentId ? mapFolderRef(g.parentId) : null }
-            : {}),
-        }));
+      const mappedGroups: PublishedDeckGroup[] = rel.groups.map((g) => ({
+        id: mapFolderRef(g.id),
+        title: g.title,
+        description: g.description ?? "",
+        ...(g.category !== undefined ? { category: g.category } : {}),
+        ...(g.position !== undefined ? { position: g.position } : {}),
+        ...(g.parentId !== undefined
+          ? { parentId: g.parentId ? mapFolderRef(g.parentId) : null }
+          : {}),
+      }));
       const aliasTs = safeDate(rel.createdAt);
-      const validRelQuestions = rel.questions.filter(
-        (q): q is PublishedQuestion =>
-          Boolean(q) &&
-          typeof q === "object" &&
-          typeof (q as { id?: unknown }).id === "string",
-      );
+      const aliasIso = aliasTs.toISOString();
       const mappedQuestions: PublishedQuestion[] = [];
-      for (const q of validRelQuestions) {
+      for (const q of rel.questions) {
         let targetId = questionMap.get(q.id);
         if (!targetId) {
           const existing = existingQuestionById.get(q.id);
@@ -1418,19 +1625,16 @@ export async function restorePersonalBackup(
           }
           const known = existingQuestionById.get(targetId);
           if (!known || known.ownerId !== userId) {
-            await tx
-              .insert(questions)
-              .values({
-                id: targetId,
-                ownerId: userId,
-                deckId: null,
-                title: "",
-                answer: "",
-                contentHash: `publication:${targetId}`,
-                deletedAt: aliasTs,
-                purgedAt: aliasTs,
-              })
-              .onConflictDoNothing();
+            pendingAliasPlaceholders.push({
+              id: targetId,
+              ownerId: userId,
+              deckId: null,
+              title: "",
+              answer: "",
+              contentHash: `publication:${targetId}`,
+              deletedAt: aliasTs,
+              purgedAt: aliasTs,
+            });
             existingQuestionById.set(targetId, {
               id: targetId,
               ownerId: userId,
@@ -1445,6 +1649,13 @@ export async function restorePersonalBackup(
         mappedQuestions.push({
           ...q,
           id: targetId,
+          createdAt: q.createdAt ?? aliasIso,
+          updatedAt: q.updatedAt ?? aliasIso,
+          validation: q.validation
+            ? { ...q.validation, current: q.validation.current ?? true }
+            : q.validation === null
+              ? null
+              : undefined,
           ...(q.sourceQuestionId
             ? {
                 sourceQuestionId:
@@ -1458,18 +1669,32 @@ export async function restorePersonalBackup(
           groupId: q.groupId ? mapFolderRef(q.groupId) : null,
         });
       }
+      pendingReleaseRows.push({
+        deckId: targetDeckId,
+        version: rel.version,
+        title: rel.title.slice(0, 120),
+        description: (rel.description ?? "").slice(0, 2000),
+        summary: (rel.summary ?? "").slice(0, 1000),
+        groups: mappedGroups,
+        questions: mappedQuestions,
+        createdAt: aliasTs,
+      });
+    }
+
+    for (
+      let i = 0;
+      i < pendingAliasPlaceholders.length;
+      i += RESTORE_BATCH_SIZE
+    ) {
+      await tx
+        .insert(questions)
+        .values(pendingAliasPlaceholders.slice(i, i + RESTORE_BATCH_SIZE))
+        .onConflictDoNothing();
+    }
+    for (const relRow of pendingReleaseRows) {
       const inserted = await tx
         .insert(releases)
-        .values({
-          deckId: targetDeckId,
-          version: rel.version,
-          title: rel.title.slice(0, 120),
-          description: (rel.description ?? "").slice(0, 2000),
-          summary: (rel.summary ?? "").slice(0, 1000),
-          groups: mappedGroups,
-          questions: mappedQuestions,
-          createdAt: aliasTs,
-        })
+        .values(relRow)
         .onConflictDoNothing()
         .returning({ version: releases.version });
       if (inserted.length) restoredReleases += 1;
@@ -1801,6 +2026,7 @@ export async function restorePersonalBackup(
       }
     }
 
+    const pendingStudyCards: (typeof studyCards.$inferInsert)[] = [];
     for (const card of studyCardInputs.values()) {
       const targetQuestionId = questionMap.get(card.questionId);
       if (!targetQuestionId || !validQuestionIds.has(targetQuestionId)) {
@@ -1811,38 +2037,41 @@ export async function restorePersonalBackup(
         skippedStudyCards += 1;
         continue;
       }
+      existingStudySet.add(targetQuestionId);
+      pendingStudyCards.push({
+        userId,
+        questionId: targetQuestionId,
+        fsrs: sanitizeFsrs(card.fsrs),
+        version: card.version ?? 0,
+        reviewedRevision: card.reviewedRevision ?? 0,
+        favorite: Boolean(card.favorite),
+        note: card.note ?? "",
+        noteVersion: card.noteVersion ?? 0,
+        annotations: sanitizeAnnotations(
+          card.annotations ?? [],
+          conceptMap,
+          validUserConceptIds,
+        ),
+        annotationsVersion: card.annotationsVersion ?? 0,
+        updatedAt: safeDate(card.updatedAt),
+      });
+    }
+    for (let i = 0; i < pendingStudyCards.length; i += RESTORE_BATCH_SIZE) {
+      const chunk = pendingStudyCards.slice(i, i + RESTORE_BATCH_SIZE);
       const inserted = await tx
         .insert(studyCards)
-        .values({
-          userId,
-          questionId: targetQuestionId,
-          fsrs: sanitizeFsrs(card.fsrs),
-          version: card.version ?? 0,
-          reviewedRevision: card.reviewedRevision ?? 0,
-          favorite: Boolean(card.favorite),
-          note: card.note ?? "",
-          noteVersion: card.noteVersion ?? 0,
-          annotations: sanitizeAnnotations(
-            card.annotations ?? [],
-            conceptMap,
-            validUserConceptIds,
-          ),
-          annotationsVersion: card.annotationsVersion ?? 0,
-          updatedAt: safeDate(card.updatedAt),
-        })
+        .values(chunk)
         .onConflictDoNothing()
         .returning({ questionId: studyCards.questionId });
-      if (inserted.length) {
-        existingStudySet.add(targetQuestionId);
-        restoredStudyCards += 1;
-      } else {
-        skippedStudyCards += 1;
-      }
+      restoredStudyCards += inserted.length;
+      skippedStudyCards += chunk.length - inserted.length;
     }
 
     // Merge review events (preserving snapshots).
     let restoredReviews = 0;
     let skippedReviews = 0;
+    const pendingReviews: (typeof reviewEvents.$inferInsert)[] = [];
+    const seenReviewIds = new Set<string>();
     for (const rev of data.reviews) {
       const targetQuestionId = questionMap.get(rev.questionId);
       if (!targetQuestionId || !validQuestionIds.has(targetQuestionId)) {
@@ -1864,30 +2093,45 @@ export async function restorePersonalBackup(
         }
         targetReviewId = existingRemapped ? crypto.randomUUID() : remappedId;
       }
+      if (seenReviewIds.has(targetReviewId)) {
+        skippedReviews += 1;
+        continue;
+      }
+      seenReviewIds.add(targetReviewId);
+      pendingReviews.push({
+        id: targetReviewId,
+        userId,
+        questionId: targetQuestionId,
+        questionTitle: rev.questionTitle ?? null,
+        questionAnswer: rev.questionAnswer ?? null,
+        rating: rev.rating,
+        answer: rev.answer ?? null,
+        questionRevision: rev.questionRevision ?? 1,
+        before: rev.before ?? null,
+        after: rev.after,
+        createdAt: safeDate(rev.createdAt),
+      });
+    }
+    for (let i = 0; i < pendingReviews.length; i += RESTORE_BATCH_SIZE) {
+      const chunk = pendingReviews.slice(i, i + RESTORE_BATCH_SIZE);
       const inserted = await tx
         .insert(reviewEvents)
-        .values({
-          id: targetReviewId,
-          userId,
-          questionId: targetQuestionId,
-          questionTitle: rev.questionTitle ?? null,
-          questionAnswer: rev.questionAnswer ?? null,
-          rating: rev.rating,
-          answer: rev.answer ?? null,
-          questionRevision: rev.questionRevision ?? 1,
-          before: rev.before ?? null,
-          after: rev.after,
-          createdAt: safeDate(rev.createdAt),
-        })
+        .values(chunk)
         .onConflictDoNothing()
         .returning({ id: reviewEvents.id });
-      if (inserted.length) restoredReviews += 1;
-      else skippedReviews += 1;
+      restoredReviews += inserted.length;
+      skippedReviews += chunk.length - inserted.length;
     }
 
     // Merge conversations and messages.
     let restoredConversations = 0;
     let skippedConversations = 0;
+    const pendingConvs: (typeof conversations.$inferInsert)[] = [];
+    const pendingMessagesByConv = new Map<
+      string,
+      (typeof messages.$inferInsert)[]
+    >();
+    const seenConvIds = new Set<string>();
     for (const conv of data.conversations) {
       const existing = existingConvById.get(conv.id);
       if (existing && existing.userId === userId) {
@@ -1903,6 +2147,10 @@ export async function restorePersonalBackup(
           continue;
         }
         targetConvId = existingRemapped ? crypto.randomUUID() : remappedId;
+      }
+      if (seenConvIds.has(targetConvId)) {
+        skippedConversations += 1;
+        continue;
       }
       const targetDeckId = conv.deckId
         ? (deckMap.get(conv.deckId) ?? null)
@@ -1920,29 +2168,22 @@ export async function restorePersonalBackup(
         targetDeckId !== null &&
         (validOwnedDeckIds.has(targetDeckId) ||
           accessibleSubDeckIds.has(targetDeckId));
-      const inserted = await tx
-        .insert(conversations)
-        .values({
-          id: targetConvId,
-          userId,
-          scope: conv.scope,
-          deckId: hasValidDeck ? targetDeckId : null,
-          questionId: hasValidQuestion ? targetQuestionId : null,
-          quote: conv.quote ?? "",
-          attempt: conv.attempt ?? "",
-          questionTitle: conv.questionTitle ?? "",
-          answerSnapshot: conv.answerSnapshot ?? "",
-          questionRevision: conv.questionRevision ?? 0,
-          createdAt: safeDate(conv.createdAt),
-          updatedAt: safeDate(conv.updatedAt),
-        })
-        .onConflictDoNothing()
-        .returning({ id: conversations.id });
-      if (!inserted.length) {
-        skippedConversations += 1;
-        continue;
-      }
-      restoredConversations += 1;
+      seenConvIds.add(targetConvId);
+      pendingConvs.push({
+        id: targetConvId,
+        userId,
+        scope: conv.scope,
+        deckId: hasValidDeck ? targetDeckId : null,
+        questionId: hasValidQuestion ? targetQuestionId : null,
+        quote: conv.quote ?? "",
+        attempt: conv.attempt ?? "",
+        questionTitle: conv.questionTitle ?? "",
+        answerSnapshot: conv.answerSnapshot ?? "",
+        questionRevision: conv.questionRevision ?? 0,
+        createdAt: safeDate(conv.createdAt),
+        updatedAt: safeDate(conv.updatedAt),
+      });
+      const convMsgs: (typeof messages.$inferInsert)[] = [];
       for (const msg of conv.messages) {
         let targetMsgId = msg.id;
         if (existingMsgSet.has(msg.id)) {
@@ -1952,19 +2193,40 @@ export async function restorePersonalBackup(
             : remappedId;
         }
         existingMsgSet.add(targetMsgId);
-        await tx
-          .insert(messages)
-          .values({
-            id: targetMsgId,
-            conversationId: targetConvId,
-            role: msg.role,
-            content: msg.content,
-            edits: (msg.edits as ChatEdit[] | null) ?? null,
-            meta: (msg.meta as ChatMessageMeta | null) ?? null,
-            createdAt: safeDate(msg.createdAt),
-          })
-          .onConflictDoNothing();
+        convMsgs.push({
+          id: targetMsgId,
+          conversationId: targetConvId,
+          role: msg.role,
+          content: msg.content,
+          edits: (msg.edits as ChatEdit[] | null) ?? null,
+          meta: (msg.meta as ChatMessageMeta | null) ?? null,
+          createdAt: safeDate(msg.createdAt),
+        });
       }
+      pendingMessagesByConv.set(targetConvId, convMsgs);
+    }
+    const insertedConvIds = new Set<string>();
+    for (let i = 0; i < pendingConvs.length; i += RESTORE_BATCH_SIZE) {
+      const chunk = pendingConvs.slice(i, i + RESTORE_BATCH_SIZE);
+      const inserted = await tx
+        .insert(conversations)
+        .values(chunk)
+        .onConflictDoNothing()
+        .returning({ id: conversations.id });
+      for (const row of inserted) insertedConvIds.add(row.id);
+      restoredConversations += inserted.length;
+      skippedConversations += chunk.length - inserted.length;
+    }
+    const pendingMsgs: (typeof messages.$inferInsert)[] = [];
+    for (const convId of insertedConvIds) {
+      const msgs = pendingMessagesByConv.get(convId);
+      if (msgs?.length) pendingMsgs.push(...msgs);
+    }
+    for (let i = 0; i < pendingMsgs.length; i += RESTORE_BATCH_SIZE) {
+      await tx
+        .insert(messages)
+        .values(pendingMsgs.slice(i, i + RESTORE_BATCH_SIZE))
+        .onConflictDoNothing();
     }
 
     return {
@@ -1991,5 +2253,8 @@ export async function restorePersonalBackup(
         conversations: skippedConversations,
       },
     };
-  });
+    });
+  } finally {
+    releaseRestore();
+  }
 }

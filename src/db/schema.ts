@@ -22,7 +22,7 @@ import type {
   QuestionAnnotation,
   QuestionAnnotationColor,
 } from "@/lib/types";
-import { sql } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 const dates = () => ({
   createdAt: timestamp("created_at", { withTimezone: true })
@@ -54,7 +54,10 @@ export const session = pgTable(
     userAgent: text("user_agent"),
     ...dates(),
   },
-  (t) => [index("session_user_idx").on(t.userId)],
+  (t) => [
+    index("session_user_idx").on(t.userId),
+    index("session_expires_idx").on(t.expiresAt),
+  ],
 );
 export const account = pgTable(
   "accounts",
@@ -96,6 +99,7 @@ export const preferences = pgTable("preferences", {
   theme: text("theme").notNull().default("light"),
   timeZone: text("time_zone").notNull().default("Asia/Shanghai"),
   onboarded: boolean("onboarded").notNull().default(false),
+  workspaceVersion: integer("workspace_version").notNull().default(1),
 });
 export const credentials = pgTable("ai_credentials", {
   userId: text("user_id")
@@ -131,6 +135,16 @@ export const decks = pgTable(
     index("deck_owner_parent_idx")
       .on(t.ownerId, t.parentId)
       .where(sql`${t.deletedAt} is null`),
+    index("deck_public_updated_idx")
+      .on(sql`${t.updatedAt} desc`)
+      .where(
+        sql`${t.visibility} = 'public' and ${t.publishedVersion} > 0 and ${t.deletedAt} is null`,
+      ),
+    index("deck_owner_public_idx")
+      .on(t.ownerId)
+      .where(
+        sql`${t.visibility} = 'public' and ${t.publishedVersion} > 0 and ${t.deletedAt} is null`,
+      ),
     uniqueIndex("deck_sibling_title_uniq")
       .on(
         t.ownerId,
@@ -181,6 +195,16 @@ export const questions = pgTable(
     index("question_trash_expiry_idx")
       .on(t.deletedAt)
       .where(sql`${t.deletedAt} is not null and ${t.purgedAt} is null`),
+    index("question_owner_created_desc_idx").on(
+      t.ownerId,
+      sql`${t.createdAt} desc`,
+    ),
+    index("question_owner_deck_pos_idx")
+      .on(t.ownerId, t.deckId, sql`${t.position} desc`)
+      .where(sql`${t.deletedAt} is null`),
+    index("question_owner_active_created_idx")
+      .on(t.ownerId, t.createdAt, t.id)
+      .where(sql`${t.deletedAt} is null and ${t.purgedAt} is null`),
   ],
 );
 export type PublishedDeckGroup = {
@@ -304,7 +328,13 @@ export const studyCards = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.questionId] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.questionId] }),
+    index("study_card_annotations_gin_idx").using(
+      "gin",
+      sql`${t.annotations} jsonb_path_ops`,
+    ),
+  ],
 );
 export const reviewEvents = pgTable(
   "review_events",
@@ -327,7 +357,10 @@ export const reviewEvents = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("review_user_time_idx").on(t.userId, t.createdAt)],
+  (t) => [
+    index("review_user_time_idx").on(t.userId, t.createdAt),
+    index("review_user_question_idx").on(t.userId, t.questionId),
+  ],
 );
 export const imports = pgTable(
   "imports",
@@ -359,7 +392,12 @@ export const imports = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("import_user_time_idx").on(t.userId, t.createdAt)],
+  (t) => [
+    index("import_user_time_idx").on(t.userId, t.createdAt),
+    index("import_orphan_cleanup_idx")
+      .on(t.createdAt)
+      .where(sql`${t.status} in ('draft', 'failed', 'parsing')`),
+  ],
 );
 export const conversations = pgTable(
   "conversations",
@@ -466,3 +504,16 @@ export const concepts = pgTable(
     uniqueIndex("concept_user_norm_key_uniq").on(t.userId, t.normalizedKey),
   ],
 );
+
+export const userRelations = relations(user, ({ many }) => ({
+  sessions: many(session),
+  accounts: many(account),
+}));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, { fields: [session.userId], references: [user.id] }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, { fields: [account.userId], references: [user.id] }),
+}));

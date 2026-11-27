@@ -24,6 +24,7 @@ export async function api<T = Record<string, unknown>>(
     signal?: AbortSignal;
     method?: "GET" | "POST" | "DELETE";
     keepalive?: boolean;
+    onResponseHeaders?: (headers: Headers) => void;
   } = {},
 ): Promise<T> {
   const method = options.method ?? (data === undefined ? "GET" : "POST");
@@ -72,6 +73,7 @@ export async function api<T = Record<string, unknown>>(
   if (!result) {
     throw new RequestError("服务器返回为空，请稍后重试。", response.status);
   }
+  options.onResponseHeaders?.(response.headers);
   return result as T;
 }
 

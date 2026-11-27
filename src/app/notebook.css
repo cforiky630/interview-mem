@@ -3769,6 +3769,8 @@ html:not([data-shell="mobile"]) .notebook-reader .reader-toolbar {
   border-radius: var(--radius-md);
   background: var(--surface-glass);
   backdrop-filter: var(--glass-blur);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
 }
 
 .trash-row > svg {
@@ -5852,6 +5854,8 @@ html[data-input="touch"] .inline-title-trigger {
   background: var(--surface);
   box-shadow: var(--shadow-card);
   min-width: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
   transition:
     transform var(--dur-base) var(--ease-smooth),
     box-shadow var(--dur-base) var(--ease-smooth),

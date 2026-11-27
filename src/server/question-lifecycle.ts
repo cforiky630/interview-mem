@@ -777,7 +777,12 @@ export async function startQuestionTrashCleanup() {
       if ((await cleanupExpiredQuestions()) < 200) break;
     await cleanupOrphanedImportPreviews();
   };
-  await sweep();
+  const initialTimer = setTimeout(() => {
+    void sweep().catch(() =>
+      console.error("题目回收站清理失败，将在下一轮重试。"),
+    );
+  }, 10_000);
+  initialTimer.unref();
   cleanupState.interviewTrashTimer = setInterval(
     () => {
       void sweep().catch(() =>

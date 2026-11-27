@@ -110,6 +110,8 @@
 
 .concept-row {
   position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
   transition: background-color var(--dur-fast) ease;
 }
 

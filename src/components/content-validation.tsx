@@ -1,6 +1,17 @@
 import { BadgeCheck, Info } from "lucide-react";
 import type { ContentValidationView } from "@/lib/content-validation";
 
+function safeHttpUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      ? parsed.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ContentValidationPanel({
   review,
   expanded = false,
@@ -9,6 +20,7 @@ export function ContentValidationPanel({
   expanded?: boolean;
 }) {
   if (!review) return null;
+  const findings = Array.isArray(review.findings) ? review.findings : [];
   const labels = {
     error: "概念问题",
     qualification: "适用条件",
@@ -17,10 +29,10 @@ export function ContentValidationPanel({
   return (
     <details
       open={expanded || undefined}
-      className={`content-validation ${review.findings.length ? "has-findings" : "checked"}`}
+      className={`content-validation ${findings.length ? "has-findings" : "checked"}`}
     >
       <summary>
-        {review.findings.length || !review.current ? (
+        {findings.length || !review.current ? (
           <Info size={15} />
         ) : (
           <BadgeCheck size={15} />
@@ -29,8 +41,8 @@ export function ContentValidationPanel({
         <span>
           {!review.current
             ? "原文已有编辑，校验针对导入版本"
-            : review.findings.length
-              ? `${review.findings.length} 条记录`
+            : findings.length
+              ? `${findings.length} 条记录`
               : "未发现明确内容错误"}
         </span>
       </summary>
@@ -44,13 +56,13 @@ export function ContentValidationPanel({
             以下结论针对导入时的原文；后续编辑尚未重新核验。
           </p>
         )}
-        {review.findings.map((finding) => (
+        {findings.map((finding) => (
           <section key={finding.id}>
             <div>
               <span
                 className={`validation-severity severity-${finding.severity}`}
               >
-                {labels[finding.severity]}
+                {labels[finding.severity] ?? "内容提示"}
               </span>
               <span>原文第 {finding.line} 行</span>
             </div>
@@ -60,16 +72,25 @@ export function ContentValidationPanel({
               建议理解：{finding.suggestion}
             </p>
             <div className="validation-sources">
-              {finding.sources.map((source) => (
-                <a
-                  key={source.url}
-                  href={source.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {source.title} ↗
-                </a>
-              ))}
+              {(Array.isArray(finding.sources) ? finding.sources : []).map(
+                (source) => {
+                  const href = safeHttpUrl(source.url);
+                  return href ? (
+                    <a
+                      key={source.url}
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {source.title} ↗
+                    </a>
+                  ) : (
+                    <span key={`${source.title}-${source.url}`}>
+                      {source.title}
+                    </span>
+                  );
+                },
+              )}
             </div>
           </section>
         ))}

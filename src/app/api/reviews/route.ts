@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { reviewEvents, studyCards } from "@/db/schema";
 import { body, route } from "@/server/api";
-import { accessibleQuestion } from "@/server/workspace";
+import { accessibleQuestion, withWorkspaceEtag } from "@/server/workspace";
 import { reviewInsight, schedule } from "@/server/scheduler";
 import { AppError } from "@/server/errors";
 import type { StoredCard } from "@/lib/types";
@@ -157,5 +157,6 @@ export const POST = route(async (request, user) => {
       answer: data.answer || null,
     };
   });
-  return NextResponse.json(result);
+  const response = NextResponse.json(result);
+  return result.duplicate ? response : withWorkspaceEtag(user.id, response);
 }, true);

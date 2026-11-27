@@ -26,6 +26,7 @@ import {
   moveConceptsToGroup,
   renameConceptGroup,
 } from "@/server/concepts";
+import { withWorkspaceEtag } from "@/server/workspace";
 
 export const runtime = "nodejs";
 
@@ -168,7 +169,8 @@ export const GET = route(async (_request, user) => {
 });
 
 export const POST = route(async (request, user) => {
-  const data = await body(request, schema);
+  const response = await (async () => {
+    const data = await body(request, schema);
 
   if (data.action === "create") {
     const result = await createConcept(user.id, {
@@ -291,4 +293,6 @@ export const POST = route(async (request, user) => {
       groupName: data.groupName,
     }),
   );
+  })();
+  return withWorkspaceEtag(user.id, response);
 }, true);

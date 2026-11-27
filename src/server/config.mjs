@@ -34,13 +34,17 @@ export function validateProductionEnvironment(env = process.env) {
   if (env.NODE_ENV !== "production") return;
   if (!env.BETTER_AUTH_URL)
     throw new Error("生产环境必须设置 BETTER_AUTH_URL。");
-  const [origin] = applicationOrigins(env);
-  const url = new URL(origin);
-  if (
-    url.protocol !== "https:" &&
-    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
-  ) {
-    throw new Error("生产环境的 BETTER_AUTH_URL 必须使用 HTTPS。");
+  const origins = applicationOrigins(env);
+  for (const origin of origins) {
+    const url = new URL(origin);
+    if (
+      url.protocol !== "https:" &&
+      !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+    ) {
+      throw new Error(
+        "生产环境的 BETTER_AUTH_URL 与 BETTER_AUTH_TRUSTED_ORIGINS 必须使用 HTTPS。",
+      );
+    }
   }
   for (const key of ["BETTER_AUTH_SECRET", "KEY_ENCRYPTION_SECRET"]) {
     if (!env[key] || env[key].length < 32)

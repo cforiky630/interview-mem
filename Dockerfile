@@ -8,7 +8,7 @@ RUN npm run build && node deploy/check-build.mjs
 
 FROM node:24-bookworm-slim AS runner
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0 UV_THREADPOOL_SIZE=8
 COPY --from=build --chown=node:node /app/.next-build/standalone ./
 COPY --from=build --chown=node:node /app/.next-build/static ./.next-build/static
 COPY --from=build --chown=node:node /app/drizzle ./drizzle

@@ -4,7 +4,6 @@ import { DeviceProfileSync } from "@/lib/device-profile";
 import "@fontsource/cormorant-garamond/600-italic.css";
 import "@fontsource-variable/inter";
 import "./globals.css";
-import "katex/dist/katex.min.css";
 import "./notebook.css";
 import "./mobile.css";
 

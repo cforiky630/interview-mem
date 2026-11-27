@@ -32,12 +32,14 @@ function topTagsFromQuestions(
 ): string[] {
   const counts = new Map<string, number>();
   for (const q of qs) {
-    if (q.archived) continue;
+    if (!q || typeof q !== "object" || q.archived) continue;
+    const answer = typeof q.answer === "string" ? q.answer : "";
     const noteTags =
-      q.answer.startsWith("---") || q.answer.startsWith("\uFEFF---")
-        ? markdownDocument(q.answer).tags
+      answer.startsWith("---") || answer.startsWith("\uFEFF---")
+        ? markdownDocument(answer).tags
         : [];
-    for (const tag of mergeQuestionTags(q.tags, noteTags)) {
+    const baseTags = Array.isArray(q.tags) ? q.tags : [];
+    for (const tag of mergeQuestionTags(baseTags, noteTags)) {
       counts.set(tag, (counts.get(tag) ?? 0) + 1);
     }
   }
@@ -60,7 +62,10 @@ function toCatalogDeck(
   followedAuthorSet: Set<string>,
   subCountMap: Map<string, number>,
 ): CatalogDeck {
-  const active = row.release.questions.filter((q) => !q.archived);
+  const questions = Array.isArray(row.release.questions)
+    ? row.release.questions
+    : [];
+  const active = questions.filter((q) => q && !q.archived);
   const sub = subMap.get(row.deck.id);
   const syncedVersion = sub ? sub.seenVersion : null;
   return {
