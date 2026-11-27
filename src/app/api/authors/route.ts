@@ -202,7 +202,7 @@ export const POST = route(async (request, user) => {
 
   if (data.action === "subscribeAll") {
     if (data.authorId === user.id) {
-      throw new AppError(400, "你已经拥有自己的全部题库。");
+      throw new AppError(400, "你已经拥有自己的全部资料。");
     }
     const [author] = await db
       .select({ id: users.id })

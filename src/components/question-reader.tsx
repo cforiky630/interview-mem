@@ -167,7 +167,7 @@ export function QuestionReader({
   question,
   data,
   onBack,
-  backLabel = "返回题库",
+  backLabel = "返回资料",
   onBatchImport,
   onDelete,
   onMove,
@@ -2182,7 +2182,7 @@ export function QuestionReader({
                 {question.isOwner && !review && (
                   <button onClick={onMove}>
                     <FolderInput size={15} />
-                    移动到题库
+                    移动到文件夹
                   </button>
                 )}
                 {question.isOwner && (
@@ -2220,7 +2220,7 @@ export function QuestionReader({
                         if (result)
                           toast.success(
                             question.archived
-                              ? "已恢复到题库。"
+                              ? "已恢复到我的资料。"
                               : "已归档，可在已归档中查看。",
                           );
                       }}
@@ -3009,8 +3009,8 @@ export function ReviewComplete({
       {!count && (
         <p>
           {cram
-            ? "当前筛选范围暂无含参考答案的题目，返回题库调整条件即可。"
-            : "暂无到期或新增题目，可前往题库自由练习或导入新题。"}
+            ? "当前筛选范围暂无含参考答案的题目，返回资料调整条件即可。"
+            : "暂无到期或新增题目，可前往我的资料自由练习或导入新内容。"}
         </p>
       )}
       {count > 0 && (
@@ -3039,7 +3039,7 @@ export function ReviewComplete({
           </Button>
         )}
         <Button variant="outline" onClick={onLibrary}>
-          <BookOpen size={15} /> 我的题库
+          <BookOpen size={15} /> 我的资料
         </Button>
         <Button onClick={onBack}>
           回到今日

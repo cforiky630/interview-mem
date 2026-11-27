@@ -548,7 +548,7 @@ export function SettingsCard({
       await onRefreshWorkspace?.();
       setRestorePreview(null);
       toast.success(
-        `已合并恢复：新增 ${res.restored.decks} 个题库、${res.restored.questions} 道题、${res.restored.reviews} 条复习记录。`,
+        `已合并恢复：新增 ${res.restored.decks} 个文件夹、${res.restored.questions} 道题、${res.restored.reviews} 条复习记录。`,
       );
     } catch (error) {
       toast.error(
@@ -933,7 +933,7 @@ export function SettingsCard({
                   <div className="settings-backup-summary">
                     <div className="settings-backup-tile">
                       <strong>{data.decks.length}</strong>
-                      <span>个题库</span>
+                      <span>个文件夹</span>
                     </div>
                     <div className="settings-backup-tile">
                       <strong>{data.questions.length}</strong>
@@ -953,7 +953,7 @@ export function SettingsCard({
                       <div className="settings-row-info">
                         <strong>导出完整备份 (JSON)</strong>
                         <small>
-                          包含题库、分组、发布快照、题目、复习偏好、个人笔记、复习记录与
+                          包含文件夹、资料、概念、发布快照、复习偏好、个人笔记、复习记录与
                           AI 对话，不含 API Key，可用于迁移或合并恢复。
                         </small>
                       </div>
@@ -972,7 +972,7 @@ export function SettingsCard({
                       <div className="settings-row-info">
                         <strong>从备份合并恢复 (JSON)</strong>
                         <small>
-                          补全缺失的题库、题目、记忆进度与历史记录；当前账号已存在的数据会保留不被覆盖。
+                          补全缺失的文件夹、资料、概念、记忆进度与历史记录；当前账号已存在的数据会保留不被覆盖。
                         </small>
                       </div>
                       <div className="settings-row-control">
@@ -1001,7 +1001,7 @@ export function SettingsCard({
                         <div className="settings-restore-meta">
                           <strong>{restorePreview.fileName}</strong>
                           <small>
-                            {restorePreview.decks} 个题库 ·{" "}
+                            {restorePreview.decks} 个文件夹 ·{" "}
                             {restorePreview.questions} 道题 ·{" "}
                             {restorePreview.reviews} 条复习记录
                             {restorePreview.exportedAt

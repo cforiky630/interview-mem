@@ -840,6 +840,56 @@
   }
   .settings-row-control {
     margin-left: auto;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .settings-row-control select {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  .settings-modal {
+    width: calc(100vw - 16px);
+    height: min(640px, calc(100dvh - 32px));
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .settings-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 8px 10px;
+  }
+  .settings-sidebar-heading,
+  .settings-sidebar-footer {
+    display: none;
+  }
+  .settings-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    gap: 6px;
+  }
+  .settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .settings-nav-item {
+    width: auto;
+    flex-shrink: 0;
+    padding: 6px 11px;
+    font-size: 0.8125rem;
+  }
+  .settings-row-control {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .settings-row-control select {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
 }
 
@@ -969,12 +1019,16 @@ html[data-shell="mobile"] .settings-row {
 
 html[data-shell="mobile"] .settings-row-control {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   justify-content: flex-end;
 }
 
 html[data-shell="mobile"] .settings-row-control select {
   flex: 1;
-  max-width: none;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 html[data-shell="mobile"] .settings-backup-summary {

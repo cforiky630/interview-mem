@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Archive,
-  ChevronDown,
   ChevronRight,
   Clock,
   CopyCheck,
@@ -88,11 +87,30 @@ export function FolderTree({
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     readExpandedFolderIds(userId),
   );
+  const [mountedIds, setMountedIds] = useState<Set<string>>(
+    () => new Set(expanded),
+  );
   const [dragOverId, setDragOverId] = useState<string | "ROOT" | null>(null);
 
   useEffect(() => {
     setExpanded(readExpandedFolderIds(userId));
   }, [userId]);
+
+  useEffect(() => {
+    setMountedIds((prev) => {
+      let changed = false;
+      for (const id of expanded) {
+        if (!prev.has(id)) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return prev;
+      const next = new Set(prev);
+      expanded.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [expanded]);
 
   // Auto-expand ancestor chain whenever activeFolderId changes.
   useEffect(() => {
@@ -182,6 +200,7 @@ export function FolderTree({
             <button
               type="button"
               className="folder-tree-toggle"
+              data-open={isOpen ? "true" : "false"}
               aria-label={isOpen ? `收起 ${folder.title}` : `展开 ${folder.title}`}
               aria-expanded={isOpen}
               onClick={(e) => {
@@ -189,7 +208,7 @@ export function FolderTree({
                 toggleExpand(folder.id);
               }}
             >
-              {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <ChevronRight size={13} className="folder-tree-chevron" />
             </button>
           ) : (
             <span className="folder-tree-spacer" aria-hidden="true" />
@@ -226,11 +245,20 @@ export function FolderTree({
             <span className="folder-tree-count">{folder.count}</span>
           </button>
         </div>
-        {hasChildren && isOpen && (
-          <ul className="folder-tree-list">
-            {childFolders.map((child) => renderOwnedNode(child, depth + 1))}
-            {placedSubs.map((sub) => renderSubNode(sub, depth + 1))}
-          </ul>
+        {hasChildren && (isOpen || mountedIds.has(folder.id)) && (
+          <div
+            className="folder-tree-children"
+            data-open={isOpen ? "true" : "false"}
+            aria-hidden={!isOpen}
+            inert={!isOpen}
+          >
+            <div className="folder-tree-children-inner">
+              <ul className="folder-tree-list" role="group">
+                {childFolders.map((child) => renderOwnedNode(child, depth + 1))}
+                {placedSubs.map((sub) => renderSubNode(sub, depth + 1))}
+              </ul>
+            </div>
+          </div>
         )}
       </li>
     );

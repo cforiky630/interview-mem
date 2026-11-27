@@ -237,7 +237,7 @@ export async function assertDeckChatAccess(userId: string, deckId: string) {
       ),
     )
     .where(and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)));
-  if (!sub) throw new AppError(404, "题库不存在或无权访问。");
+  if (!sub) throw new AppError(404, "文件夹不存在或无权访问。");
   return { ...sub, isOwner: false };
 }
 

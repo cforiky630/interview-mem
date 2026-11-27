@@ -187,6 +187,19 @@ function attachGlobalListeners(): () => void {
   const onChange = () => {
     syncDeviceProfile();
   };
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (
+      event.key === "Tab" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      document.documentElement.dataset.focusModality = "keyboard";
+    }
+  };
+  const onPointerDown = () => {
+    delete document.documentElement.dataset.focusModality;
+  };
   const onFocusIn = () => {
     if (blurTimer !== null) {
       window.clearTimeout(blurTimer);
@@ -211,6 +224,8 @@ function attachGlobalListeners(): () => void {
   }
   window.addEventListener("resize", onChange, { passive: true });
   window.addEventListener("orientationchange", onChange, { passive: true });
+  document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("focusin", onFocusIn, true);
   document.addEventListener("focusout", onFocusOut, true);
   const vv = window.visualViewport;
@@ -229,6 +244,8 @@ function attachGlobalListeners(): () => void {
     }
     window.removeEventListener("resize", onChange);
     window.removeEventListener("orientationchange", onChange);
+    document.removeEventListener("keydown", onKeyDown, true);
+    document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("focusin", onFocusIn, true);
     document.removeEventListener("focusout", onFocusOut, true);
     vv?.removeEventListener("resize", onChange);

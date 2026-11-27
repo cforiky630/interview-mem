@@ -55,6 +55,6 @@ export function formatThreadLabel(
   }
   return (
     formatQuotePreview(firstUser, 32) ||
-    (scope === "deck" ? "题库整理" : "全库问答")
+    (scope === "deck" ? "文件夹整理" : "全局资料问答")
   );
 }

@@ -340,6 +340,18 @@
 /* —— 轻量行内键值对（Key → Value）行 —— */
 .concept-kv-row {
   background: color-mix(in oklab, var(--accent-wash) 46%, var(--surface));
+  animation: concept-kv-enter 180ms var(--ease-smooth);
+}
+
+@keyframes concept-kv-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .concept-kv-term-cell {
@@ -575,10 +587,35 @@
   font-size: 0.79rem;
   line-height: 1.35;
   box-shadow: var(--shadow-inset);
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
 }
 
 .concept-kv-extra-select {
   padding-right: 26px;
+}
+
+.concept-kv-extra-select:focus,
+.concept-kv-extra-select:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-inset);
+}
+
+html[data-focus-modality="keyboard"] .concept-kv-extra-select:focus-visible {
+  background-color: var(--focus-surface);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  @supports (appearance: base-select) {
+    .concept-kv-extra-select {
+      padding: 4px 8px 4px 9px;
+    }
+  }
 }
 
 .concept-kv-extra-input::placeholder {
@@ -828,6 +865,7 @@ html[data-input="touch"] .concept-kv-cancel-btn {
 @media (prefers-reduced-motion: reduce) {
   .concepts-import-banner,
   .concepts-conflict-alert,
+  .concept-kv-row,
   .concept-row.is-focused {
     animation: none;
   }

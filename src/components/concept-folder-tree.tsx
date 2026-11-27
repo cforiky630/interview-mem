@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  Folder,
-  FolderOpen,
-  Home,
-} from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, Home } from "lucide-react";
 import type { ConceptFolderView } from "@/lib/types";
 import { CONCEPT_ROOT_LABEL, buildConceptFolderIndex } from "@/lib/concepts";
 
@@ -91,11 +85,30 @@ export function ConceptFolderTree({
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     readExpandedConceptFolders(userId),
   );
+  const [mountedIds, setMountedIds] = useState<Set<string>>(
+    () => new Set(expanded),
+  );
   const [dragOverId, setDragOverId] = useState<string | "ROOT" | null>(null);
 
   useEffect(() => {
     setExpanded(readExpandedConceptFolders(userId));
   }, [userId]);
+
+  useEffect(() => {
+    setMountedIds((prev) => {
+      let changed = false;
+      for (const id of expanded) {
+        if (!prev.has(id)) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return prev;
+      const next = new Set(prev);
+      expanded.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [expanded]);
 
   // Auto-expand ancestor chain whenever activeFolderId changes.
   useEffect(() => {
@@ -176,6 +189,7 @@ export function ConceptFolderTree({
             <button
               type="button"
               className="folder-tree-toggle"
+              data-open={isOpen ? "true" : "false"}
               aria-label={
                 isOpen ? `收起 ${folder.title}` : `展开 ${folder.title}`
               }
@@ -185,7 +199,7 @@ export function ConceptFolderTree({
                 toggleExpand(folder.id);
               }}
             >
-              {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <ChevronRight size={13} className="folder-tree-chevron" />
             </button>
           ) : (
             <span className="folder-tree-spacer" aria-hidden="true" />
@@ -206,10 +220,19 @@ export function ConceptFolderTree({
             <span className="folder-tree-count">{folder.count}</span>
           </button>
         </div>
-        {hasChildren && isOpen && (
-          <ul className="folder-tree-list">
-            {childFolders.map((child) => renderNode(child, depth + 1))}
-          </ul>
+        {hasChildren && (isOpen || mountedIds.has(folder.id)) && (
+          <div
+            className="folder-tree-children"
+            data-open={isOpen ? "true" : "false"}
+            aria-hidden={!isOpen}
+            inert={!isOpen}
+          >
+            <div className="folder-tree-children-inner">
+              <ul className="folder-tree-list" role="group">
+                {childFolders.map((child) => renderNode(child, depth + 1))}
+              </ul>
+            </div>
+          </div>
         )}
       </li>
     );

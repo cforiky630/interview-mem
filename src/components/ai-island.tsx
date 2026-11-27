@@ -549,8 +549,8 @@ export function AiIsland({
         ? (data.questions.find((q) => q.id === targetQuestionId)?.title ??
           "当前题目")
         : targetScope === "deck"
-          ? (data.decks.find((d) => d.id === targetDeckId)?.title ?? "当前题库")
-          : "全局题库工作区";
+          ? (data.decks.find((d) => d.id === targetDeckId)?.title ?? "当前文件夹")
+          : "全局资料工作区";
     const controller = new AbortController();
     abort.current = controller;
     inFlight.current = true;
@@ -906,7 +906,7 @@ export function AiIsland({
           ...edit.expected,
           ...edit.fields,
         });
-        if (result) toast.success("已更新题库");
+        if (result) toast.success("已更新文件夹信息");
       }
     } finally {
       editInFlight.current = false;
@@ -1078,8 +1078,8 @@ export function AiIsland({
 
   const scopeTabs: { id: AiScope; label: string }[] = [
     ...(question ? [{ id: "question" as const, label: "当前题目" }] : []),
-    ...(contextDeck ? [{ id: "deck" as const, label: "当前题库" }] : []),
-    { id: "workspace", label: "全局题库" },
+    ...(contextDeck ? [{ id: "deck" as const, label: "当前文件夹" }] : []),
+    { id: "workspace", label: "全部资料" },
   ];
 
   const isDocked = isOpen ? isDockedNow : lastOpenSurface === "docked";
@@ -1386,7 +1386,7 @@ export function AiIsland({
         )}
 
         {displayScope !== "question" && (
-          <div className="ai-scope-subtabs" role="tablist" aria-label="题库助手视图">
+          <div className="ai-scope-subtabs" role="tablist" aria-label="资料助手视图">
             <button
               type="button"
               role="tab"
@@ -1428,7 +1428,7 @@ export function AiIsland({
                   ? displayQuestion.title
                   : displayScope === "deck" && displayDeck
                     ? displayDeck.title
-                    : "全局题库"
+                    : "全部资料"
               }
             >
               <span className="ai-context-icon" aria-hidden="true">
@@ -1445,7 +1445,7 @@ export function AiIsland({
                   ? displayQuestion.title
                   : displayScope === "deck" && displayDeck
                     ? displayDeck.title
-                    : "全局题库工作区"}
+                    : "全局资料工作区"}
               </strong>
               {displayScope === "question" &&
                 displayQuestion?.answer.trim() &&
@@ -1580,8 +1580,8 @@ export function AiIsland({
                     {displayScope === "question"
                       ? "哪里没想明白？"
                       : displayScope === "deck"
-                        ? "梳理当前题库"
-                        : "盘点全局题库"}
+                        ? "梳理当前文件夹"
+                        : "盘点全部资料"}
                   </h3>
                   <p>
                     {displayScope === "question" && displayQuestion
@@ -1589,8 +1589,8 @@ export function AiIsland({
                         ? "围绕本题提问，或让我帮你润色答案、整理笔记。"
                         : "围绕本题提问，也可以划选正文追问。"
                       : displayScope === "deck" && displayDeck
-                        ? `围绕「${displayDeck.title}」查找题目、排查重复或安排复习。`
-                        : "跨题库查重、梳理知识结构，或安排今天的复习顺序。"}
+                        ? `围绕「${displayDeck.title}」查找内容、排查重复或安排复习。`
+                        : "跨文件夹查重、梳理知识结构，或安排今天的复习顺序。"}
                   </p>
                   {data.settings.hasKey ? (
                     <div className="prompt-suggestions">
@@ -1602,14 +1602,14 @@ export function AiIsland({
                           ]
                         : displayScope === "deck"
                           ? [
-                              "梳理当前题库的知识脉络与重点分组",
-                              "排查当前题库中可能重复或相似的题目",
-                              "挑出待复习和待完善的题目，排出优先级",
+                              "梳理当前文件夹的知识脉络与重点结构",
+                              "排查当前文件夹中可能重复或相似的内容",
+                              "挑出待复习和待完善的内容，排出优先级",
                             ]
                           : [
-                              "盘点全局题库分布，目前哪些方向急需复习？",
-                              "排查整个题库中的重复题或高度相似卡片",
-                              "结合待完善题目，帮我定今天的整理计划",
+                              "盘点全部资料分布，目前哪些方向急需复习？",
+                              "排查全部资料中的重复项或高度相似卡片",
+                              "结合待完善内容，帮我定今天的整理计划",
                             ]
                       ).map((p) => (
                         <button key={p} onClick={() => void send(p)}>
@@ -1818,8 +1818,8 @@ export function AiIsland({
                           ? "提问，或让我帮你优化答案和笔记…"
                           : "围绕本题或划选内容追问…"
                         : displayScope === "deck"
-                          ? "查重、归纳考点或安排本组复习…"
-                          : "全库搜题、查重或制定复习计划…"
+                          ? "查重、归纳考点或安排本文件夹复习…"
+                          : "在全部资料中搜索、查重或制定复习计划…"
                   }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}

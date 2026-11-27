@@ -597,7 +597,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
       if (matches.length !== 1) {
         toast.info(
           matches.length
-            ? "找到多个同名条目，请在题库中搜索。"
+            ? "找到多个同名条目，请在资料中搜索。"
             : "当前账号还没有这个关联条目。",
         );
         return;
@@ -1184,7 +1184,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
         <span className="brand-mark">
           <BookOpen size={27} />
         </span>
-        <h2>{error ? "暂时没有连接上题库" : "正在打开你的知识空间"}</h2>
+        <h2>{error ? "暂时没有连接上资料库" : "正在打开你的知识空间"}</h2>
         <p>{error || "给积累一点时间。"}</p>
         {error ? (
           <>
@@ -1737,7 +1737,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                         inbox: "待整理",
                         archived: "已归档",
                         review: reviewSessionActive ? "答题" : "复习中心",
-                        catalog: "发现题库",
+                        catalog: "发现资料",
                         history: "回顾记录",
                       }[displayedView]
                     }
@@ -1871,7 +1871,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                 const res = await applyAllDeckUpdates(mutate, deckIds);
                 if (res) {
                   toast.success(
-                    `已更新 ${Number(res.updated ?? 0)} 个订阅题库。`,
+                    `已更新 ${Number(res.updated ?? 0)} 份订阅资料。`,
                   );
                 }
               }}
@@ -1886,7 +1886,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                   toast.success(
                     Number(result.added)
                       ? `已载入 ${result.added} 道示例题，可自由编辑或归档。`
-                      : "示例题库已经载入过了。",
+                      : "示例资料已经载入过了。",
                   );
               }}
             />
@@ -2048,7 +2048,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
                         ? "返回收藏"
                         : origin.current.view === "today"
                           ? "返回今日"
-                          : "返回题库"
+                          : "返回资料"
               }
               prevNext={
                 readingIndex !== -1 && readingList.length > 1
@@ -2109,7 +2109,7 @@ function WorkspaceApp({ sessionId }: { sessionId: string }) {
               <BookOpen size={32} />
               <h3>题目已不可访问</h3>
               <Button variant="outline" onClick={() => navigate("library")}>
-                返回题库
+                返回资料
               </Button>
             </div>
           )}

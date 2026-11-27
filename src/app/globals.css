@@ -718,16 +718,37 @@ select {
 }
 
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
-textarea:focus,
-select:focus {
+textarea:focus {
   border-color: var(--border-accent);
   background-color: var(--focus-surface);
   box-shadow: var(--shadow-focus);
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
-textarea:focus-visible,
+select:focus,
 select:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-inset);
+}
+
+html[data-focus-modality="keyboard"] select:focus-visible {
+  border-color: var(--border-accent);
+  background-color: var(--focus-surface);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
+textarea:focus-visible {
+  outline: none;
+}
+
+:where(
+  button,
+  a,
+  summary,
+  [role="button"],
+  [tabindex]
+):focus:not(:focus-visible) {
   outline: none;
 }
 
@@ -6249,11 +6270,48 @@ html
   flex-shrink: 0;
   border-radius: 6px;
   color: var(--muted);
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.folder-tree-chevron {
+  transition: transform 180ms var(--ease-smooth);
+}
+
+.folder-tree-toggle[data-open="true"] .folder-tree-chevron {
+  transform: rotate(90deg);
 }
 
 .folder-tree-toggle:hover {
   background: var(--hover);
   color: var(--text);
+}
+
+.folder-tree-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 200ms var(--ease-smooth),
+    opacity 150ms ease-out;
+}
+
+.folder-tree-children[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@starting-style {
+  .folder-tree-children[data-open="true"] {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+.folder-tree-children-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .folder-tree-spacer {
@@ -6347,6 +6405,9 @@ html
   border-radius: 6px;
   color: var(--muted);
   flex-shrink: 0;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 
 .folder-tree-add-btn:hover {
@@ -6388,6 +6449,11 @@ html
   color: var(--subtle);
   white-space: nowrap;
   flex-shrink: 0;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-smooth);
 }
 
 .mobile-quick-pill small {
@@ -6418,7 +6484,9 @@ html
   padding: 2px 8px;
   border-radius: var(--radius-xs);
   color: var(--subtle);
-  transition: background-color var(--dur-fast) ease;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 
 .library-crumb:hover {
@@ -6485,6 +6553,7 @@ html
   border: 1px solid var(--border-accent);
   border-radius: var(--radius-md);
   background: var(--accent-wash);
+  animation: panel-reveal var(--dur-base) var(--ease-smooth);
 }
 
 .sub-update-banner > div:first-child {
@@ -6518,10 +6587,15 @@ html
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--muted);
+  transition:
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    background-color var(--dur-fast) ease;
 }
 
 .library-search-box:focus-within {
   border-color: var(--border-accent);
+  background: var(--focus-surface);
   box-shadow: var(--shadow-focus);
 }
 
@@ -6532,6 +6606,15 @@ html
   background: transparent;
   color: var(--text);
   font-size: 0.88rem;
+  box-shadow: none;
+  outline: none;
+}
+
+.library-search-box input:focus,
+.library-search-box input:focus-visible {
+  border: 0;
+  background-color: transparent;
+  box-shadow: none;
   outline: none;
 }
 
@@ -6552,15 +6635,56 @@ html
   background: var(--surface);
   color: var(--subtle);
   font-size: 0.8rem;
+  transition:
+    border-color var(--dur-fast) ease,
+    background-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
 }
 
-.library-sort-select select {
+.library-sort-select:has(select:open) {
+  border-color: var(--border-accent);
+  background: var(--focus-surface);
+}
+
+html[data-focus-modality="keyboard"] .library-sort-select:focus-within {
+  border-color: var(--border-accent);
+  background: var(--focus-surface);
+  box-shadow: var(--shadow-focus);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .library-sort-select:hover {
+    border-color: var(--border-accent);
+  }
+}
+
+.library-sort-select select,
+.library-sort-select select:hover:not(:disabled),
+.library-sort-select select:focus,
+.library-sort-select select:open,
+.library-sort-select select:focus-visible,
+html[data-focus-modality="keyboard"] .library-sort-select select:focus-visible {
   border: 0;
-  background: transparent;
+  background-color: transparent;
   color: var(--text);
   font-size: 0.8rem;
+  min-height: 0;
   padding: 4px 18px 4px 2px;
+  box-shadow: none;
   outline: none;
+}
+
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  @supports (appearance: base-select) {
+    .library-sort-select select,
+    .library-sort-select select:hover:not(:disabled),
+    .library-sort-select select:focus,
+    .library-sort-select select:open,
+    .library-sort-select select:focus-visible,
+    html[data-focus-modality="keyboard"] .library-sort-select select:focus-visible {
+      padding: 4px 2px;
+    }
+  }
 }
 
 .library-tag-strip {
@@ -6581,6 +6705,11 @@ html
   background: var(--surface);
   color: var(--subtle);
   font-size: 0.76rem;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-smooth);
 }
 
 .library-tag-pill:hover {
@@ -6609,6 +6738,41 @@ html
   border: 1px solid var(--border-accent);
   border-radius: var(--radius-md);
   background: var(--accent-wash);
+  transform-origin: top center;
+  opacity: 1;
+  translate: 0 0;
+  scale: 1;
+  transition:
+    display 220ms,
+    opacity 150ms ease-out,
+    translate 220ms var(--ease-smooth),
+    scale 220ms var(--ease-smooth);
+  transition-behavior: allow-discrete;
+}
+
+.library-multiselect-bar:where([hidden], [data-closing]) {
+  opacity: 0;
+  translate: 0 -6px;
+  scale: 0.98;
+  pointer-events: none;
+  transition:
+    display 160ms,
+    opacity 130ms ease-out,
+    translate 160ms cubic-bezier(0.32, 0, 0.2, 1),
+    scale 160ms cubic-bezier(0.32, 0, 0.2, 1);
+  transition-behavior: allow-discrete;
+}
+
+.library-multiselect-bar[hidden] {
+  display: none;
+}
+
+@starting-style {
+  .library-multiselect-bar {
+    opacity: 0;
+    translate: 0 -8px;
+    scale: 0.98;
+  }
 }
 
 .library-multiselect-actions {
@@ -6636,7 +6800,8 @@ html
   transition:
     border-color var(--dur-fast) ease,
     box-shadow var(--dur-fast) ease,
-    background-color var(--dur-fast) ease;
+    background-color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-smooth);
 }
 
 .library-folder-row:hover {
@@ -6718,7 +6883,9 @@ html
   align-items: center;
   gap: 8px;
   padding: 11px 12px 11px 14px;
-  transition: background-color var(--dur-fast) ease;
+  transition:
+    background-color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-smooth);
 }
 
 .library-item-row + .library-item-row {
@@ -6854,6 +7021,16 @@ html
   border-radius: var(--radius-sm);
   background: var(--surface-recessed);
   color: var(--muted);
+  transition:
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    background-color var(--dur-fast) ease;
+}
+
+.folder-move-search:focus-within {
+  border-color: var(--border-accent);
+  background: var(--focus-surface);
+  box-shadow: var(--shadow-focus);
 }
 
 .folder-move-search input {
@@ -6862,6 +7039,15 @@ html
   background: transparent;
   color: var(--text);
   font-size: 0.88rem;
+  box-shadow: none;
+  outline: none;
+}
+
+.folder-move-search input:focus,
+.folder-move-search input:focus-visible {
+  border: 0;
+  background-color: transparent;
+  box-shadow: none;
   outline: none;
 }
 
@@ -6887,6 +7073,10 @@ html
   text-align: left;
   color: var(--text);
   font-size: 0.86rem;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-smooth);
 }
 
 .folder-move-item:hover:not(:disabled) {
@@ -6964,6 +7154,7 @@ html
   border: 1px solid var(--warn-border);
   border-radius: var(--radius-sm);
   background: var(--warn-bg);
+  animation: panel-reveal var(--dur-fast) var(--ease-smooth);
 }
 
 .conflict-box-head {

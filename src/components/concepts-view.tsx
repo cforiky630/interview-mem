@@ -85,6 +85,7 @@ import {
 } from "./concept-folder-dialogs";
 import { ActionMenu } from "./ui/action-menu";
 import { Button } from "./ui/button";
+import { useDiscretePresence } from "./use-discrete-presence";
 import "./concepts.css";
 
 type ConflictInfo = {
@@ -1045,6 +1046,7 @@ export function ConceptsView({
 
   // Multi-select & drag-and-drop state.
   const [selectMode, setSelectMode] = useState(false);
+  const multiselectBarPresence = useDiscretePresence<HTMLDivElement>(selectMode);
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1851,57 +1853,60 @@ export function ConceptsView({
         )}
 
         {/* Multiselect action bar */}
-        {selectMode && (
-          <div
-            className="library-multiselect-bar"
-            role="region"
-            aria-label="批量操作"
-          >
-            <span className="small">
-              已选 <strong>{totalSelectedCount}</strong> 项
-            </span>
-            <div className="library-multiselect-actions">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={totalSelectedCount === 0}
-                onClick={() =>
-                  setGroupIntoNewSelection({
-                    parentId: currentFolderId,
-                    folderIds: [...selectedFolderIds],
-                    conceptIds: [...selectedConceptIds],
-                  })
-                }
-              >
-                <FolderPlus size={14} /> 归入新文件夹
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={totalSelectedCount === 0}
-                onClick={() =>
-                  setMoveSelection({
-                    folderIds: [...selectedFolderIds],
-                    conceptIds: [...selectedConceptIds],
-                    initialTargetId: currentFolderId,
-                  })
-                }
-              >
-                <FolderInput size={14} /> 移动
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={clearSelection}
-              >
-                取消
-              </Button>
-            </div>
+        <div
+          ref={multiselectBarPresence.ref}
+          hidden={multiselectBarPresence.isHidden}
+          data-closing={multiselectBarPresence.isClosing ? "" : undefined}
+          aria-hidden={!selectMode}
+          inert={!selectMode || multiselectBarPresence.isClosing}
+          className="library-multiselect-bar"
+          role="region"
+          aria-label="批量操作"
+        >
+          <span className="small">
+            已选 <strong>{totalSelectedCount}</strong> 项
+          </span>
+          <div className="library-multiselect-actions">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={totalSelectedCount === 0}
+              onClick={() =>
+                setGroupIntoNewSelection({
+                  parentId: currentFolderId,
+                  folderIds: [...selectedFolderIds],
+                  conceptIds: [...selectedConceptIds],
+                })
+              }
+            >
+              <FolderPlus size={14} /> 归入新文件夹
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={totalSelectedCount === 0}
+              onClick={() =>
+                setMoveSelection({
+                  folderIds: [...selectedFolderIds],
+                  conceptIds: [...selectedConceptIds],
+                  initialTargetId: currentFolderId,
+                })
+              }
+            >
+              <FolderInput size={14} /> 移动
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={clearSelection}
+            >
+              取消
+            </Button>
           </div>
-        )}
+        </div>
 
         {/* Current-level Subfolders pinned on top (hidden while searching) */}
         {!isSearching && currentChildFolders.length > 0 && (

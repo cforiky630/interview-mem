@@ -257,7 +257,15 @@
     select:open {
       border-color: var(--border-accent);
       background-color: var(--focus-surface);
+      box-shadow: none;
+      outline: none;
+    }
+
+    html[data-focus-modality="keyboard"] select:focus-visible {
+      border-color: var(--border-accent);
+      background-color: var(--focus-surface);
       box-shadow: var(--shadow-focus);
+      outline: none;
     }
 
     select::picker-icon {
@@ -288,6 +296,7 @@
 
     select::picker(select) {
       box-sizing: border-box;
+      outline: none;
       margin: 0;
       margin-block: 6px;
       padding: 6px;
@@ -3179,6 +3188,7 @@ html:not([data-shell="mobile"]) .notebook-reader .reader-toolbar {
   overflow: auto;
   overscroll-behavior: contain;
   color: var(--text);
+  outline: none;
 }
 
 .action-menu > div:popover-open {
@@ -7714,8 +7724,20 @@ html[data-input="touch"] .inline-title-trigger {
 }
 
 .concept-popover-input:focus,
-.concept-popover-select:focus,
 .concept-popover-textarea:focus {
+  background-color: var(--focus-surface);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+.concept-popover-select:focus,
+.concept-popover-select:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-inset);
+}
+
+html[data-focus-modality="keyboard"] .concept-popover-select:focus-visible {
   background-color: var(--focus-surface);
   border-color: var(--border-accent);
   box-shadow: var(--shadow-focus);
@@ -7925,8 +7947,20 @@ html[data-input="touch"] .inline-title-trigger {
   }
 }
 
-.annotation-concept-input:focus,
-.annotation-concept-select:focus {
+.annotation-concept-input:focus {
+  background-color: var(--focus-surface);
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+.annotation-concept-select:focus,
+.annotation-concept-select:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-inset);
+}
+
+html[data-focus-modality="keyboard"] .annotation-concept-select:focus-visible {
   background-color: var(--focus-surface);
   border-color: var(--border-accent);
   box-shadow: var(--shadow-focus);

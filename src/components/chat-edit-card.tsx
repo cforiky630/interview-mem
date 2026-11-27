@@ -60,7 +60,7 @@ export function ChatEditCard({
   const state = chatEditState(edit, question, deck);
   const target =
     edit.target === "deck"
-      ? "题库"
+      ? "文件夹"
       : edit.target === "note"
         ? "个人笔记"
         : "题目";
@@ -126,7 +126,7 @@ export function ChatEditCard({
           <small className="muted" role="status">
             {state === "stale"
               ? "原题已改动，请重新让 AI 生成"
-              : "仅自有题库支持直接应用"}
+              : "仅自有文件夹支持直接应用"}
           </small>
         )}
         {onInspect && (detailContent !== undefined || rows.length > 0) && (

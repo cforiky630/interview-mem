@@ -16,7 +16,7 @@ export const POST = route(async (request, user) => {
   const data = await body(request, schema, 8_000);
   const question = await accessibleQuestion(user.id, data.questionId);
   if (!question.isOwner)
-    throw new AppError(403, "请先另存到自己的题库，再补充答案。");
+    throw new AppError(403, "请先另存到自己的资料中，再补充答案。");
   if (question.revision !== data.expectedRevision)
     throw new AppError(409, "题目已更新，请刷新后再生成答案。", "CONFLICT");
   if (question.archived) throw new AppError(400, "请先恢复题目再补充答案。");

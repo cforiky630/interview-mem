@@ -52,7 +52,7 @@ export const POST = route(async (request, user) => {
       return NextResponse.json(existing[0].result);
     throw new AppError(
       409,
-      "这批内容已接收。请查看题库；若上次失败，可以使用新的导入操作重试。",
+      "这批内容已接收。请查看我的资料；若上次失败，可以使用新的导入操作重试。",
     );
   }
   // Preserve raw input before parsing or calling a paid provider.
@@ -128,7 +128,7 @@ export const POST = route(async (request, user) => {
           ),
         )
         .for("no key update");
-      if (!activeDeck) throw new AppError(404, "题库已删除，请选择其他题库。");
+      if (!activeDeck) throw new AppError(404, "目标文件夹已删除，请选择其他文件夹。");
       let added = 0;
       let duplicates = 0;
       const normalizeTitle = (title: string) =>

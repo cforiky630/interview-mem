@@ -98,7 +98,7 @@ export const GET = route(async (request, user) => {
 
   // Mode 1: Lightweight deck preview (groups + up to 40 sample question titles) before subscribing.
   if (preview) {
-    if (!shared) throw new AppError(400, "缺少要预览的题库标识。");
+    if (!shared) throw new AppError(400, "缺少要预览的资料标识。");
     const [row] = await db
       .select({
         deck: decks,
@@ -126,7 +126,7 @@ export const GET = route(async (request, user) => {
           ),
         ),
       );
-    if (!row) throw new AppError(404, "题库不存在或未公开。");
+    if (!row) throw new AppError(404, "资料不存在或未公开。");
 
     const [subRows, followRows, countRows] = await Promise.all([
       db

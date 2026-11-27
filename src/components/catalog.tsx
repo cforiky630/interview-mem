@@ -168,7 +168,7 @@ export function Catalog({
         }
       } catch (err) {
         if (ctrl.signal.aborted) return;
-        toast.error(err instanceof Error ? err.message : "发现题库加载失败。");
+        toast.error(err instanceof Error ? err.message : "发现资料加载失败。");
       } finally {
         if (!ctrl.signal.aborted) setLoading(false);
       }
@@ -210,7 +210,7 @@ export function Catalog({
       } catch (err) {
         if (ctrl.signal.aborted) return;
         setPreviewError(
-          err instanceof Error ? err.message : "无法加载该题库预览。",
+          err instanceof Error ? err.message : "无法加载该资料预览。",
         );
       } finally {
         if (!ctrl.signal.aborted) setPreviewLoading(false);
@@ -450,7 +450,7 @@ export function Catalog({
       const res = await applyAllDeckUpdates(mutate);
       if (res) {
         toast.success(
-          `已更新 ${Number(res.updated ?? outdatedSubs.length)} 个订阅题库。`,
+          `已更新 ${Number(res.updated ?? outdatedSubs.length)} 份订阅资料。`,
         );
         void loadCatalog({ silent: true });
       }
@@ -488,7 +488,7 @@ export function Catalog({
         const res = await unfollowAuthor(mutate, author.id, false);
         if (res) {
           toast.success(
-            `已取消关注「${author.name}」（已订阅的题库保持不变）。`,
+            `已取消关注「${author.name}」（已订阅的资料保持不变）。`,
           );
           void loadCatalog({ silent: true });
         }
@@ -516,8 +516,8 @@ export function Catalog({
       if (res) {
         toast.success(
           next
-            ? "已开启：该创作者发布新公开题库时将自动订阅。"
-            : "已关闭新题库自动订阅。",
+            ? "已开启：该创作者发布新公开资料时将自动订阅。"
+            : "已关闭新资料自动订阅。",
         );
         void loadCatalog({ silent: true });
       }
@@ -538,8 +538,8 @@ export function Catalog({
         const count = Number(res.subscribed ?? 0);
         toast.success(
           count > 0
-            ? `已一键订阅「${authorName}」的 ${count} 个公开题库。`
-            : `你已订阅「${authorName}」的全部公开题库。`,
+            ? `已一键订阅「${authorName}」的 ${count} 份公开资料。`
+            : `你已订阅「${authorName}」的全部公开资料。`,
         );
         void loadCatalog({ silent: true });
       }
@@ -575,7 +575,7 @@ export function Catalog({
       <div className="page-heading">
         <div>
           <h1>
-            发现题库
+            发现资料
             <span className="greeting-sprout">
               <Rss size={25} />
             </span>
@@ -608,7 +608,7 @@ export function Catalog({
           aria-selected={tab === "discover"}
           onClick={() => setTab("discover")}
         >
-          公开题库
+          公开资料
           {enrichedDecks.length > 0 && <small>{enrichedDecks.length}</small>}
         </button>
         <button
@@ -638,7 +638,7 @@ export function Catalog({
 
       {loading && !catalogData && (
         <div className="catalog-loading">
-          <Loader2 size={16} className="spin" /> 正在加载公开题库与创作者…
+          <Loader2 size={16} className="spin" /> 正在加载公开资料与创作者…
         </div>
       )}
 
@@ -656,7 +656,7 @@ export function Catalog({
                     {focusedAuthor.isSelf ? "（我）" : ""}
                   </strong>
                   <small>
-                    {focusedAuthor.deckCount} 个公开题库 ·{" "}
+                    {focusedAuthor.deckCount} 份公开资料 ·{" "}
                     {focusedAuthor.questionCount} 道题 ·{" "}
                     {focusedAuthor.subscriberCount} 人次订阅 ·{" "}
                     {focusedAuthor.followerCount} 人关注
@@ -700,7 +700,7 @@ export function Catalog({
                         ) : (
                           <BellOff size={13} />
                         )}
-                        <span>自动订阅新题库</span>
+                        <span>自动订阅新资料</span>
                       </button>
                     )}
                     {focusedAuthor.unsubscribedDeckCount > 0 && (
@@ -743,8 +743,8 @@ export function Catalog({
             <div className={`search-field ${search ? "has-query" : ""}`}>
               <Search size={17} />
               <input
-                aria-label="搜索公开题库"
-                placeholder="搜索题库名称、简介、创作者或 #标签…"
+                aria-label="搜索公开资料"
+                placeholder="搜索资料名称、简介、创作者或 #标签…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -842,7 +842,7 @@ export function Catalog({
                       <p className="catalog-deck-desc">{deck.description}</p>
                     )}
                     {deck.tags.length > 0 && (
-                      <div className="catalog-deck-tags" aria-label="题库标签">
+                      <div className="catalog-deck-tags" aria-label="资料标签">
                         {deck.tags.slice(0, 4).map((tag) => (
                           <span className="tag" key={tag}>
                             #{tag}
@@ -853,7 +853,7 @@ export function Catalog({
                     <div className="catalog-deck-stats">
                       <span>{deck.count} 题</span>
                       {deck.groupCount > 0 && (
-                        <span>· {deck.groupCount} 分组</span>
+                        <span>· {deck.groupCount} 个子文件夹</span>
                       )}
                       <span>· {deck.subscriberCount} 人订阅</span>
                       {deck.publishedAt && (
@@ -864,7 +864,7 @@ export function Catalog({
                       type="button"
                       className="catalog-deck-author-row"
                       onClick={() => focusAuthor(deck.ownerId)}
-                      title={`查看「${deck.ownerName}」的全部公开题库`}
+                      title={`查看「${deck.ownerName}」的全部公开资料`}
                     >
                       <span
                         className="catalog-author-avatar"
@@ -893,7 +893,7 @@ export function Catalog({
                           size="sm"
                           onClick={() => onOpenDeck(deck.id)}
                         >
-                          查看我的题库 <ArrowUpRight size={14} />
+                          查看我的资料 <ArrowUpRight size={14} />
                         </Button>
                       ) : deck.subscribed && deck.hasUpdate ? (
                         <Button
@@ -946,13 +946,13 @@ export function Catalog({
                 <Rss size={38} />
                 <h3>
                   {search || authorFilter || onlyUnsubscribed
-                    ? "没有匹配的公开题库"
-                    : "还没有公开题库"}
+                    ? "没有匹配的公开资料"
+                    : "还没有公开资料"}
                 </h3>
                 <p>
                   {search || authorFilter || onlyUnsubscribed
                     ? "试试调整搜索关键词、取消筛选或切换创作者。"
-                    : "在我的题库中点击「批量发布」或单库发布，即可共享给同伴订阅。"}
+                    : "在我的资料中点击「批量发布」或单文件夹发布，即可共享给同伴订阅。"}
                 </p>
                 {(search || authorFilter || onlyUnsubscribed) && (
                   <Button
@@ -1082,7 +1082,7 @@ export function Catalog({
                         {author.isSelf ? "（我）" : ""}
                       </strong>
                       <small>
-                        {author.deckCount} 个题库 · {author.questionCount} 道题
+                        {author.deckCount} 份公开资料 · {author.questionCount} 道题
                         · {author.subscriberCount} 人次订阅 ·{" "}
                         {author.followerCount} 人关注
                       </small>
@@ -1148,7 +1148,7 @@ export function Catalog({
                             ) : (
                               <BellOff size={13} />
                             )}
-                            <span>新题库自动订阅</span>
+                            <span>新资料自动订阅</span>
                           </button>
                         )}
                         {author.unsubscribedDeckCount > 0 && (
@@ -1174,7 +1174,7 @@ export function Catalog({
                       variant="ghost"
                       onClick={() => focusAuthor(author.id)}
                     >
-                      查看题库
+                      查看资料
                     </Button>
                     <Button
                       size="sm"
@@ -1198,8 +1198,8 @@ export function Catalog({
                 </h3>
                 <p>
                   {authorTabFilter === "followed"
-                    ? "在创作者列表中点击「关注作者」，即可跟踪其公开题库并可选自动订阅新题库。"
-                    : "发布一个公开题库后，创作者主页会自动出现在这里。"}
+                    ? "在创作者列表中点击「关注作者」，即可跟踪其公开资料并可选自动订阅新资料。"
+                    : "发布一个公开文件夹后，创作者主页会自动出现在这里。"}
                 </p>
               </div>
             )
@@ -1212,7 +1212,7 @@ export function Catalog({
           {outdatedSubs.length > 0 && (
             <div className="library-updates-bar">
               <div>
-                <strong>{outdatedSubs.length} 个订阅题库</strong>
+                <strong>{outdatedSubs.length} 份订阅资料</strong>
                 <span>有新版本可更新</span>
               </div>
               <Button
@@ -1256,8 +1256,8 @@ export function Catalog({
                       <div className="catalog-author-meta">
                         <strong>{author.authorName}</strong>
                         <small>
-                          {author.publicDeckCount} 个公开题库 · 已订阅{" "}
-                          {author.subscribedDeckCount} 个
+                          {author.publicDeckCount} 份公开资料 · 已订阅{" "}
+                          {author.subscribedDeckCount} 份
                         </small>
                       </div>
                     </div>
@@ -1279,7 +1279,7 @@ export function Catalog({
                         ) : (
                           <BellOff size={13} />
                         )}
-                        <span>自动订阅新题库</span>
+                        <span>自动订阅新资料</span>
                       </button>
                       {author.unsubscribedDeckCount > 0 && (
                         <Button
@@ -1293,7 +1293,7 @@ export function Catalog({
                             )
                           }
                         >
-                          一键补订新题库 ({author.unsubscribedDeckCount})
+                          一键补订新资料 ({author.unsubscribedDeckCount})
                         </Button>
                       )}
                       <Button
@@ -1462,10 +1462,10 @@ export function Catalog({
           ) : (
             <div className="empty-state catalog-empty">
               <Layers2 size={36} />
-              <h3>还没有订阅任何题库</h3>
-              <p>去「发现题库」或「创作者」预览并一键订阅感兴趣的题库吧。</p>
+              <h3>还没有订阅任何资料</h3>
+              <p>去「发现资料」或「创作者」预览并一键订阅感兴趣的公开资料吧。</p>
               <Button variant="outline" onClick={() => setTab("discover")}>
-                去发现题库
+                去发现资料
               </Button>
             </div>
           )}
@@ -1477,18 +1477,18 @@ export function Catalog({
         onOpenChange={(next) => {
           if (!next && !busyKey) closePreview();
         }}
-        title={previewLiveDeck?.title ?? "题库预览"}
+        title={previewLiveDeck?.title ?? "资料预览"}
         description={
           previewLiveDeck
             ? `${previewLiveDeck.ownerName} · v${previewLiveDeck.publishedVersion} · ${previewData?.totalQuestions ?? previewLiveDeck.count} 道题`
-            : "查看题库目录与题目概览后再决定是否订阅"
+            : "查看资料目录与内容概览后再决定是否订阅"
         }
         className="catalog-preview-dialog"
       >
         <div className="dialog-form">
           {previewLoading ? (
             <div className="catalog-loading">
-              <Loader2 size={16} className="spin" /> 正在加载题库目录…
+              <Loader2 size={16} className="spin" /> 正在加载资料目录…
             </div>
           ) : previewError ? (
             <p className="muted">{previewError}</p>
@@ -1517,7 +1517,7 @@ export function Catalog({
                 <div className="catalog-deck-stats">
                   <span>{previewData.totalQuestions} 道题</span>
                   {previewData.groups.length > 0 && (
-                    <span>· {previewData.groups.length} 分组</span>
+                    <span>· {previewData.groups.length} 个子文件夹</span>
                   )}
                   <span>· {previewLiveDeck.subscriberCount} 人订阅</span>
                 </div>
@@ -1713,7 +1713,7 @@ export function Catalog({
                   onOpenDeck(id);
                 }}
               >
-                查看我的题库 <ArrowUpRight size={15} />
+                查看我的资料 <ArrowUpRight size={15} />
               </Button>
             ) : previewLiveDeck.subscribed && previewLiveDeck.hasUpdate ? (
               <Button

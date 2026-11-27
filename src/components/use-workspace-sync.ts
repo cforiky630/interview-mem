@@ -1208,7 +1208,7 @@ export function useWorkspaceSync(sessionId: string) {
         } else if (silent) {
           setSyncError(true);
         } else {
-          setError(e instanceof Error ? e.message : "题库暂时无法读取。");
+          setError(e instanceof Error ? e.message : "资料暂时无法读取。");
         }
         return null;
       } finally {

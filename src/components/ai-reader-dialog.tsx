@@ -106,21 +106,21 @@ export function AiReaderDialog({
     const metaRows: { label: string; before: string; after: string }[] = [];
     if (edit.fields.title !== undefined) {
       metaRows.push({
-        label: "题单名称",
+        label: "文件夹名称",
         before: deck?.title ?? edit.expected.title,
         after: edit.fields.title || "（空）",
       });
     }
     if (edit.fields.description !== undefined) {
       metaRows.push({
-        label: "题单简介",
+        label: "文件夹简介",
         before: deck?.description ?? edit.expected.description,
         after: edit.fields.description || "（清空）",
       });
     }
     return {
-      heading: "修改题库",
-      applyLabel: "应用到题库",
+      heading: "修改文件夹",
+      applyLabel: "应用到文件夹",
       metaRows,
       beforeText: undefined,
       afterText: undefined,
@@ -381,7 +381,7 @@ export function AiReaderDialog({
                     ? "已应用"
                     : editState === "stale"
                       ? "原题已改动，请重新让 AI 生成"
-                      : "仅自有题库支持直接应用"}
+                      : "仅自有文件夹支持直接应用"}
                 </span>
               )}
             </div>

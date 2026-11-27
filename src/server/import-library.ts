@@ -64,7 +64,7 @@ export async function importLibrary(
         .select()
         .from(decks)
         .where(and(eq(decks.id, value.id), eq(decks.ownerId, ownerId)));
-      if (!deck) throw new Error("题库归属不匹配，已停止导入。");
+      if (!deck) throw new Error("目标文件夹归属不匹配，已停止导入。");
     }
     const baseMs = await nextQuestionBaseMs(tx, ownerId);
     let insertSeq = 0;
@@ -121,7 +121,7 @@ export async function importLibrary(
             .returning({ id: questions.id });
           if (!inserted.length)
             throw new Error(
-              `目标题库已存在同内容的其他条目，未覆盖：${document.path}`,
+              `目标文件夹已存在同内容的其他条目，未覆盖：${document.path}`,
             );
           added++;
         }

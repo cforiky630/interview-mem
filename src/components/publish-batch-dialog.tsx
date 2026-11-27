@@ -164,7 +164,7 @@ export function PublishBatchDialog({
           authorLink: linkUrl.href,
         });
         toast.success(
-          `已发布 ${publishedCount} 个题库，订阅者打开题库时将收到更新提示。`,
+          `已发布 ${publishedCount} 个文件夹，订阅者打开时将收到更新提示。`,
         );
       }
     } finally {
@@ -179,14 +179,14 @@ export function PublishBatchDialog({
         if (!next && !busy) onClose();
       }}
       title="批量发布与更新"
-      description="一次发布多个题库或推送最新改动，订阅者将按需确认更新；个人笔记与复习进度始终私有。"
+      description="一次发布多个文件夹或推送最新改动，订阅者将按需确认更新；个人笔记与复习进度始终私有。"
       className="publish-batch-dialog"
     >
       <div className="dialog-form">
         <div
           className="publish-batch-filters"
           role="group"
-          aria-label="筛选要发布的题库"
+          aria-label="筛选要发布的文件夹"
         >
           <button
             type="button"
@@ -236,7 +236,7 @@ export function PublishBatchDialog({
               const statusPill =
                 !eligible ? (
                   <span className="deck-status-pill is-unpublished">
-                    空题库不可发布
+                    空文件夹不可发布
                   </span>
                 ) : d.publishStatus === "changes" && d.unpublishedDiff ? (
                   <span className="deck-status-pill is-changes">
@@ -345,7 +345,7 @@ export function PublishBatchDialog({
                       }
                       maxLength={1000}
                       disabled={busy}
-                      placeholder="单独填写该题库更新说明（留空则使用下方统一说明）"
+                      placeholder="单独填写该文件夹更新说明（留空则使用下方统一说明）"
                     />
                   )}
                 </div>
@@ -354,10 +354,10 @@ export function PublishBatchDialog({
           ) : (
             <p className="muted" style={{ padding: "12px 4px", margin: 0 }}>
               {filter === "changes"
-                ? "所有已发布题库均已是最新状态，没有待推送的改动。"
+                ? "所有已发布文件夹均已是最新状态，没有待推送的改动。"
                 : filter === "unpublished"
-                  ? "所有自有题库均已公开发布。"
-                  : "还没有自有题库。"}
+                  ? "所有自有文件夹均已公开发布。"
+                  : "还没有自有文件夹。"}
             </p>
           )}
         </div>
@@ -419,11 +419,11 @@ export function PublishBatchDialog({
         {resultInfo && (
           <div className="publish-batch-result">
             <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--text)" }}>
-              已发布 {resultInfo.publishedCount} 个题库
+              已发布 {resultInfo.publishedCount} 个文件夹
               {resultInfo.skippedCount > 0
-                ? `（跳过 ${resultInfo.skippedCount} 个无改动题库）`
+                ? `（跳过 ${resultInfo.skippedCount} 个无改动文件夹）`
                 : ""}
-              。分享你的创作者主页，同伴可一键订阅你的公开题库：
+              。分享你的创作者主页，同伴可一键订阅你的公开资料：
             </p>
             <div className="share-link">
               <input
@@ -449,7 +449,7 @@ export function PublishBatchDialog({
       </div>
 
       <div className="dialog-footer">
-        <span className="muted small">已选 {activeSelectedIds.length} 个题库</span>
+        <span className="muted small">已选 {activeSelectedIds.length} 个文件夹</span>
         <Button variant="ghost" disabled={busy} onClick={onClose}>
           {resultInfo ? "完成" : "取消"}
         </Button>

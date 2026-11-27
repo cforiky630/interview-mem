@@ -442,7 +442,10 @@ html[data-input="touch"] :where(
   .field input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
   .field select,
   .field textarea,
+  .library-search-box input,
   .library-sort-select,
+  .library-sort-select select,
+  .folder-move-search input,
   .personal-notes textarea,
   .note-markdown-textarea,
   .inline-editor-surface textarea,
@@ -498,6 +501,26 @@ html[data-input="touch"] .field select {
 
 html[data-input="touch"] .search-field {
   min-height: 44px;
+}
+
+html[data-input="touch"] .library-search-box {
+  min-height: 44px;
+}
+
+html[data-input="touch"] .library-sort-select {
+  min-height: 40px;
+}
+
+html[data-input="touch"] :where(
+  select,
+  .library-sort-select,
+  .library-folder-row,
+  .library-item-row,
+  .mobile-quick-pill,
+  .library-tag-pill,
+  .folder-move-item
+) {
+  -webkit-tap-highlight-color: transparent;
 }
 
 html[data-input="touch"] .ai-model-label-row > .button {
@@ -642,7 +665,11 @@ html[data-input="touch"] :where(
   .concept-popover-more-btn,
   .annotation-concept-more-btn,
   .annotation-concept-badge,
-  .annotation-promote-btn
+  .annotation-promote-btn,
+  .library-crumb,
+  .mobile-inline-back,
+  .folder-tree-toggle,
+  .folder-tree-add-btn
 ):active:not(:disabled) {
   background: transparent;
   border-color: transparent;
@@ -667,7 +694,9 @@ html[data-input="touch"] :where(
   .catalog-author-decks > button,
   .publish-batch-filters > button,
   .catalog-tabs > button:not(.is-active):not(.selected),
-  .focus-queue-chip
+  .focus-queue-chip,
+  .library-tag-pill,
+  .mobile-quick-pill
 ):active:not(:disabled) {
   opacity: 0.74;
   transform: scale(0.97);
@@ -697,6 +726,10 @@ html[data-input="touch"] :where(
   .deck-card,
   .question-row,
   .library-book,
+  .library-folder-row,
+  .library-item-row,
+  .concept-row:not(.concept-kv-row),
+  .folder-move-item,
   .rating-button,
   .reader-pager-btn,
   .review-hub-shortcut,
@@ -1783,6 +1816,17 @@ html[data-shell="mobile"] {
     width: 38px;
     min-width: 38px;
     height: 38px;
+  }
+  & .library-toolbar {
+    gap: 8px;
+  }
+  & .library-search-box {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  & .library-toolbar-right {
+    width: 100%;
+    justify-content: space-between;
   }
   & .trash-row {
     padding: 14px 13px;

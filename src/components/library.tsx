@@ -84,6 +84,7 @@ import type {
 } from "./folder-move-dialog";
 import { DuplicatesView } from "./duplicates-view";
 import { LibraryTrash } from "./library-trash";
+import { useDiscretePresence } from "./use-discrete-presence";
 
 export type LibraryProps = {
   data: Workspace;
@@ -196,6 +197,7 @@ export function Library({
 
   // Multiselect state (supports mixed owned folders, owned items, and subscriptions).
   const [selectMode, setSelectMode] = useState(false);
+  const multiselectBarPresence = useDiscretePresence<HTMLDivElement>(selectMode);
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1311,89 +1313,92 @@ export function Library({
             )}
 
             {/* Multiselect floating action bar */}
-            {selectMode && (
-              <div
-                className="library-multiselect-bar"
-                role="region"
-                aria-label="批量操作"
-              >
-                <span className="small">
-                  已选 <strong>{totalSelectedCount}</strong> 项
-                </span>
-                <div className="library-multiselect-actions">
-                  {!quickView && !isSubscriptionView && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={totalSelectedCount === 0 || batchBusy}
-                      onClick={() =>
-                        onOpenGroupIntoNew({
-                          parentId: currentOwnedFolderId,
-                          folderIds: [...selectedFolderIds],
-                          questionIds: [...selectedQuestionIds],
-                          subscriptionDeckIds: [...selectedSubIds],
-                        })
-                      }
-                    >
-                      <FolderPlus size={14} /> 归入新文件夹
-                    </Button>
-                  )}
+            <div
+              ref={multiselectBarPresence.ref}
+              hidden={multiselectBarPresence.isHidden}
+              data-closing={multiselectBarPresence.isClosing ? "" : undefined}
+              aria-hidden={!selectMode}
+              inert={!selectMode || multiselectBarPresence.isClosing}
+              className="library-multiselect-bar"
+              role="region"
+              aria-label="批量操作"
+            >
+              <span className="small">
+                已选 <strong>{totalSelectedCount}</strong> 项
+              </span>
+              <div className="library-multiselect-actions">
+                {!quickView && !isSubscriptionView && (
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={totalSelectedCount === 0 || batchBusy}
                     onClick={() =>
-                      onOpenMoveDialog({
+                      onOpenGroupIntoNew({
+                        parentId: currentOwnedFolderId,
                         folderIds: [...selectedFolderIds],
                         questionIds: [...selectedQuestionIds],
                         subscriptionDeckIds: [...selectedSubIds],
-                        initialTargetId: currentOwnedFolderId,
                       })
                     }
                   >
-                    <FolderInput size={14} /> 移动
+                    <FolderPlus size={14} /> 归入新文件夹
                   </Button>
-                  {selectedQuestionIds.size > 0 &&
-                    selectedFolderIds.size === 0 &&
-                    selectedSubIds.size === 0 && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={batchBusy}
-                          onClick={() =>
-                            void handleBatchQuestionOp(
-                              quickView === "archived"
-                                ? "unarchive"
-                                : "archive",
-                            )
-                          }
-                        >
-                          <Archive size={14} />{" "}
-                          {quickView === "archived" ? "取消归档" : "归档"}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="danger-text"
-                          disabled={batchBusy}
-                          onClick={() => void handleBatchQuestionOp("delete")}
-                        >
-                          <Trash2 size={14} /> 移入回收站
-                        </Button>
-                      </>
-                    )}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={batchBusy}
-                    onClick={clearSelection}
-                  >
-                    取消
-                  </Button>
-                </div>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={totalSelectedCount === 0 || batchBusy}
+                  onClick={() =>
+                    onOpenMoveDialog({
+                      folderIds: [...selectedFolderIds],
+                      questionIds: [...selectedQuestionIds],
+                      subscriptionDeckIds: [...selectedSubIds],
+                      initialTargetId: currentOwnedFolderId,
+                    })
+                  }
+                >
+                  <FolderInput size={14} /> 移动
+                </Button>
+                {selectedQuestionIds.size > 0 &&
+                  selectedFolderIds.size === 0 &&
+                  selectedSubIds.size === 0 && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={batchBusy}
+                        onClick={() =>
+                          void handleBatchQuestionOp(
+                            quickView === "archived"
+                              ? "unarchive"
+                              : "archive",
+                          )
+                        }
+                      >
+                        <Archive size={14} />{" "}
+                        {quickView === "archived" ? "取消归档" : "归档"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="danger-text"
+                        disabled={batchBusy}
+                        onClick={() => void handleBatchQuestionOp("delete")}
+                      >
+                        <Trash2 size={14} /> 移入回收站
+                      </Button>
+                    </>
+                  )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={batchBusy}
+                  onClick={clearSelection}
+                >
+                  取消
+                </Button>
               </div>
-            )}
+            </div>
 
             {/* Current-level Folders & Subscriptions pinned above items (hidden while searching) */}
             {!quickView &&

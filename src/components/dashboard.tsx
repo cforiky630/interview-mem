@@ -397,7 +397,7 @@ export function Dashboard({
                       className="text-button"
                       onClick={() => onDeck(question.deckId)}
                     >
-                      <BookOpen size={15} /> 查看题库
+                      <BookOpen size={15} /> 查看文件夹
                     </button>
                     <Button onClick={() => onPractice(question)}>
                       <PenLine size={16} /> 开始答题
@@ -426,9 +426,9 @@ export function Dashboard({
                         ? `还有 ${missing} 道只录了题干，补全答案即可加入每日复习。`
                         : data.stats.total
                           ? remainingNew === 0 && data.stats.new > 0
-                            ? "今日新题上限已学完，暂无到期复习题；可去题库自由练习。"
+                            ? "今日新题上限已学完，暂无到期复习题；可去我的资料自由练习。"
                             : "今日到期复习已全部完成，明天按遗忘曲线继续巩固。"
-                          : "导入 Markdown / txt 笔记，或先载入示例题库开始记忆。"}
+                          : "导入 Markdown / txt 笔记，或先载入示例资料开始记忆。"}
                     </p>
                     <div className="empty-focus-actions">
                       <Button
@@ -444,12 +444,12 @@ export function Dashboard({
                         {missing
                           ? "去补答案"
                           : data.stats.total
-                            ? "去题库自由练习"
+                            ? "去我的资料练习"
                             : "导入题目"}
                       </Button>
                       {!data.stats.total && (
                         <button className="text-button" onClick={onSeed}>
-                          载入示例题库
+                          载入示例资料
                           <ArrowUpRight size={14} />
                         </button>
                       )}
@@ -767,7 +767,7 @@ export function Dashboard({
                   onApplyAllUpdates ? onApplyAllUpdates() : onLibrary()
                 }
               >
-                <span>{pendingUpdates.length} 个订阅题库有更新</span>
+                <span>{pendingUpdates.length} 个订阅资料有更新</span>
                 <strong>
                   <ArrowUpRight size={13} />
                 </strong>
@@ -819,7 +819,7 @@ export function Dashboard({
             </div>
           </section>
           <button className="discover-note" onClick={onCatalog}>
-            <span>去别人的题库逛逛</span>
+            <span>去发现资料逛逛</span>
             <ArrowUpRight size={18} />
           </button>
         </aside>

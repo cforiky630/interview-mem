@@ -91,7 +91,7 @@ export function AiSaveDialog({
               ) : (
                 <>
                   <Layers2 size={16} />
-                  <p>在题库中新建一道独立题目，后续会单独安排复习。</p>
+                  <p>在资料中新建一条独立内容，后续会单独安排复习。</p>
                 </>
               )}
             </div>

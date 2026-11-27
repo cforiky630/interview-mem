@@ -1277,7 +1277,7 @@ export async function placeSubscriptionInTx(
       and(eq(subscriptions.userId, userId), eq(subscriptions.deckId, deckId)),
     )
     .returning({ deckId: subscriptions.deckId });
-  if (!updated) throw new AppError(404, "未订阅该题库。");
+  if (!updated) throw new AppError(404, "未订阅该资料。");
 }
 
 /**
