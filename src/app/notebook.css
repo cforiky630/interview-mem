@@ -261,7 +261,7 @@
       outline: none;
     }
 
-    html[data-focus-modality="keyboard"] select:focus-visible {
+    :where(html[data-focus-modality="keyboard"] select:focus-visible) {
       border-color: var(--border-accent);
       background-color: var(--focus-surface);
       box-shadow: var(--shadow-focus);
@@ -4115,12 +4115,14 @@ html[data-input="touch"] .inline-title-trigger {
   font-size: 0.94rem;
   line-height: 1.85;
   tab-size: 2;
-  box-shadow: none !important;
+  box-shadow: none;
 }
 
 .inline-editor-surface > textarea:focus,
 .inline-editor-surface > textarea:focus-visible {
+  border: 0;
   background: transparent;
+  box-shadow: none;
   outline: none;
 }
 

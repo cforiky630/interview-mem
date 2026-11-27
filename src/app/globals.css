@@ -3,6 +3,7 @@
 :root {
   interpolate-size: allow-keywords;
   --in-oklab: ;
+  --page-max-width: 1440px;
 
   /* Core Forest palette — 青瓷 · 晨光 (Daylight Celadon & Pure Paper) */
   --forest-deep: #114a35;
@@ -682,7 +683,7 @@ select {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  select:hover:not(:disabled) {
+  :where(select:hover:not(:disabled)) {
     background-color: var(--surface-elevated);
     border-color: var(--border-accent);
   }
@@ -708,37 +709,42 @@ select option:checked {
   color: var(--accent-dark);
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
-textarea,
-select {
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select
+) {
   transition:
     background-color var(--dur-fast) ease,
     border-color var(--dur-fast) ease,
     box-shadow var(--dur-fast) ease;
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
-textarea:focus {
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+  textarea:focus
+) {
   border-color: var(--border-accent);
   background-color: var(--focus-surface);
   box-shadow: var(--shadow-focus);
 }
 
-select:focus,
-select:focus-visible {
+:where(select:focus, select:focus-visible) {
   outline: none;
   box-shadow: var(--shadow-inset);
 }
 
-html[data-focus-modality="keyboard"] select:focus-visible {
+:where(html[data-focus-modality="keyboard"] select:focus-visible) {
   border-color: var(--border-accent);
   background-color: var(--focus-surface);
   box-shadow: var(--shadow-focus);
   outline: none;
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
-textarea:focus-visible {
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
+  textarea:focus-visible
+) {
   outline: none;
 }
 
@@ -1821,7 +1827,7 @@ strong {
 
 .page {
   padding: 28px 36px 48px;
-  max-width: 1440px;
+  max-width: var(--page-max-width);
   margin: 0 auto;
   animation: rise var(--dur-base) var(--ease-smooth);
 }
@@ -1871,9 +1877,9 @@ strong {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  max-width: 1480px;
+  max-width: var(--page-max-width);
   margin: 28px auto 0;
-  padding: 20px 40px 26px;
+  padding: 20px 36px 26px;
   border-top: 1px solid var(--border-subtle);
   color: var(--muted);
   font-size: 0.78125rem;
@@ -2344,6 +2350,8 @@ strong {
 }
 
 .search-field input {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
   min-width: 0;
   border: 0;
@@ -2351,12 +2359,14 @@ strong {
   color: var(--text);
   font-size: 0.875rem;
   padding: 6px 0;
-  box-shadow: none !important;
+  box-shadow: none;
 }
 
 .search-field input:focus,
 .search-field input:focus-visible {
+  border: 0;
   background-color: transparent;
+  box-shadow: none;
   outline: none;
 }
 
@@ -4095,6 +4105,16 @@ strong {
   border: 1px solid var(--border-control);
   background: var(--surface-recessed);
   flex-shrink: 0;
+  transition:
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    background-color var(--dur-fast) ease;
+}
+
+.ai-launcher-search:focus-within {
+  border-color: var(--border-accent);
+  background: var(--focus-surface);
+  box-shadow: var(--shadow-focus);
 }
 
 .ai-launcher-search > svg {
@@ -4103,12 +4123,22 @@ strong {
 }
 
 .ai-launcher-search input {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
   border: 0;
   background: transparent;
-  box-shadow: none !important;
+  box-shadow: none;
   padding: 6px 0;
   font-size: 0.83rem;
+}
+
+.ai-launcher-search input:focus,
+.ai-launcher-search input:focus-visible {
+  border: 0;
+  background-color: transparent;
+  box-shadow: none;
+  outline: none;
 }
 
 .ai-launcher-filters {
@@ -4340,13 +4370,15 @@ strong {
   line-height: 1.7;
   background: none;
   color: var(--text);
-  box-shadow: none !important;
+  box-shadow: none;
   padding: 0;
 }
 
 .ai-composer textarea:focus,
 .ai-composer textarea:focus-visible {
+  border: 0;
   background-color: transparent;
+  box-shadow: none;
   outline: none;
 }
 
@@ -5518,18 +5550,22 @@ strong {
 }
 
 .share-link input {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
   min-width: 0;
   border: 0;
   background: none;
   font-size: 0.8rem;
   color: var(--subtle);
-  box-shadow: none !important;
+  box-shadow: none;
 }
 
 .share-link input:focus,
 .share-link input:focus-visible {
+  border: 0;
   background-color: transparent;
+  box-shadow: none;
   outline: none;
 }
 
@@ -6151,6 +6187,9 @@ html
   .page {
     padding: 24px 26px 36px;
   }
+  .app-footer {
+    padding-inline: 26px;
+  }
   .topbar {
     padding: 0 24px;
   }
@@ -6264,6 +6303,24 @@ html
   ):focus-visible {
     outline: 2px solid Highlight;
   }
+  .library-search-box:focus-within,
+  .folder-move-search:focus-within,
+  .ai-launcher-search:focus-within,
+  .search-field:focus-within,
+  .share-link:focus-within,
+  .ai-composer-box:focus-within,
+  .inline-editor-surface:focus-within {
+    outline: 2px solid Highlight;
+  }
+  .library-search-box input:focus-visible,
+  .folder-move-search input:focus-visible,
+  .ai-launcher-search input:focus-visible,
+  .search-field input:focus-visible,
+  .share-link input:focus-visible,
+  .ai-composer textarea:focus-visible,
+  .inline-editor-surface > textarea:focus-visible {
+    outline: none;
+  }
 }
 
 /* ==========================================================================
@@ -6275,7 +6332,6 @@ html
   grid-template-columns: 250px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
-  max-width: 1240px;
 }
 
 .library-tree-pane {
@@ -6689,6 +6745,8 @@ html
 }
 
 .library-search-box input {
+  appearance: none;
+  -webkit-appearance: none;
   flex: 1;
   min-width: 0;
   border: 0;
@@ -7125,6 +7183,8 @@ html[data-focus-modality="keyboard"] .library-sort-select select:focus-visible {
 }
 
 .folder-move-search input {
+  appearance: none;
+  -webkit-appearance: none;
   flex: 1;
   border: 0;
   background: transparent;

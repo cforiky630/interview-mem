@@ -1005,3 +1005,21 @@ test("deploy nginx-tunnel.conf enforces loopback listener, Cloudflare real-IP he
     /location\s*=\s*\/api\/chat\s*\{[\s\S]*?proxy_buffering\s+off;/,
   );
 });
+
+test("CSS architecture keeps unified page widths and zero-specificity global input defaults to prevent double focus rings", async () => {
+  const globalsCss = await readFile(path.resolve("src/app/globals.css"), "utf8");
+  assert.match(globalsCss, /--page-max-width:\s*1440px;/);
+  assert.match(globalsCss, /\.page\s*\{[^}]*max-width:\s*var\(--page-max-width\);/);
+  assert.match(
+    globalsCss,
+    /\.app-footer\s*\{[^}]*max-width:\s*var\(--page-max-width\);/,
+  );
+  const libShellMatch = globalsCss.match(/\.library-shell\s*\{[^}]*\}/);
+  assert.ok(libShellMatch);
+  assert.doesNotMatch(libShellMatch[0], /max-width:/);
+  assert.match(
+    globalsCss,
+    /:where\(\s*input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):not\(\[type="range"\]\):focus,\s*textarea:focus\s*\)/,
+  );
+  assert.match(globalsCss, /\.ai-launcher-search:focus-within\s*\{/);
+});

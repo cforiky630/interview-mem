@@ -836,6 +836,25 @@ const ConceptDisplayRow = memo(function ConceptDisplayRow({
   onPointerUp: () => void;
   onPointerCancel: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+  const defRef = useRef<HTMLDivElement>(null);
+  const defId = `concept-def-${concept.id}`;
+
+  useEffect(() => {
+    if (expanded) return;
+    const el = defRef.current;
+    if (!el) return;
+    const measure = () => {
+      setCanExpand(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [expanded, concept.definition]);
+
   return (
     <tr
       ref={(el) => setRowRef(concept.id, el)}
@@ -889,15 +908,6 @@ const ConceptDisplayRow = memo(function ConceptDisplayRow({
           />
           <div className="concept-term-content">
             <span className="concept-term-text">{concept.term}</span>
-            {concept.aliases.length > 0 && (
-              <div className="concept-aliases">
-                {concept.aliases.map((alias) => (
-                  <span key={alias} className="concept-alias-chip">
-                    {alias}
-                  </span>
-                ))}
-              </div>
-            )}
             {pathLabel && (
               <button
                 type="button"
@@ -917,7 +927,33 @@ const ConceptDisplayRow = memo(function ConceptDisplayRow({
       </td>
 
       <td className="concept-cell-def">
-        <div className="concept-def-body">{concept.definition}</div>
+        <div
+          ref={defRef}
+          id={defId}
+          className={cn("concept-def-body", !expanded && "is-clamped")}
+        >
+          {concept.definition}
+        </div>
+        {(canExpand || expanded) && (
+          <button
+            type="button"
+            className={cn("concept-expand-btn", expanded && "is-expanded")}
+            aria-expanded={expanded}
+            aria-controls={defId}
+            aria-label={
+              expanded
+                ? `收起 ${concept.term} 完整释义`
+                : `展开 ${concept.term} 完整释义`
+            }
+            title={expanded ? "收起释义" : "展开全部释义"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+          >
+            <ChevronDown size={15} aria-hidden="true" />
+          </button>
+        )}
 
         {!selectMode && (
           <div

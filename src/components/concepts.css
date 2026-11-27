@@ -257,18 +257,16 @@
   gap: 4px;
   align-self: flex-start;
   max-width: 100%;
-  padding: 1px 7px;
+  padding: 0;
   border-radius: var(--radius-xs);
-  background: var(--accent-wash);
-  color: var(--accent-dark);
-  font-size: 0.71rem;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
   line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition:
-    background-color var(--dur-fast) ease,
-    color var(--dur-fast) ease;
+  transition: color var(--dur-fast) ease;
 }
 
 .concept-def-body {
@@ -278,6 +276,37 @@
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+.concept-def-body.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.concept-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 28px;
+  min-block-size: 24px;
+  margin-top: 4px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.concept-expand-btn svg {
+  transition: transform var(--dur-fast) var(--ease-smooth);
+}
+
+.concept-expand-btn.is-expanded svg {
+  transform: rotate(180deg);
 }
 
 /* —— 静息如辞典、悬停浮现的精致行操作条 —— */
@@ -693,7 +722,11 @@ html[data-focus-modality="keyboard"] .concept-kv-extra-select:focus-visible {
     color: var(--accent-dark);
   }
   .concept-path-badge:hover {
-    background: var(--accent-soft);
+    color: var(--accent-dark);
+  }
+  .concept-expand-btn:hover {
+    background: var(--hover);
+    color: var(--text);
   }
 }
 
@@ -728,6 +761,11 @@ html[data-input="touch"] .concept-kv-extra-select {
 html[data-input="touch"] .concept-action-btn {
   min-height: 36px;
   padding: 0 9px;
+}
+
+html[data-input="touch"] .concept-expand-btn {
+  min-inline-size: 36px;
+  min-block-size: 32px;
 }
 
 html[data-input="touch"] .concept-kv-more-btn,
